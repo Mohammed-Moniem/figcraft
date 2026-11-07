@@ -1,0 +1,957 @@
+{
+  "schemaVersion": 2,
+  "license": "MIT OR Apache-2.0",
+  "platformScope": "macOS ARM64 product plus WASM compile; no Windows spooler claim",
+  "backend": {
+    "repository": "https://github.com/b1tninja/craft-libs",
+    "commit": "1cece76ac446315f81694151a6626588faa772c4",
+    "archive": "craft-libs-print-1cece76.tar.gz",
+    "archiveSha256": "4ed876f8bc28f90be4395bf5f3c32f2ecdc2256fdd79e2e3528c394d3ba16a97"
+  },
+  "ui": {
+    "repository": "https://github.com/b1tninja/craft-libs",
+    "commit": "4fe359896ddd6a94dbc9b38be5595eb8db08f49e",
+    "archive": "craft-libs-ui-4fe3598.tar.gz",
+    "archiveSha256": "1e2c43799b30d833e5314654bbc0a2d54a23cc4d88183f826c42a36b24e649cc"
+  },
+  "currentCoupledUi": "e11f9d9aebea5f6b8e74643c1ea1ed172ba5f545",
+  "adaptations": [
+    "Portable narrow workspaces retain licenses and original copyright; upstream NOTICE includes provenance for material outside this extracted subset, which is not bundled here.",
+    "Windows spooler dependencies and RGB/GDI facade omitted for this scoped macOS build; retained Windows implementation source does not claim support.",
+    "CUPS submission enforces the C locale so cancellation can validate the own-queue receipt deterministically.",
+    "Printing/capability controls isolated with current ComboBox re-export; original coupled craft-ui APIs unchanged."
+  ],
+  "files": [
+    {
+      "path": "vendor/craft-print-stack/Cargo.lock",
+      "sha256": "9eadc4bfba7009c3fd59dcf55c7d79a90d0da9d0df67243c148d914d00d5fcd4",
+      "upstreamPath": "Cargo.lock",
+      "upstreamSha256": "c1a6fed510d46b1b0968261c426a60dc56096d1e15e90e472049d16a33a0aa2e",
+      "disposition": "adapted"
+    },
+    {
+      "path": "vendor/craft-print-stack/Cargo.toml",
+      "sha256": "12ea97f1369eff0f766736c7b83e1dde02494f845efb96ac9380167a9026851c",
+      "upstreamPath": "Cargo.toml",
+      "upstreamSha256": "37cfc597b90c0e426592f76f870c80563b23553e773653a70ca5cc19de842a63",
+      "disposition": "adapted"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/job/Cargo.toml",
+      "sha256": "e9090ea4df565f2ea2a683f698d09e83886db9a85dc406e0248489bacff9c9c2",
+      "upstreamPath": "crates/job/Cargo.toml",
+      "upstreamSha256": "e9090ea4df565f2ea2a683f698d09e83886db9a85dc406e0248489bacff9c9c2",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/job/README.md",
+      "sha256": "d10074b48a5764b16066d75aa6420fac1374c87926d3782ec5b38920a6982135",
+      "upstreamPath": "crates/job/README.md",
+      "upstreamSha256": "d10074b48a5764b16066d75aa6420fac1374c87926d3782ec5b38920a6982135",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/job/src/device.rs",
+      "sha256": "f0f90c3a9814213a9f67fd7f835d6d8446167a3c9cbbc38788c9e1051f536d32",
+      "upstreamPath": "crates/job/src/device.rs",
+      "upstreamSha256": "f0f90c3a9814213a9f67fd7f835d6d8446167a3c9cbbc38788c9e1051f536d32",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/job/src/document.rs",
+      "sha256": "833a1100e2c9acf50122c7283ec41bda87fe9270c0d6b7696dbc7828debd54f9",
+      "upstreamPath": "crates/job/src/document.rs",
+      "upstreamSha256": "833a1100e2c9acf50122c7283ec41bda87fe9270c0d6b7696dbc7828debd54f9",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/job/src/id.rs",
+      "sha256": "fec4b4dec594502c20470c33b0bd61eab3c2e165ea9292799598cce86994d2da",
+      "upstreamPath": "crates/job/src/id.rs",
+      "upstreamSha256": "fec4b4dec594502c20470c33b0bd61eab3c2e165ea9292799598cce86994d2da",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/job/src/job.rs",
+      "sha256": "b77751809d879d54aa507ce0a3c728c975ecf883bbaea39456ee3d582d3f3cf5",
+      "upstreamPath": "crates/job/src/job.rs",
+      "upstreamSha256": "b77751809d879d54aa507ce0a3c728c975ecf883bbaea39456ee3d582d3f3cf5",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/job/src/lib.rs",
+      "sha256": "37d6c872574e59ae2e2c251e7d838afd7bd16c119b9be9c9e589b8c44ab86aa0",
+      "upstreamPath": "crates/job/src/lib.rs",
+      "upstreamSha256": "37d6c872574e59ae2e2c251e7d838afd7bd16c119b9be9c9e589b8c44ab86aa0",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/job/src/native.rs",
+      "sha256": "00c5aa498c493c5cc918314a062f627bb346fc0d99253b8cf97ce0f0ac7c562e",
+      "upstreamPath": "crates/job/src/native.rs",
+      "upstreamSha256": "00c5aa498c493c5cc918314a062f627bb346fc0d99253b8cf97ce0f0ac7c562e",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/job/src/retry.rs",
+      "sha256": "ab8c44985a98295e61b879ff96f77e91827dcb2a275ecf0bd3687a4df44dbf54",
+      "upstreamPath": "crates/job/src/retry.rs",
+      "upstreamSha256": "ab8c44985a98295e61b879ff96f77e91827dcb2a275ecf0bd3687a4df44dbf54",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/job/src/tag.rs",
+      "sha256": "c93c517ee4c6701aa0176bce81d2032fb63fb0766560796bb306cf33241a4f3b",
+      "upstreamPath": "crates/job/src/tag.rs",
+      "upstreamSha256": "c93c517ee4c6701aa0176bce81d2032fb63fb0766560796bb306cf33241a4f3b",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/job/src/time.rs",
+      "sha256": "02e31828dd069ffacbaeb67f1d5680c121087e271cf412245c65783c2bf1026c",
+      "upstreamPath": "crates/job/src/time.rs",
+      "upstreamSha256": "02e31828dd069ffacbaeb67f1d5680c121087e271cf412245c65783c2bf1026c",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/job/src/view.rs",
+      "sha256": "f333f8da0edc03c63576ceebdd17720c7bf3697d01e3e3e13c0c18db01ca9d53",
+      "upstreamPath": "crates/job/src/view.rs",
+      "upstreamSha256": "f333f8da0edc03c63576ceebdd17720c7bf3697d01e3e3e13c0c18db01ca9d53",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/job/src/wire.rs",
+      "sha256": "8c922ce53f9724723a237d2af67c07ab9fbb672ac3b9ff7976abb8fce1dd1d61",
+      "upstreamPath": "crates/job/src/wire.rs",
+      "upstreamSha256": "8c922ce53f9724723a237d2af67c07ab9fbb672ac3b9ff7976abb8fce1dd1d61",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/job/tests/public_surface.rs",
+      "sha256": "11297b50794d3b65194889d3ade471b2ddcbf7c932ab3a919af97639c4835eae",
+      "upstreamPath": "crates/job/tests/public_surface.rs",
+      "upstreamSha256": "11297b50794d3b65194889d3ade471b2ddcbf7c932ab3a919af97639c4835eae",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/job/tests/serde_roundtrip.rs",
+      "sha256": "9b2851d2fcf662c4adef2385463916af62c659f8ae3cab5702021468daaa8ccc",
+      "upstreamPath": "crates/job/tests/serde_roundtrip.rs",
+      "upstreamSha256": "9b2851d2fcf662c4adef2385463916af62c659f8ae3cab5702021468daaa8ccc",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/Cargo.toml",
+      "sha256": "2c551ac262d256418ddcf164f2b3b3aad3afe8a71ae3a2fdb983555477af3eeb",
+      "upstreamPath": "crates/print/Cargo.toml",
+      "upstreamSha256": "20eca2f38bfd61d3ffd2b41dfb12680e447d38e164ceb605a2ab30141f0fc23d",
+      "disposition": "adapted"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/docs/events.md",
+      "sha256": "ceca05646bca2c8d842ebd0e07d187c66823a7cd3236d8f173c5336e5fbe4644",
+      "upstreamPath": "crates/print/docs/events.md",
+      "upstreamSha256": "ceca05646bca2c8d842ebd0e07d187c66823a7cd3236d8f173c5336e5fbe4644",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/docs/ipp.md",
+      "sha256": "98b24cbe472a987b42ccaff5fe9e4e74591276131f8afd24e43e2eb350ea725e",
+      "upstreamPath": "crates/print/docs/ipp.md",
+      "upstreamSha256": "98b24cbe472a987b42ccaff5fe9e4e74591276131f8afd24e43e2eb350ea725e",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/docs/job-lifecycle.md",
+      "sha256": "68f853d25d3d36dca690d60aef7ef22609af51384d489b4eb875c2a8ead815e2",
+      "upstreamPath": "crates/print/docs/job-lifecycle.md",
+      "upstreamSha256": "68f853d25d3d36dca690d60aef7ef22609af51384d489b4eb875c2a8ead815e2",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/docs/job-tracking.md",
+      "sha256": "f143d3b6344d136db20f01b9168bbd76b0e44c20e996696867559b51985fbea5",
+      "upstreamPath": "crates/print/docs/job-tracking.md",
+      "upstreamSha256": "f143d3b6344d136db20f01b9168bbd76b0e44c20e996696867559b51985fbea5",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/README.md",
+      "sha256": "b51e1e6027116ac947bc13149be43acc1ff1be80bca2d050abe829b3594b6766",
+      "upstreamPath": "crates/print/README.md",
+      "upstreamSha256": "b51e1e6027116ac947bc13149be43acc1ff1be80bca2d050abe829b3594b6766",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/backend.rs",
+      "sha256": "bb437f5009f13c483c348b1c868f01014d160dea0084ba391a32562b2ddba931",
+      "upstreamPath": "crates/print/src/backend.rs",
+      "upstreamSha256": "bb437f5009f13c483c348b1c868f01014d160dea0084ba391a32562b2ddba931",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/builtin.rs",
+      "sha256": "eb02c68f90d3e1ab096c481e5a4e9001b3fe503b0069a4a92382836720f03680",
+      "upstreamPath": "crates/print/src/builtin.rs",
+      "upstreamSha256": "eb02c68f90d3e1ab096c481e5a4e9001b3fe503b0069a4a92382836720f03680",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/clock.rs",
+      "sha256": "f7c95fc7f3b270d4686ce1a66ee11bd5209052b7dbc3e5265f8889d364457fce",
+      "upstreamPath": "crates/print/src/clock.rs",
+      "upstreamSha256": "f7c95fc7f3b270d4686ce1a66ee11bd5209052b7dbc3e5265f8889d364457fce",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/convert.rs",
+      "sha256": "37c862ceedafa805faf6c3e8edec30115ccb3a2972a105e948b562513d353f9b",
+      "upstreamPath": "crates/print/src/convert.rs",
+      "upstreamSha256": "37c862ceedafa805faf6c3e8edec30115ccb3a2972a105e948b562513d353f9b",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/ipp/adapter.rs",
+      "sha256": "4492647cb9f1e0cda8929ad9f34706d761832fa92405e6f17a32ba83c9de4aa9",
+      "upstreamPath": "crates/print/src/ipp/adapter.rs",
+      "upstreamSha256": "4492647cb9f1e0cda8929ad9f34706d761832fa92405e6f17a32ba83c9de4aa9",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/ipp/backend.rs",
+      "sha256": "710225faab32cb8ed634ec73ba540445e9c802ac5c1be7b46c8bba2d246132f5",
+      "upstreamPath": "crates/print/src/ipp/backend.rs",
+      "upstreamSha256": "710225faab32cb8ed634ec73ba540445e9c802ac5c1be7b46c8bba2d246132f5",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/ipp/client.rs",
+      "sha256": "08d36c39cd9e797de428955f2a932bbd1a5d6c467281c980044640011a5876a3",
+      "upstreamPath": "crates/print/src/ipp/client.rs",
+      "upstreamSha256": "08d36c39cd9e797de428955f2a932bbd1a5d6c467281c980044640011a5876a3",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/ipp/codec.rs",
+      "sha256": "8bc4189ab04a6435f73596eaacf4ea8ff3bfe40ef2a0f10d5527f2bb9cfa1823",
+      "upstreamPath": "crates/print/src/ipp/codec.rs",
+      "upstreamSha256": "8bc4189ab04a6435f73596eaacf4ea8ff3bfe40ef2a0f10d5527f2bb9cfa1823",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/ipp/error.rs",
+      "sha256": "7aded4eb24152037098b5d35ddcbf4ee3d287026f9ccbd590307452f6a9873ba",
+      "upstreamPath": "crates/print/src/ipp/error.rs",
+      "upstreamSha256": "7aded4eb24152037098b5d35ddcbf4ee3d287026f9ccbd590307452f6a9873ba",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/ipp/mod.rs",
+      "sha256": "6e27d2bc060865dd7587f72febc71ff493d2fc2ed427c03ca8eb310a82c8fb48",
+      "upstreamPath": "crates/print/src/ipp/mod.rs",
+      "upstreamSha256": "6e27d2bc060865dd7587f72febc71ff493d2fc2ed427c03ca8eb310a82c8fb48",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/ipp/model.rs",
+      "sha256": "2fb44a98fff370f04ac2ee27c2bb2f3c2c7b40f3beca5edf9ab57a9283aa5a4c",
+      "upstreamPath": "crates/print/src/ipp/model.rs",
+      "upstreamSha256": "2fb44a98fff370f04ac2ee27c2bb2f3c2c7b40f3beca5edf9ab57a9283aa5a4c",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/ipp/plan.rs",
+      "sha256": "b9a13b1c37ad82d258a39588887064f6017f369f170b4255e0ba205a091e7865",
+      "upstreamPath": "crates/print/src/ipp/plan.rs",
+      "upstreamSha256": "b9a13b1c37ad82d258a39588887064f6017f369f170b4255e0ba205a091e7865",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/ipp/policy.rs",
+      "sha256": "90b8d6b93a15941cafdcbadecfbc8355eb96295dcf7d60380e276d3b470fe357",
+      "upstreamPath": "crates/print/src/ipp/policy.rs",
+      "upstreamSha256": "90b8d6b93a15941cafdcbadecfbc8355eb96295dcf7d60380e276d3b470fe357",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/ipp/protocol.rs",
+      "sha256": "c11d7d7b662a0a14f51710f63f6b873de40553055a59ba83b34ff57c6d167a3a",
+      "upstreamPath": "crates/print/src/ipp/protocol.rs",
+      "upstreamSha256": "c11d7d7b662a0a14f51710f63f6b873de40553055a59ba83b34ff57c6d167a3a",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/ipp/tests.rs",
+      "sha256": "0c2b517f6d77ec755acf07e2f79b5b22af7a29683307faeb59d412a4f75b1f21",
+      "upstreamPath": "crates/print/src/ipp/tests.rs",
+      "upstreamSha256": "0c2b517f6d77ec755acf07e2f79b5b22af7a29683307faeb59d412a4f75b1f21",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/job.rs",
+      "sha256": "3fca5e583c04895d72b4eeed57920fa3afb873bcc4f574d60ea8b39713ca58a7",
+      "upstreamPath": "crates/print/src/job.rs",
+      "upstreamSha256": "3fca5e583c04895d72b4eeed57920fa3afb873bcc4f574d60ea8b39713ca58a7",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/lib.rs",
+      "sha256": "913ac4bb33a680bc2b306773ec986850076b180fe511849edddceb482fb91379",
+      "upstreamPath": "crates/print/src/lib.rs",
+      "upstreamSha256": "3ec89a6475d1005ad469866797fe571679e49a5910d8a1d54456eecc29efc156",
+      "disposition": "adapted"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/options.rs",
+      "sha256": "5799b79d4ba28b2c15080fc3069417eece8fdb24a50cf3e384ad933bb485e373",
+      "upstreamPath": "crates/print/src/options.rs",
+      "upstreamSha256": "5799b79d4ba28b2c15080fc3069417eece8fdb24a50cf3e384ad933bb485e373",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/progress.rs",
+      "sha256": "0e42876d7eb9105efecba1625ac41394312b26d680ba0913b7d661724f8eb34a",
+      "upstreamPath": "crates/print/src/progress.rs",
+      "upstreamSha256": "0e42876d7eb9105efecba1625ac41394312b26d680ba0913b7d661724f8eb34a",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/pwg.rs",
+      "sha256": "44069dd718c7600f621032945b8feda91c758486a1b3c4e01f9eed9fac196f8d",
+      "upstreamPath": "crates/print/src/pwg.rs",
+      "upstreamSha256": "44069dd718c7600f621032945b8feda91c758486a1b3c4e01f9eed9fac196f8d",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/registry.rs",
+      "sha256": "6f2be80a7d4224a5b5e78eeff42b22035e6e5abf992722461b70febb9a6f5579",
+      "upstreamPath": "crates/print/src/registry.rs",
+      "upstreamSha256": "6f2be80a7d4224a5b5e78eeff42b22035e6e5abf992722461b70febb9a6f5579",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/remote.rs",
+      "sha256": "d605d0f3bfae9006890d387e2d3df970e289d0870f6198642a6fa4b2ef6b90e9",
+      "upstreamPath": "crates/print/src/remote.rs",
+      "upstreamSha256": "d605d0f3bfae9006890d387e2d3df970e289d0870f6198642a6fa4b2ef6b90e9",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/retry.rs",
+      "sha256": "292f37284b4dd3dd02cebc801f3c384a25de0045c46c5ec3a5014da7da5ef039",
+      "upstreamPath": "crates/print/src/retry.rs",
+      "upstreamSha256": "292f37284b4dd3dd02cebc801f3c384a25de0045c46c5ec3a5014da7da5ef039",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/sheets.rs",
+      "sha256": "b83fad41634a2b6c0ec1970f87e2d8708fe68dbe0ff14659b14face95ad0a3a4",
+      "upstreamPath": "crates/print/src/sheets.rs",
+      "upstreamSha256": "b83fad41634a2b6c0ec1970f87e2d8708fe68dbe0ff14659b14face95ad0a3a4",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/spool_render.rs",
+      "sha256": "f9cb7c984027fbf401b96a318af23add8452c4275e7f59c87f7c80aa41b5342b",
+      "upstreamPath": "crates/print/src/spool_render.rs",
+      "upstreamSha256": "f9cb7c984027fbf401b96a318af23add8452c4275e7f59c87f7c80aa41b5342b",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/tag.rs",
+      "sha256": "bcf1539051eb9c8496556043453579b9d2d91a51c317c1270cc1705fa33c0f5e",
+      "upstreamPath": "crates/print/src/tag.rs",
+      "upstreamSha256": "bcf1539051eb9c8496556043453579b9d2d91a51c317c1270cc1705fa33c0f5e",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/testing.rs",
+      "sha256": "8ac79a6e81bf67d514d3fca190f3eb1813b3d53bb6f5fad0cbc173788d4d244a",
+      "upstreamPath": "crates/print/src/testing.rs",
+      "upstreamSha256": "8ac79a6e81bf67d514d3fca190f3eb1813b3d53bb6f5fad0cbc173788d4d244a",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/tests/pdf_bounds.rs",
+      "sha256": "6f972b2da53bdbe2d2b16d34d7966e291dab67a1a3e8403cd7da7449afb2fd79",
+      "upstreamPath": "crates/print/src/tests/pdf_bounds.rs",
+      "upstreamSha256": "6f972b2da53bdbe2d2b16d34d7966e291dab67a1a3e8403cd7da7449afb2fd79",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/tests/windows_native.rs",
+      "sha256": "700c55c8846d8bff3c873599cb921d7bb713d2223050dff4b783ab81aa5c70c5",
+      "upstreamPath": "crates/print/src/tests/windows_native.rs",
+      "upstreamSha256": "700c55c8846d8bff3c873599cb921d7bb713d2223050dff4b783ab81aa5c70c5",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/tests.rs",
+      "sha256": "f8de3bc8fc8c2091e2558994120002ee34f7f71bc74d09bc5212dc0570c3f756",
+      "upstreamPath": "crates/print/src/tests.rs",
+      "upstreamSha256": "f8de3bc8fc8c2091e2558994120002ee34f7f71bc74d09bc5212dc0570c3f756",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/ticket.rs",
+      "sha256": "8fd28756b15ab7516050c7523dc15ba214c796b73b0c7603903bcb49877d4880",
+      "upstreamPath": "crates/print/src/ticket.rs",
+      "upstreamSha256": "8fd28756b15ab7516050c7523dc15ba214c796b73b0c7603903bcb49877d4880",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/trace.rs",
+      "sha256": "a3a39d823ba12407d599792f9bcb34de3ab892c64649aaa780f26a985753bffc",
+      "upstreamPath": "crates/print/src/trace.rs",
+      "upstreamSha256": "a3a39d823ba12407d599792f9bcb34de3ab892c64649aaa780f26a985753bffc",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/tracked.rs",
+      "sha256": "a5acb733ca81a6723ce862e256199dc64937e1f54690336e58f22d2c65a40491",
+      "upstreamPath": "crates/print/src/tracked.rs",
+      "upstreamSha256": "a5acb733ca81a6723ce862e256199dc64937e1f54690336e58f22d2c65a40491",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/wake.rs",
+      "sha256": "ecbe9b039d9afa49e20b8e83188b164a67890f91845ba1ce87d6e331782b782c",
+      "upstreamPath": "crates/print/src/wake.rs",
+      "upstreamSha256": "ecbe9b039d9afa49e20b8e83188b164a67890f91845ba1ce87d6e331782b782c",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/watch.rs",
+      "sha256": "32e0bc449316642eebb90b3683e6fa7b65f54ac28efc4b8b487caab37d65f83b",
+      "upstreamPath": "crates/print/src/watch.rs",
+      "upstreamSha256": "32e0bc449316642eebb90b3683e6fa7b65f54ac28efc4b8b487caab37d65f83b",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/windows.rs",
+      "sha256": "1a32c7e99f79c8fe3b65c72cf26369d7dfe459033022ae218d67ff3d71ceff24",
+      "upstreamPath": "crates/print/src/windows.rs",
+      "upstreamSha256": "2621aa7f8f7dc5ce742b72ea62f018d98ff7a4b370fff43b5fb857698123bdb6",
+      "disposition": "adapted"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/wsd/adapter.rs",
+      "sha256": "fdfb749676f8c06709aea8d8a032b97aabf7801a101cae7de86ce137e56b6d65",
+      "upstreamPath": "crates/print/src/wsd/adapter.rs",
+      "upstreamSha256": "fdfb749676f8c06709aea8d8a032b97aabf7801a101cae7de86ce137e56b6d65",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/wsd/backend.rs",
+      "sha256": "35cda87268490e1d49dee090e0c609f0b8f3adcc22ae157eecdc6efe7c4a697d",
+      "upstreamPath": "crates/print/src/wsd/backend.rs",
+      "upstreamSha256": "35cda87268490e1d49dee090e0c609f0b8f3adcc22ae157eecdc6efe7c4a697d",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/wsd/client.rs",
+      "sha256": "9032208f80430fd33d6c695ca45709c89c04446175172ceb9b6fc2465feda3a4",
+      "upstreamPath": "crates/print/src/wsd/client.rs",
+      "upstreamSha256": "9032208f80430fd33d6c695ca45709c89c04446175172ceb9b6fc2465feda3a4",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/wsd/encoder.rs",
+      "sha256": "ae6f35933dbd3a81a64892c385d8f5b1e9a234cd5ac3d4c8a795f434b2e220a2",
+      "upstreamPath": "crates/print/src/wsd/encoder.rs",
+      "upstreamSha256": "ae6f35933dbd3a81a64892c385d8f5b1e9a234cd5ac3d4c8a795f434b2e220a2",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/wsd/error.rs",
+      "sha256": "450dc9172c14f53e5d41a81f4482a24ee597b578d3a4be3d40463d8aac209762",
+      "upstreamPath": "crates/print/src/wsd/error.rs",
+      "upstreamSha256": "450dc9172c14f53e5d41a81f4482a24ee597b578d3a4be3d40463d8aac209762",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/wsd/events/http.rs",
+      "sha256": "8a29090be49217a3cc7153ade1763049ace24a3f3f7c8b987f91fa1839d4b651",
+      "upstreamPath": "crates/print/src/wsd/events/http.rs",
+      "upstreamSha256": "8a29090be49217a3cc7153ade1763049ace24a3f3f7c8b987f91fa1839d4b651",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/wsd/events/mod.rs",
+      "sha256": "6b5424eedd42662733a23ba3d872aeeeb3f39ba60c631cf8dcd8baa1a75627a1",
+      "upstreamPath": "crates/print/src/wsd/events/mod.rs",
+      "upstreamSha256": "6b5424eedd42662733a23ba3d872aeeeb3f39ba60c631cf8dcd8baa1a75627a1",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/wsd/events/tests.rs",
+      "sha256": "1bda6af7aba27af030cf550f3e246cb0fe7c319571f708dc0ee57e337fc531eb",
+      "upstreamPath": "crates/print/src/wsd/events/tests.rs",
+      "upstreamSha256": "1bda6af7aba27af030cf550f3e246cb0fe7c319571f708dc0ee57e337fc531eb",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/wsd/fault.rs",
+      "sha256": "e334dd94e1a9f4cd2ec4126f7db1a8e1233769797bd078a73b31362ab5d45ed1",
+      "upstreamPath": "crates/print/src/wsd/fault.rs",
+      "upstreamSha256": "e334dd94e1a9f4cd2ec4126f7db1a8e1233769797bd078a73b31362ab5d45ed1",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/wsd/job.rs",
+      "sha256": "a23e8c81d0155fc8d091159b2e80dc601f0f40f9739a37fd087b82456c776d56",
+      "upstreamPath": "crates/print/src/wsd/job.rs",
+      "upstreamSha256": "a23e8c81d0155fc8d091159b2e80dc601f0f40f9739a37fd087b82456c776d56",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/wsd/mod.rs",
+      "sha256": "b2daa57a11bb3518c3d0e42ff7c03ea90e0c1c3171312e5cad0522b121c5b5a4",
+      "upstreamPath": "crates/print/src/wsd/mod.rs",
+      "upstreamSha256": "b2daa57a11bb3518c3d0e42ff7c03ea90e0c1c3171312e5cad0522b121c5b5a4",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/wsd/model.rs",
+      "sha256": "925b45751a16d3dbf337efce359bf5da3a04c0fb754871cb8dc1d914a48373e2",
+      "upstreamPath": "crates/print/src/wsd/model.rs",
+      "upstreamSha256": "925b45751a16d3dbf337efce359bf5da3a04c0fb754871cb8dc1d914a48373e2",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/wsd/mtom.rs",
+      "sha256": "5c053fb1a58210c66dd956b38f0cfb98a207cdf7c2cd0d86ae536c0f2ca79170",
+      "upstreamPath": "crates/print/src/wsd/mtom.rs",
+      "upstreamSha256": "5c053fb1a58210c66dd956b38f0cfb98a207cdf7c2cd0d86ae536c0f2ca79170",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/wsd/ns.rs",
+      "sha256": "0292c6b0d9ceb3f2a0d9e57751cc9696c8a09c0c1f6c7f9f6c69d456ee86da54",
+      "upstreamPath": "crates/print/src/wsd/ns.rs",
+      "upstreamSha256": "0292c6b0d9ceb3f2a0d9e57751cc9696c8a09c0c1f6c7f9f6c69d456ee86da54",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/wsd/ops.rs",
+      "sha256": "1d65286e9f87a49b4f4ec022c4a30b3f3fc9a74ca9827b26781cc22bbd5b6f03",
+      "upstreamPath": "crates/print/src/wsd/ops.rs",
+      "upstreamSha256": "1d65286e9f87a49b4f4ec022c4a30b3f3fc9a74ca9827b26781cc22bbd5b6f03",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/wsd/policy.rs",
+      "sha256": "71593935954da2bf63f27e962d35bb7496f0017d51fe7a7dfc7fe72c5a0ac52f",
+      "upstreamPath": "crates/print/src/wsd/policy.rs",
+      "upstreamSha256": "71593935954da2bf63f27e962d35bb7496f0017d51fe7a7dfc7fe72c5a0ac52f",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/wsd/pwg.rs",
+      "sha256": "90dcb51c4c8f531e72bcdc1bddac4fec2836a03eb0b07e2eda29133ba1171c5a",
+      "upstreamPath": "crates/print/src/wsd/pwg.rs",
+      "upstreamSha256": "90dcb51c4c8f531e72bcdc1bddac4fec2836a03eb0b07e2eda29133ba1171c5a",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/wsd/testing.rs",
+      "sha256": "5e8b5e318f124f2fb861b50dc3ffc4dddd088db97353bd9c9f80b4cc9c13685a",
+      "upstreamPath": "crates/print/src/wsd/testing.rs",
+      "upstreamSha256": "5e8b5e318f124f2fb861b50dc3ffc4dddd088db97353bd9c9f80b4cc9c13685a",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/wsd/testutil.rs",
+      "sha256": "4911140c80c3b73e1540d865baa1ae76e4f69ab03b7259f649ec73285eb068a1",
+      "upstreamPath": "crates/print/src/wsd/testutil.rs",
+      "upstreamSha256": "4911140c80c3b73e1540d865baa1ae76e4f69ab03b7259f649ec73285eb068a1",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/src/wsd/ticket.rs",
+      "sha256": "9e2c20e513f5dde8ea8beb69ec4a74da105834cc80d53e12cadb14d52187f52a",
+      "upstreamPath": "crates/print/src/wsd/ticket.rs",
+      "upstreamSha256": "9e2c20e513f5dde8ea8beb69ec4a74da105834cc80d53e12cadb14d52187f52a",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/tests/conversion_fakes.rs",
+      "sha256": "9f2c9678550f8cc666ee816d92dc625bcc9134fa3100aed13f1820212c125e97",
+      "upstreamPath": "crates/print/tests/conversion_fakes.rs",
+      "upstreamSha256": "9f2c9678550f8cc666ee816d92dc625bcc9134fa3100aed13f1820212c125e97",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/tests/conversion.rs",
+      "sha256": "466e85802867e485e8f63e1006abf37da2141f6752fba9607e2d87528c0791b5",
+      "upstreamPath": "crates/print/tests/conversion.rs",
+      "upstreamSha256": "466e85802867e485e8f63e1006abf37da2141f6752fba9607e2d87528c0791b5",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/tests/job_lifecycle.rs",
+      "sha256": "78cd584d3a7a8881fa8e7010ad7eaa4dfa910eb019d343725b9b60bbff1bf569",
+      "upstreamPath": "crates/print/tests/job_lifecycle.rs",
+      "upstreamSha256": "78cd584d3a7a8881fa8e7010ad7eaa4dfa910eb019d343725b9b60bbff1bf569",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/tests/print_job_conversion.rs",
+      "sha256": "ecd3ac1150ae869b49d1a73c16b3014444359d035fcbe2e11995ff774ef788a3",
+      "upstreamPath": "crates/print/tests/print_job_conversion.rs",
+      "upstreamSha256": "ecd3ac1150ae869b49d1a73c16b3014444359d035fcbe2e11995ff774ef788a3",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/tests/print_job_staleness.rs",
+      "sha256": "ed67e5cef2f0b3601a59ae17584fa6fb68a76858162158babb25659188beb2b8",
+      "upstreamPath": "crates/print/tests/print_job_staleness.rs",
+      "upstreamSha256": "ed67e5cef2f0b3601a59ae17584fa6fb68a76858162158babb25659188beb2b8",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/tests/print_job_view.rs",
+      "sha256": "a2f36b70fb33e3c633932e9b4869127c76a342df6116c6aac6c400c37c2c7a9b",
+      "upstreamPath": "crates/print/tests/print_job_view.rs",
+      "upstreamSha256": "a2f36b70fb33e3c633932e9b4869127c76a342df6116c6aac6c400c37c2c7a9b",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/tests/print_job_wake.rs",
+      "sha256": "f2f8cd1d0ee2edf194a2087a469f3f1b890eb9c952a35f2a4bb9f5bd60318466",
+      "upstreamPath": "crates/print/tests/print_job_wake.rs",
+      "upstreamSha256": "f2f8cd1d0ee2edf194a2087a469f3f1b890eb9c952a35f2a4bb9f5bd60318466",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/tests/print_job_wsd.rs",
+      "sha256": "ca3c4ad749a34f229eeddd380e2886d1d79b60b97f0c6126030d242b18e89186",
+      "upstreamPath": "crates/print/tests/print_job_wsd.rs",
+      "upstreamSha256": "ca3c4ad749a34f229eeddd380e2886d1d79b60b97f0c6126030d242b18e89186",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/tests/print_job.rs",
+      "sha256": "8913f914f441d836b5c11d2830c79728a155987966b25a5dcb299693c70cf100",
+      "upstreamPath": "crates/print/tests/print_job.rs",
+      "upstreamSha256": "8913f914f441d836b5c11d2830c79728a155987966b25a5dcb299693c70cf100",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/tests/registry.rs",
+      "sha256": "725c8609c76350a3771c33fc9ec11360ae33e093e81d80a06e909db3d62e19e0",
+      "upstreamPath": "crates/print/tests/registry.rs",
+      "upstreamSha256": "725c8609c76350a3771c33fc9ec11360ae33e093e81d80a06e909db3d62e19e0",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/tests/wsd_client.rs",
+      "sha256": "f00f6114cfa4eba99a12fc88a9789906ecd3c14d29999e3f1cb91ffe7c7829d7",
+      "upstreamPath": "crates/print/tests/wsd_client.rs",
+      "upstreamSha256": "f00f6114cfa4eba99a12fc88a9789906ecd3c14d29999e3f1cb91ffe7c7829d7",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/tests/wsd_events.rs",
+      "sha256": "7a327be0b37a0fce53c97fa8dbb0926d5ce862c1252f44bddd13f618b8b82748",
+      "upstreamPath": "crates/print/tests/wsd_events.rs",
+      "upstreamSha256": "7a327be0b37a0fce53c97fa8dbb0926d5ce862c1252f44bddd13f618b8b82748",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/tests/wsd_live.rs",
+      "sha256": "07b51cbe32818b0426ff41880042d734e1880e2549fbd90857888314672c3b4a",
+      "upstreamPath": "crates/print/tests/wsd_live.rs",
+      "upstreamSha256": "07b51cbe32818b0426ff41880042d734e1880e2549fbd90857888314672c3b4a",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/print/tests/wsd_registry.rs",
+      "sha256": "1f2460380af9ca17011e3a8ef19ce8057f4e4308e0d803bfe42cee045dcb1f14",
+      "upstreamPath": "crates/print/tests/wsd_registry.rs",
+      "upstreamSha256": "1f2460380af9ca17011e3a8ef19ce8057f4e4308e0d803bfe42cee045dcb1f14",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/wsd/Cargo.toml",
+      "sha256": "b58109a8c0804edb5538549f5b9c6f14827cd3bce5284d3f07cfad0d88704fdc",
+      "upstreamPath": "crates/wsd/Cargo.toml",
+      "upstreamSha256": "b58109a8c0804edb5538549f5b9c6f14827cd3bce5284d3f07cfad0d88704fdc",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/wsd/README.md",
+      "sha256": "0ed5dcc7155b306463172932c368ba5d8f8797297a093a48259e94e6ecc7a487",
+      "upstreamPath": "crates/wsd/README.md",
+      "upstreamSha256": "0ed5dcc7155b306463172932c368ba5d8f8797297a093a48259e94e6ecc7a487",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/wsd/src/addressing.rs",
+      "sha256": "81666d95e54424aba884ab021e5176f40fc964feaaf66ce2ec29f5a74bfd94ad",
+      "upstreamPath": "crates/wsd/src/addressing.rs",
+      "upstreamSha256": "81666d95e54424aba884ab021e5176f40fc964feaaf66ce2ec29f5a74bfd94ad",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/wsd/src/cancel.rs",
+      "sha256": "dc0a4f46c4dc469fa9fb4dff31316b12cc2b912d0f3a6d33f709e1bb76f92fb5",
+      "upstreamPath": "crates/wsd/src/cancel.rs",
+      "upstreamSha256": "dc0a4f46c4dc469fa9fb4dff31316b12cc2b912d0f3a6d33f709e1bb76f92fb5",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/wsd/src/clock.rs",
+      "sha256": "6ab2b7bd03b2bd21d290579d1b19b4cb21b5a3d39a92572898be7dc3d5f3cca4",
+      "upstreamPath": "crates/wsd/src/clock.rs",
+      "upstreamSha256": "ff3a611998b60bf8445077071bc1e2ee526d54061c6dca8d9d4c539e2e9279d1",
+      "disposition": "adapted"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/wsd/src/discovery.rs",
+      "sha256": "4969f8bd53c8911f6581d02cce8b85197ec4bf07a90a1ca861e8a3890d8df758",
+      "upstreamPath": "crates/wsd/src/discovery.rs",
+      "upstreamSha256": "4969f8bd53c8911f6581d02cce8b85197ec4bf07a90a1ca861e8a3890d8df758",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/wsd/src/envelope.rs",
+      "sha256": "d0302e90070f7c827f8d821c524d9dd179acc0bf6778949ec3403e6c4998b758",
+      "upstreamPath": "crates/wsd/src/envelope.rs",
+      "upstreamSha256": "d0302e90070f7c827f8d821c524d9dd179acc0bf6778949ec3403e6c4998b758",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/wsd/src/error.rs",
+      "sha256": "422612ac45b7439ae7ee7f04e199814deb5d6a3260f1a206118dcffc835068cf",
+      "upstreamPath": "crates/wsd/src/error.rs",
+      "upstreamSha256": "422612ac45b7439ae7ee7f04e199814deb5d6a3260f1a206118dcffc835068cf",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/wsd/src/eventing.rs",
+      "sha256": "9a5bc9894eb1152be46973625beb99a6713ff45fb7aa123168dbb5321934a86b",
+      "upstreamPath": "crates/wsd/src/eventing.rs",
+      "upstreamSha256": "9a5bc9894eb1152be46973625beb99a6713ff45fb7aa123168dbb5321934a86b",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/wsd/src/fault.rs",
+      "sha256": "90b9232f55e56c0fded49a121d793d7d4e0a92e0eb33adad8e0bcb4b7dce7c61",
+      "upstreamPath": "crates/wsd/src/fault.rs",
+      "upstreamSha256": "90b9232f55e56c0fded49a121d793d7d4e0a92e0eb33adad8e0bcb4b7dce7c61",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/wsd/src/http.rs",
+      "sha256": "d6fce7451bc55a0997cc5a64afc78c2ba687959cce06e8a86d7ea72804088c15",
+      "upstreamPath": "crates/wsd/src/http.rs",
+      "upstreamSha256": "d6fce7451bc55a0997cc5a64afc78c2ba687959cce06e8a86d7ea72804088c15",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/wsd/src/lib.rs",
+      "sha256": "ca87f19bbf01d3c85c2dde071bedfc44710e9a94e3c1b9f50c2f64542a4eaa95",
+      "upstreamPath": "crates/wsd/src/lib.rs",
+      "upstreamSha256": "ca87f19bbf01d3c85c2dde071bedfc44710e9a94e3c1b9f50c2f64542a4eaa95",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/wsd/src/metadata.rs",
+      "sha256": "fb2ff895d00a001f4a8f05eca1283179daf65a6e406b502deb0e3d44d4f53c5d",
+      "upstreamPath": "crates/wsd/src/metadata.rs",
+      "upstreamSha256": "fb2ff895d00a001f4a8f05eca1283179daf65a6e406b502deb0e3d44d4f53c5d",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/wsd/src/mtom.rs",
+      "sha256": "acef686f31554ca08e896bfb5e0a20a578c81998f7fe1d5850af46526ce64b39",
+      "upstreamPath": "crates/wsd/src/mtom.rs",
+      "upstreamSha256": "acef686f31554ca08e896bfb5e0a20a578c81998f7fe1d5850af46526ce64b39",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/wsd/src/ns.rs",
+      "sha256": "8fbac1d660b45a5c30c3fcb451bdb795e1c821473703cad038dc633e1bfc0fd4",
+      "upstreamPath": "crates/wsd/src/ns.rs",
+      "upstreamSha256": "8fbac1d660b45a5c30c3fcb451bdb795e1c821473703cad038dc633e1bfc0fd4",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/wsd/src/policy.rs",
+      "sha256": "a0f3b91f090dc3b5170dadc9a1d7e7ed226b62fe1dfcf2f2270b69d7a4f588d7",
+      "upstreamPath": "crates/wsd/src/policy.rs",
+      "upstreamSha256": "a0f3b91f090dc3b5170dadc9a1d7e7ed226b62fe1dfcf2f2270b69d7a4f588d7",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/wsd/src/retry.rs",
+      "sha256": "029f1390bc9257057fa9451917c45de7cbc2b98d7ec33b1b79014fccbbbe98ac",
+      "upstreamPath": "crates/wsd/src/retry.rs",
+      "upstreamSha256": "029f1390bc9257057fa9451917c45de7cbc2b98d7ec33b1b79014fccbbbe98ac",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/wsd/src/service.rs",
+      "sha256": "76fda794005e7fb1697667908d134c20a408da08cfe36cb370ccec76f316814a",
+      "upstreamPath": "crates/wsd/src/service.rs",
+      "upstreamSha256": "76fda794005e7fb1697667908d134c20a408da08cfe36cb370ccec76f316814a",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/wsd/src/soap.rs",
+      "sha256": "ba94f36bd5d7a955291f3ce57ad5dcef278d82fbda8df7cd5ed03f15dcbf3dc0",
+      "upstreamPath": "crates/wsd/src/soap.rs",
+      "upstreamSha256": "ba94f36bd5d7a955291f3ce57ad5dcef278d82fbda8df7cd5ed03f15dcbf3dc0",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/wsd/src/testing.rs",
+      "sha256": "11ac23579bd98646c4d35f6a17cbb40493728a778bafbe9d12551a61a7db6985",
+      "upstreamPath": "crates/wsd/src/testing.rs",
+      "upstreamSha256": "11ac23579bd98646c4d35f6a17cbb40493728a778bafbe9d12551a61a7db6985",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/wsd/src/transport.rs",
+      "sha256": "5456deaee553a64f8e268baa017398ce682922956a31e84283d6104e107ef3a7",
+      "upstreamPath": "crates/wsd/src/transport.rs",
+      "upstreamSha256": "5456deaee553a64f8e268baa017398ce682922956a31e84283d6104e107ef3a7",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/wsd/src/xml.rs",
+      "sha256": "92aea2e34ef8396daa09e8c042f3db91e7a02ad15a4a3004ec291b8afd168753",
+      "upstreamPath": "crates/wsd/src/xml.rs",
+      "upstreamSha256": "92aea2e34ef8396daa09e8c042f3db91e7a02ad15a4a3004ec291b8afd168753",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/wsd/tests/http_transport.rs",
+      "sha256": "423fdf00964dd249add5b2c505850d88b1258010e378ca311498e11db3b3de96",
+      "upstreamPath": "crates/wsd/tests/http_transport.rs",
+      "upstreamSha256": "423fdf00964dd249add5b2c505850d88b1258010e378ca311498e11db3b3de96",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/wsd/tests/live_loopback.rs",
+      "sha256": "fe5af7f894ed9bf936f5e2431867dba83279961d2e4ecd9ab7880ba184865763",
+      "upstreamPath": "crates/wsd/tests/live_loopback.rs",
+      "upstreamSha256": "fe5af7f894ed9bf936f5e2431867dba83279961d2e4ecd9ab7880ba184865763",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/crates/wsd/tests/two_services.rs",
+      "sha256": "7ea830b1981b00e5499e88df1d6dab514c7acf4fef0cc1d49476518f5b5fb37d",
+      "upstreamPath": "crates/wsd/tests/two_services.rs",
+      "upstreamSha256": "7ea830b1981b00e5499e88df1d6dab514c7acf4fef0cc1d49476518f5b5fb37d",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/LICENSE-APACHE",
+      "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+      "upstreamPath": "LICENSE-APACHE",
+      "upstreamSha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/LICENSE-MIT",
+      "sha256": "2f42c0cafc8ad394d91373fe1f342aee5453850b151a51405c68cae9ada86d26",
+      "upstreamPath": "LICENSE-MIT",
+      "upstreamSha256": "2f42c0cafc8ad394d91373fe1f342aee5453850b151a51405c68cae9ada86d26",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-stack/NATIVE-ADAPTATION.md",
+      "sha256": "3db3b61192bd7d85556bae1f3a432d5d32446cb0cca69ec98b39ac64b52e4f0f",
+      "upstreamPath": null,
+      "upstreamSha256": null,
+      "disposition": "local"
+    },
+    {
+      "path": "vendor/craft-print-stack/NOTICE",
+      "sha256": "2efbad2703422fd4ecf74b6edec47717e8843b82fd3770ed1ca58dfbe0dec9c0",
+      "upstreamPath": "NOTICE",
+      "upstreamSha256": "2efbad2703422fd4ecf74b6edec47717e8843b82fd3770ed1ca58dfbe0dec9c0",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-ui/Cargo.lock",
+      "sha256": "dfaa61dac72e41c20594fa954f779b5e0ba5bb50001e80ddc9e6c93c7288fea4",
+      "upstreamPath": "Cargo.lock",
+      "upstreamSha256": "a570407300e5ab41e20ef202501ec25e39a51b1c33e5a79aeda2395a0cab40ea",
+      "disposition": "adapted"
+    },
+    {
+      "path": "vendor/craft-print-ui/Cargo.toml",
+      "sha256": "62de75cc194d339d3610b1e188848ca6b533cc5309777d4f9c083507cd4358aa",
+      "upstreamPath": "Cargo.toml",
+      "upstreamSha256": "49bbadbbed5855feab62a2226fe8e8256e272bfca7ed265dc2c3c966d8b67939",
+      "disposition": "adapted"
+    },
+    {
+      "path": "vendor/craft-print-ui/LICENSE-APACHE",
+      "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+      "upstreamPath": "LICENSE-APACHE",
+      "upstreamSha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-ui/LICENSE-MIT",
+      "sha256": "2f42c0cafc8ad394d91373fe1f342aee5453850b151a51405c68cae9ada86d26",
+      "upstreamPath": "LICENSE-MIT",
+      "upstreamSha256": "2f42c0cafc8ad394d91373fe1f342aee5453850b151a51405c68cae9ada86d26",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-ui/NOTICE",
+      "sha256": "834f66f04bcadcbc9ce88177fb586ec73478336ae95427065f9dedc9544b4cf1",
+      "upstreamPath": "NOTICE",
+      "upstreamSha256": "834f66f04bcadcbc9ce88177fb586ec73478336ae95427065f9dedc9544b4cf1",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-ui/src/capability.rs",
+      "sha256": "d813d8981866d889c318976cb9953646c510b81f8d26adbe5e83b1a7d1c3ecb9",
+      "upstreamPath": "crates/ui/src/capability.rs",
+      "upstreamSha256": "d813d8981866d889c318976cb9953646c510b81f8d26adbe5e83b1a7d1c3ecb9",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-ui/src/lib.rs",
+      "sha256": "3df6ad446912e37e0243eb3050fe9c6d83860276e8e034a15d9f3bc5fd0c0304",
+      "upstreamPath": "crates/ui/src/lib.rs",
+      "upstreamSha256": "6602e5bda6bc2465c85f26efb2f37cf06112bf47a45084f0a1068e19dbefc330",
+      "disposition": "adapted"
+    },
+    {
+      "path": "vendor/craft-print-ui/src/printing/network/tests.rs",
+      "sha256": "5317a7cdb092fb6d036484547477e8c252d9a055806ebb22974884ac4a600011",
+      "upstreamPath": "crates/ui/src/printing/network/tests.rs",
+      "upstreamSha256": "5317a7cdb092fb6d036484547477e8c252d9a055806ebb22974884ac4a600011",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-ui/src/printing/network.rs",
+      "sha256": "e41c49de90d3d16192248071d3df749bf167796b6dc0492817cbca0ceb50db0f",
+      "upstreamPath": "crates/ui/src/printing/network.rs",
+      "upstreamSha256": "e41c49de90d3d16192248071d3df749bf167796b6dc0492817cbca0ceb50db0f",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-ui/src/printing/tests.rs",
+      "sha256": "e86b7ab59297493d506f0b9e0044b845e0129999c952d12113d3939bfd35ec4b",
+      "upstreamPath": "crates/ui/src/printing/tests.rs",
+      "upstreamSha256": "e86b7ab59297493d506f0b9e0044b845e0129999c952d12113d3939bfd35ec4b",
+      "disposition": "unchanged"
+    },
+    {
+      "path": "vendor/craft-print-ui/src/printing.rs",
+      "sha256": "1c5320620bbddb36f836ec6bfe9db210906c477f1aecd593c6db5c5f36244a22",
+      "upstreamPath": "crates/ui/src/printing.rs",
+      "upstreamSha256": "1c5320620bbddb36f836ec6bfe9db210906c477f1aecd593c6db5c5f36244a22",
+      "disposition": "unchanged"
+    }
+  ]
+}

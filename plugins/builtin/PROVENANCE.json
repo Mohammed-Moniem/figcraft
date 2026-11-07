@@ -1,0 +1,425 @@
+{
+  "schemaVersion": 1,
+  "license": "MIT OR Apache-2.0",
+  "upstreamPR": {
+    "number": 174,
+    "head": "9ff853ef61ed9d4ef7ad1118df5258e879c02d82"
+  },
+  "toolchain": "Rust 1.95.0",
+  "target": "wasm32-unknown-unknown",
+  "command": [
+    "cargo",
+    "build",
+    "--locked",
+    "--offline",
+    "--workspace",
+    "--release",
+    "--target",
+    "wasm32-unknown-unknown"
+  ],
+  "sourceInputsExclude": [
+    "builtin/ (generated output modules and documentation)"
+  ],
+  "sourceDigest": "0a68a8800759ada37751feaa27fe1a8a3ac2fa7625bcac34a221c751c105aaee",
+  "sourceFiles": {
+    "Cargo.lock": "f7032cfa70b7ff25e2342a8e38ca3f14c3f988ab41312f663511d5fd9f26fc94",
+    "Cargo.toml": "3fc3bc8f072d6f825231676456e096390ec24afb8e17c9bbd01db9626ded146c",
+    "examples/counter/Cargo.toml": "63c299dc6d84ea6d67f456927902ed1a4dfa588edb432785fb1fb4cd0af20cd2",
+    "examples/counter/figcraft-plugin.json": "f72a0d251e415c7c97a3b3dca5ac554a8bd36a10a21356fc37965459fa12665f",
+    "examples/counter/src/lib.rs": "24fa7b7b6abf6b129cd7c10614192fe16454d81f8e0ed210e5d971302bbba0ec",
+    "examples/dot-grid/Cargo.toml": "7e748dc7dde8d1da0558f3a7bda9be76a28cbdfbb443c527b98adeabd7337f7c",
+    "examples/dot-grid/figcraft-plugin.json": "f965746d6ca0b839780e933c7bb0517dfbc1522fb4a925641ce2d27af1be3ce5",
+    "examples/dot-grid/src/lib.rs": "0671eb2ca8af74b131943ffd9ba0c1f77beaf3a56ff7d58952d7d5ec3cce6ed1",
+    "examples/export-names/Cargo.toml": "7695351500a014ea23f4bd1aaa939d38f36c598884907684b1787629d28b3f82",
+    "examples/export-names/figcraft-plugin.json": "c08426d2f6989ceb3c6b687877479b550a116c76ed6932edca8172d6b8e03d43",
+    "examples/export-names/src/lib.rs": "035e6f735ec93b8f72833f97b4aaf8ce75d1605a7e28e7bf5d06f3940bddbe3d",
+    "examples/focus-list/Cargo.toml": "b50b53ff0ad20021cade79ca27b902e5700f7275a4cdcf30c8d99ff11a40ac99",
+    "examples/focus-list/figcraft-plugin.json": "2efef2931e4ec72f0940ae9b196ece90dd193e784ed3a160afbea2a2a6c643e1",
+    "examples/focus-list/src/lib.rs": "07f2d501860b3b357fc10f0efb90e377d809eb1638af0ef9f16fc77f5ddc49f2",
+    "examples/swatch-grid/Cargo.toml": "2bdefd5cdb8ec1c1847e54ff11e4f25935dc06069971852a00252519c27d2f67",
+    "examples/swatch-grid/figcraft-plugin.json": "68f7c9a03164a55f6a867a00d43f1becb4dfa3e7b1316268027e3d0ecfd6d3ef",
+    "examples/swatch-grid/src/lib.rs": "c45e77152ba355bbc52df228a991e9278bfbca77d16e241e097dc423498313c7",
+    "examples/tidy-names/Cargo.toml": "10e49bda5aea43aa4645f992296c3939a79acf1be13f66da5636994a3b6b4ead",
+    "examples/tidy-names/figcraft-plugin.json": "9d102414deb588d8d231f870b190f678a7a3881f45995ed4930a3c701ef15d2a",
+    "examples/tidy-names/src/lib.rs": "110ba35f4035c4ecf5e70eb3c638b26ee5a7089b4483d572c46099161d09fbb4",
+    "sdk/Cargo.toml": "e1a0abb98084d4c6610efe73f2fde944582d2e81f1408303e34a59f28d073336",
+    "sdk/src/lib.rs": "106a97fb0d66b67d7889c234b20b99bbc64c94e0a6021cced8fb462ec07b2452",
+    "sdk/src/ui.rs": "dbb08d125123ee6c8625bb4561b2c979509e31d8b5171b4e0122d92faaa6cb57"
+  },
+  "modules": [
+    {
+      "example": "counter",
+      "module": "counter.wasm",
+      "sha256": "d6c3abbab88796f32c1fc7dea1c3c9767fc51ed27a6510aa1c00c221daf15039",
+      "bytes": 92966,
+      "manifestSha256": "f72a0d251e415c7c97a3b3dca5ac554a8bd36a10a21356fc37965459fa12665f",
+      "version": "1.3.0",
+      "api": 6,
+      "imports": [
+        {
+          "module": "figcraft",
+          "name": "ui_close",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "ui_show",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "widget_render",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "set_output",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "reply_len",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "reply_read",
+          "kind": "function"
+        }
+      ],
+      "exports": [
+        {
+          "name": "memory",
+          "kind": "memory"
+        },
+        {
+          "name": "figcraft_run",
+          "kind": "function"
+        },
+        {
+          "name": "__data_end",
+          "kind": "global"
+        },
+        {
+          "name": "__heap_base",
+          "kind": "global"
+        }
+      ]
+    },
+    {
+      "example": "dot-grid",
+      "module": "dot_grid.wasm",
+      "sha256": "bacf318d772ed467c64b14f61fc28e8945a9c92cf40b793e0a10ba7560351109",
+      "bytes": 107940,
+      "manifestSha256": "f965746d6ca0b839780e933c7bb0517dfbc1522fb4a925641ce2d27af1be3ce5",
+      "version": "1.0.0",
+      "api": 6,
+      "imports": [
+        {
+          "module": "figcraft",
+          "name": "ui_show",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "notify",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "ui_close",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "set_output",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "reply_len",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "reply_read",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "call",
+          "kind": "function"
+        }
+      ],
+      "exports": [
+        {
+          "name": "memory",
+          "kind": "memory"
+        },
+        {
+          "name": "figcraft_run",
+          "kind": "function"
+        },
+        {
+          "name": "__data_end",
+          "kind": "global"
+        },
+        {
+          "name": "__heap_base",
+          "kind": "global"
+        }
+      ]
+    },
+    {
+      "example": "export-names",
+      "module": "export_names.wasm",
+      "sha256": "1da0826e239b3fcb3d2060c948454a0d5069dee59644ed66ab4d31cacc67b88a",
+      "bytes": 55900,
+      "manifestSha256": "c08426d2f6989ceb3c6b687877479b550a116c76ed6932edca8172d6b8e03d43",
+      "version": "1.0.0",
+      "api": 4,
+      "imports": [
+        {
+          "module": "figcraft",
+          "name": "call",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "save_file",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "notify",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "set_output",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "reply_len",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "reply_read",
+          "kind": "function"
+        }
+      ],
+      "exports": [
+        {
+          "name": "memory",
+          "kind": "memory"
+        },
+        {
+          "name": "figcraft_run",
+          "kind": "function"
+        },
+        {
+          "name": "__data_end",
+          "kind": "global"
+        },
+        {
+          "name": "__heap_base",
+          "kind": "global"
+        }
+      ]
+    },
+    {
+      "example": "focus-list",
+      "module": "focus_list.wasm",
+      "sha256": "e7ccf693e1c23debc45ab63f2a4d57a65ccbbd84c10aca147e029b8014fe50dd",
+      "bytes": 82931,
+      "manifestSha256": "2efef2931e4ec72f0940ae9b196ece90dd193e784ed3a160afbea2a2a6c643e1",
+      "version": "1.0.0",
+      "api": 6,
+      "imports": [
+        {
+          "module": "figcraft",
+          "name": "widget_timer",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "notify",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "widget_render",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "set_output",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "reply_len",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "reply_read",
+          "kind": "function"
+        }
+      ],
+      "exports": [
+        {
+          "name": "memory",
+          "kind": "memory"
+        },
+        {
+          "name": "figcraft_run",
+          "kind": "function"
+        },
+        {
+          "name": "__data_end",
+          "kind": "global"
+        },
+        {
+          "name": "__heap_base",
+          "kind": "global"
+        }
+      ]
+    },
+    {
+      "example": "swatch-grid",
+      "module": "swatch_grid.wasm",
+      "sha256": "3542c8bc77578bf7fa818ea53d7b2aa15a3d33da06994e67f819c8b390230685",
+      "bytes": 104571,
+      "manifestSha256": "68f7c9a03164a55f6a867a00d43f1becb4dfa3e7b1316268027e3d0ecfd6d3ef",
+      "version": "1.2.0",
+      "api": 2,
+      "imports": [
+        {
+          "module": "figcraft",
+          "name": "log",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "notify",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "ui_show",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "setting_set",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "ui_close",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "setting_get",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "set_output",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "reply_len",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "reply_read",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "call",
+          "kind": "function"
+        }
+      ],
+      "exports": [
+        {
+          "name": "memory",
+          "kind": "memory"
+        },
+        {
+          "name": "figcraft_run",
+          "kind": "function"
+        },
+        {
+          "name": "__data_end",
+          "kind": "global"
+        },
+        {
+          "name": "__heap_base",
+          "kind": "global"
+        }
+      ]
+    },
+    {
+      "example": "tidy-names",
+      "module": "tidy_names.wasm",
+      "sha256": "be798d3e56784ecbe0ff9beddfa318e5ce05b378bcc5b8fa5bb42c98878c2efe",
+      "bytes": 101804,
+      "manifestSha256": "9d102414deb588d8d231f870b190f678a7a3881f45995ed4930a3c701ef15d2a",
+      "version": "1.0.0",
+      "api": 1,
+      "imports": [
+        {
+          "module": "figcraft",
+          "name": "notify",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "set_output",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "reply_len",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "reply_read",
+          "kind": "function"
+        },
+        {
+          "module": "figcraft",
+          "name": "call",
+          "kind": "function"
+        }
+      ],
+      "exports": [
+        {
+          "name": "memory",
+          "kind": "memory"
+        },
+        {
+          "name": "figcraft_run",
+          "kind": "function"
+        },
+        {
+          "name": "__data_end",
+          "kind": "global"
+        },
+        {
+          "name": "__heap_base",
+          "kind": "global"
+        }
+      ]
+    }
+  ]
+}
