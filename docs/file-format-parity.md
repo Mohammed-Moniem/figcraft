@@ -83,6 +83,13 @@ string that orders it among its siblings; vector networks and outlines go in blo
 each. `.fig` export warns and drops vector region paint stacks; import and editing preserve their
 source paint coordinates.
 
+The local opening-page fix for #2045 writes the active page first, keeping all remaining pages in
+their relative order and using the active page's background for archive metadata. The in-memory
+document is unchanged; reopening that export uses the exported order. Layer-budget assignment
+prioritises that page too. This is covered by generated round trips, including a capped export,
+and does not establish a new external-Figma or Windows acceptance result. See
+[the local issue-fix notes](issue-fixes-2026-11-07.md).
+
 - **Written:** pages (name, background); frames, groups, sections, rectangles (as rounded
   rectangles, with their four radii), ellipses (arcs), polygons, stars, lines, vectors (editable
   network blobs with per-point corner radius, handle mirroring, caps and joins, plus the outline of

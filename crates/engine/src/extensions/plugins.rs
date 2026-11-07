@@ -804,14 +804,45 @@ fn slugify(name: &str) -> String {
 }
 
 /// Compute a forward-slash relative path from `base_dir` to `target_dir` when they share a root.
+/// Cargo resolves a generated manifest from its real directory. Resolve existing ancestors first
+/// so `/var`/`/private/var` and user-selected folder aliases cannot change what its `..` names.
 #[cfg(not(target_arch = "wasm32"))]
-fn relative_sdk_path(base_dir: &std::path::Path, target_dir: &std::path::Path) -> String {
+#[allow(clippy::disallowed_methods)]
+fn relative_sdk_path(base_dir: &std::path::Path, target_dir: &std::path::Path) -> Result<String> {
     use std::path::Component;
+    let base_dir = crate::file_access::allow(base_dir, crate::file_access::Access::Write)?;
+    let target_dir = crate::file_access::allow(target_dir, crate::file_access::Access::Read)?;
+    // The project need not exist yet. Only inspect paths already admitted by the automation
+    // roots; all eventual writes still go through file_access and recheck those roots.
+    let mut rest = Vec::new();
+    let mut at = base_dir.as_path();
+    let base_dir = loop {
+        match std::fs::canonicalize(at) {
+            Ok(mut resolved) => {
+                for name in rest.iter().rev() {
+                    resolved.push(name);
+                }
+                break resolved;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if std::fs::symlink_metadata(at).is_ok() {
+                    return Err(bad("plugin.create", "the project folder contains a broken symbolic link"));
+                }
+                match at.components().next_back() {
+                    Some(Component::Normal(name)) => rest.push(name.to_os_string()),
+                    _ => return Err(bad("plugin.create", "the project folder has no existing parent")),
+                }
+                at = at.parent().ok_or_else(|| bad("plugin.create", "the project folder has no existing parent"))?;
+            }
+            Err(e) => return Err(bad("plugin.create", format!("could not resolve the project folder: {e}"))),
+        }
+    };
+    let target_dir = std::fs::canonicalize(target_dir).map_err(|e| bad("plugin.create", format!("could not resolve the plugin SDK folder: {e}")))?;
     let base: Vec<Component<'_>> = base_dir.components().filter(|c| !matches!(c, Component::CurDir)).collect();
     let target: Vec<Component<'_>> = target_dir.components().filter(|c| !matches!(c, Component::CurDir)).collect();
     let common = base.iter().zip(target.iter()).take_while(|(a, b)| a == b).count();
     if common == 0 {
-        return target_dir.to_string_lossy().replace('\\', "/");
+        return Ok(target_dir.to_string_lossy().replace('\\', "/"));
     }
     let mut parts: Vec<String> = Vec::new();
     for c in &base[common..] {
@@ -824,7 +855,7 @@ fn relative_sdk_path(base_dir: &std::path::Path, target_dir: &std::path::Path) -
             parts.push(s.to_string_lossy().into_owned());
         }
     }
-    if parts.is_empty() { ".".into() } else { parts.join("/") }
+    Ok(if parts.is_empty() { ".".into() } else { parts.join("/") })
 }
 
 /// Resolve the path to `figcraft-plugin-sdk` relative to `project_dir`.
@@ -832,16 +863,16 @@ fn relative_sdk_path(base_dir: &std::path::Path, target_dir: &std::path::Path) -
 fn resolve_sdk_path(cmd: &str, project_dir: &std::path::Path, explicit: Option<&str>) -> Result<String> {
     if let Some(sdk) = explicit.map(str::trim).filter(|s| !s.is_empty()) {
         let abs = std::path::PathBuf::from(crate::library::absolute_path(sdk));
-        return Ok(relative_sdk_path(project_dir, &abs));
+        return relative_sdk_path(project_dir, &abs);
     }
     if let Some(env_sdk) = std::env::var_os("FIGCRAFT_PLUGIN_SDK").filter(|v| !v.is_empty()) {
         let abs = std::path::PathBuf::from(crate::library::absolute_path(&env_sdk.to_string_lossy()));
-        return Ok(relative_sdk_path(project_dir, &abs));
+        return relative_sdk_path(project_dir, &abs);
     }
     if let Some(repo_root) = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().and_then(std::path::Path::parent) {
         let sdk_dir = repo_root.join("plugins").join("sdk");
         if crate::file_access::exists(sdk_dir.join("Cargo.toml")) {
-            return Ok(relative_sdk_path(project_dir, &sdk_dir));
+            return relative_sdk_path(project_dir, &sdk_dir);
         }
     }
     Err(bad(cmd, "couldn't determine the `figcraft-plugin-sdk` location; set `sdk` or `FIGCRAFT_PLUGIN_SDK`"))
@@ -1010,7 +1041,7 @@ fn run(input: Input) -> Result<Value> {{
                 "permissions": {
                     "access": "read",
                     "saveFile": true,
-                    "commands": ["node.list"]
+                    "commands": ["node.get"]
                 },
                 "commands": [
                     { "id": "export", "label": format!("{name}…") }
@@ -1020,11 +1051,27 @@ fn run(input: Input) -> Result<Value> {{
 
 entry!(run);
 
-fn run(_input: Input) -> Result<Value> {
-    let nodes = call("node.list", &json!({}))?;
-    let bytes = serde_json::to_vec_pretty(&nodes).map_err(|e| e.to_string())?;
+fn run(input: Input) -> Result<Value> {
+    if input.selection.is_empty() {
+        return Err("Select the layers to export first".into());
+    }
+    if input.selection.len() > 10_000 {
+        return Err("Select at most 10000 layers to export".into());
+    }
+    let mut layers = Vec::with_capacity(input.selection.len());
+    let mut name_bytes = 0usize;
+    for id in input.selection {
+        let node = call("node.get", &json!({"id":id,"fields":["name"]}))?;
+        let name = node["name"].as_str().unwrap_or_default();
+        name_bytes = name_bytes.saturating_add(name.len());
+        if name_bytes > 256 * 1024 {
+            return Err("The selected layer names exceed 256 KiB".into());
+        }
+        layers.push(json!({"id":id,"name":name}));
+    }
+    let bytes = serde_json::to_vec_pretty(&layers).map_err(|e| e.to_string())?;
     save_file("layers.json", "application/json", &bytes)?;
-    Ok(json!({"saved": "layers.json"}))
+    Ok(json!({"saved":"layers.json","layers":layers.len()}))
 }
 "#
             .to_string(),

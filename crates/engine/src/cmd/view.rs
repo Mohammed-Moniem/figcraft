@@ -34,6 +34,7 @@ const TOGGLES: &[(&str, Slot, bool)] = &[
     ("view.multiplayerCursors", |v| &mut v.multiplayer_cursors, true),
     ("view.outlines", |v| &mut v.outlines, false),
     ("view.outlinesSelection", |v| &mut v.outlines_selection, false),
+    ("view.selectionOutlines", |v| &mut v.selection_outlines, false),
     ("view.outlinesHiddenLayers", |v| &mut v.outline_hidden, true),
     ("view.outlinesObjectBounds", |v| &mut v.outline_bounds, true),
     ("view.maskOutlines", |v| &mut v.mask_outlines, true),
@@ -293,6 +294,13 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!("view.outlinesSelection", "Outlines for selection", "{on?}  outline mode for the selected layers only", false, |s, p| {
             toggle(s, p, "view.outlinesSelection")
         }),
+        spec!(
+            "view.selectionOutlines",
+            "Selection outlines",
+            "{on?}  show the selected layers' outlines, transform handles and size labels; hiding them keeps the selection editable",
+            false,
+            |s, p| { toggle(s, p, "view.selectionOutlines") }
+        ),
         spec!(
             "view.outlinesHiddenLayers",
             "Include hidden layers in outlines",

@@ -154,6 +154,8 @@ mod import_report_tests;
 #[cfg(test)]
 mod inspect_fields_tests;
 #[cfg(test)]
+mod layer_preview_tests;
+#[cfg(test)]
 mod layers_behaviour_tests;
 #[cfg(test)]
 mod layers_drag_tests;

@@ -336,12 +336,12 @@ pub fn ellipse(width: f64, height: f64, start: f64, sweep: f64, inner: f64) -> B
     let full = full_sweep(sweep);
     let mut path = BezPath::new();
     if full && inner <= 0.0 {
-        return kurbo::Ellipse::new(c, (rx, ry), 0.0).to_path(0.01);
+        return whole_ellipse(c, rx, ry);
     }
     if full {
         // A ring: outer clockwise, inner counter-clockwise.
-        path.extend(kurbo::Ellipse::new(c, (rx, ry), 0.0).path_elements(0.01));
-        let inner_path = kurbo::Ellipse::new(c, (rx * inner, ry * inner), 0.0).to_path(0.01);
+        path.extend(whole_ellipse(c, rx, ry));
+        let inner_path = whole_ellipse(c, rx * inner, ry * inner);
         path.extend(inner_path.reverse_subpaths());
         return path;
     }
@@ -356,6 +356,21 @@ pub fn ellipse(width: f64, height: f64, start: f64, sweep: f64, inner: f64) -> B
     } else {
         path.line_to(c);
     }
+    path.close_path();
+    path
+}
+
+/// A whole ellipse has four editable anchors, at its extremes. Tolerance-based arc subdivision
+/// changes the number and positions of anchors with the ellipse's size (#2080).
+fn whole_ellipse(c: Point, rx: f64, ry: f64) -> BezPath {
+    let k = 4.0 / 3.0 * (PI / 8.0).tan();
+    let (x, y) = (rx * k, ry * k);
+    let mut path = BezPath::new();
+    path.move_to((c.x + rx, c.y));
+    path.curve_to((c.x + rx, c.y + y), (c.x + x, c.y + ry), (c.x, c.y + ry));
+    path.curve_to((c.x - x, c.y + ry), (c.x - rx, c.y + y), (c.x - rx, c.y));
+    path.curve_to((c.x - rx, c.y - y), (c.x - x, c.y - ry), (c.x, c.y - ry));
+    path.curve_to((c.x + x, c.y - ry), (c.x + rx, c.y - y), (c.x + rx, c.y));
     path.close_path();
     path
 }

@@ -127,13 +127,45 @@ fn smoothed_polygon_smooths_every_corner() {
 #[test]
 fn ellipse_ring_area() {
     let full = area(&ellipse(100.0, 100.0, 0.0, TAU, 0.0));
-    assert!((full - PI * 2500.0).abs() < 2.0);
+    // Four standard quarter-circle cubics differ in area from a circle by about 0.028%.
+    assert!((full - PI * 2500.0).abs() < 3.0);
     let ring = ellipse(100.0, 100.0, 0.0, TAU, 0.5);
     // Winding area of a ring with a reversed inner contour: outer - inner.
     let a = ring.area().abs();
     assert!((a - PI * (2500.0 - 625.0)).abs() < 5.0, "{a}");
     let half = area(&ellipse(100.0, 100.0, 0.0, PI, 0.0));
     assert!((half - PI * 1250.0).abs() < 2.0);
+}
+
+#[test]
+fn issue_2080_whole_ellipses_have_four_anchors_at_the_extremes() {
+    for (w, h) in [(100.0, 100.0), (320.0, 40.0), (1.0, 400.0)] {
+        for sweep in [TAU, -TAU] {
+            let path = ellipse(w, h, 1.3, sweep, 0.0);
+            let anchors: Vec<_> = path
+                .elements()
+                .iter()
+                .filter_map(|e| match e {
+                    kurbo::PathEl::CurveTo(_, _, end) => Some(*end),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(anchors, vec![Point::new(w / 2.0, h), Point::new(0.0, h / 2.0), Point::new(w / 2.0, 0.0), Point::new(w, h / 2.0)]);
+            assert!(matches!(path.elements().last(), Some(kurbo::PathEl::ClosePath)));
+        }
+    }
+}
+
+#[test]
+fn issue_2080_whole_rings_have_four_anchors_on_each_closed_contour() {
+    let path = ellipse(200.0, 100.0, 0.0, TAU, 0.5);
+    let contours = split_subpaths(&path);
+    assert_eq!(contours.len(), 2);
+    for contour in &contours {
+        assert_eq!(contour.elements().iter().filter(|e| matches!(e, kurbo::PathEl::CurveTo(..))).count(), 4);
+        assert!(matches!(contour.elements().last(), Some(kurbo::PathEl::ClosePath)));
+    }
+    assert!(contours[0].area() * contours[1].area() < 0.0, "the hole must keep opposite winding");
 }
 
 #[test]

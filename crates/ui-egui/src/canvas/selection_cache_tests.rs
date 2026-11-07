@@ -137,6 +137,46 @@ fn the_hover_and_drop_highlights_show_over_kept_geometry() {
 }
 
 #[test]
+fn the_selection_outlines_menu_hides_chrome_while_properties_and_hit_tests_keep_working() {
+    let (mut app, ctx, ids) = setup();
+    let selected = app.session.selection();
+    let document = app.session.ds().unwrap().doc.clone();
+    let undo = app.session.ds().unwrap().history.undo.len();
+    let visible = drawn(&app, &ctx);
+    crate::menus::invoke(&mut app, "view.selectionOutlines");
+    let hidden = drawn(&app, &ctx);
+    assert!(hidden < visible, "hiding selection outlines removes its outlines, transform handles and size label");
+    assert_eq!(app.session.selection(), selected);
+    assert!(Arc::ptr_eq(&document, &app.session.ds().unwrap().doc));
+    assert_eq!(app.session.ds().unwrap().history.undo.len(), undo);
+    crate::menus::invoke(&mut app, "view.selectionOutlines");
+    assert_eq!(drawn(&app, &ctx), visible, "the same menu action restores the overlay immediately");
+    crate::menus::invoke(&mut app, "view.selectionOutlines");
+
+    // Changing a visual property while the overlay is hidden still edits the selected objects,
+    // and Undo restores the property without switching the overlay back on.
+    app.set_props(&[ids[1]], json!({"topLeftRadius": 20}));
+    assert_eq!(app.session.doc().unwrap().node(ids[1]).unwrap().corners.radii[0], 20.0);
+    assert_eq!(app.session.selection(), selected);
+    assert_eq!(drawn(&app, &ctx), hidden);
+    app.session.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(app.session.doc().unwrap().node(ids[1]).unwrap().corners.radii[0], 12.0);
+    assert!(!app.session.ds().unwrap().view.selection_outlines);
+
+    // A hidden outline changes only the paint, not the layer or transform hit geometry.
+    app.session.execute("select.none", &json!({})).unwrap();
+    let ev = |kind, x, y| PointerEvent { cmd: true, ..PointerEvent::at(kind, x, y, 1.0) };
+    app.session.pointer(&ev(PointerKind::Down, 250.0, 10.0)).unwrap();
+    app.session.pointer(&ev(PointerKind::Move, 270.0, 30.0)).unwrap();
+    app.session.pointer(&ev(PointerKind::Up, 270.0, 30.0)).unwrap();
+    assert_eq!(app.session.selection(), vec![ids[3]]);
+    let moved = app.session.doc().unwrap().node(ids[3]).unwrap();
+    assert!((moved.transform.translation().x - 260.0).abs() < 1e-6);
+    assert!((moved.transform.translation().y - 20.0).abs() < 1e-6);
+    assert!(!app.session.ds().unwrap().view.selection_outlines);
+}
+
+#[test]
 fn the_design_panels_instance_facts_follow_edits_and_the_selection() {
     let mut s = Session::new();
     let f = id(s.execute("node.create", &json!({"type": "frame", "x": 0, "y": 0, "width": 100, "height": 100})).unwrap());

@@ -84,6 +84,44 @@ fn the_options_are_view_toggles_checked_in_the_menu() {
 }
 
 #[test]
+fn selection_outlines_are_a_temporary_view_setting_with_a_visible_menu_action() {
+    let mut s = Session::new();
+    let layer = id(&ex(&mut s, "shape.rectangle", json!({"x": 10, "y": 20, "width": 100, "height": 80})));
+    s.ds_mut().unwrap().mark_saved();
+    let doc = s.ds().unwrap().doc.clone();
+    let undo = s.ds().unwrap().history.undo.len();
+    let cmd = "view.selectionOutlines";
+    assert_eq!(crate::cmd::view::checked(&s, cmd), Some(true));
+    let item = crate::catalog::MENU.iter().find(|m| m.id == cmd).expect("Selection outlines menu item");
+    assert_eq!((item.menu, item.label), ("View", "Selection outlines"));
+    assert_eq!(ex(&mut s, cmd, json!({}))["on"], false);
+    assert_eq!(crate::cmd::view::checked(&s, cmd), Some(false));
+    assert_eq!(s.selection(), vec![layer], "hiding the overlay keeps the selected layer editable");
+    assert!(std::sync::Arc::ptr_eq(&doc, &s.ds().unwrap().doc), "the document is untouched");
+    assert_eq!(s.ds().unwrap().history.undo.len(), undo, "a view setting adds no undo step");
+    assert!(!s.ds().unwrap().is_dirty());
+    assert!(!s.prefs.view.contains_key(cmd), "a new file must not inherit hidden selection chrome");
+    assert_eq!(ex(&mut s, cmd, json!({"on": false}))["on"], false, "explicit on is idempotent");
+    assert_eq!(ex(&mut s, cmd, json!({"on": true}))["on"], true);
+    ex(&mut s, cmd, json!({"on": false}));
+    ex(&mut s, "file.new", json!({}));
+    assert!(s.ds().unwrap().view.selection_outlines, "new files show their selection normally");
+    let old: crate::ViewState = serde_json::from_value(json!({"zoom": 2.0})).unwrap();
+    assert!(old.selection_outlines, "old view records keep the visible default");
+}
+
+#[test]
+fn hiding_selection_outlines_keeps_text_editing_active() {
+    let mut s = Session::new();
+    let layer = id(&ex(&mut s, "node.create", json!({"type": "text", "text": "Editable", "x": 0, "y": 0})));
+    ex(&mut s, "text.edit.begin", json!({"id": layer, "caret": 3}));
+    let editing = s.ds().unwrap().text_edit.clone();
+    ex(&mut s, "view.selectionOutlines", json!({"on": false}));
+    assert_eq!(s.ds().unwrap().text_edit, editing, "the caret and editing session stay active");
+    assert_eq!(s.selection(), vec![layer]);
+}
+
+#[test]
 fn outline_mode_draws_hidden_layers_and_object_bounds_when_asked() {
     let mut s = Session::new();
     scene(&mut s);

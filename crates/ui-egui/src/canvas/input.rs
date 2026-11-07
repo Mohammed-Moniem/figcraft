@@ -174,7 +174,9 @@ pub(super) fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> boo
     // a dropped document opens as a file of its own, as on the home screen. Dev Mode imports
     // nothing into the design, and says so once for the whole drop.
     import_dropped(app, &ctx, hover_pos);
-    let Some(pos) = hover_pos.filter(|p| app.canvas.rect.contains(*p)) else {
+    // A press accepted by the canvas owns its drag until release (#2023). Keep sending its moves
+    // over the side panels; a press that began in a panel still cannot start a canvas gesture.
+    let Some(pos) = hover_pos.filter(|p| p.is_finite() && (app.canvas.dragging || app.canvas.rect.contains(*p))) else {
         // A drag released off the canvas, or off the window, ends where the pointer was last seen.
         if app.canvas.dragging && !ctx.input(|i| i.pointer.primary_down()) {
             app.canvas.dragging = false;

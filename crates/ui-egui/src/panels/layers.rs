@@ -76,6 +76,49 @@ pub fn node_icon(doc: &Document, id: NodeId) -> Icon {
     }
 }
 
+/// The rectangle's live geometry, normalized before flattening so extreme document sizes cannot
+/// expand a tiny row glyph into a large allocation. Image and boolean-operation icons keep their
+/// existing meaning; the row's accessibility label remains the layer kind.
+fn paint_node_icon(painter: &egui::Painter, rect: Rect, node: &figcraft_doc::Node, icon: Icon, color: Color32) {
+    if icon == Icon::Rectangle
+        && matches!(node.kind, NodeKind::Rectangle)
+        && let Some(points) = rectangle_preview(node, rect)
+    {
+        painter.add(egui::Shape::closed_line(points, Stroke::new(1.0, color)));
+    } else {
+        icons::paint(painter, rect, icon, color);
+    }
+}
+
+fn rectangle_preview(node: &figcraft_doc::Node, rect: Rect) -> Option<Vec<egui::Pos2>> {
+    let (w, h) = (node.width, node.height);
+    if !w.is_finite() || !h.is_finite() || w <= 0.0 || h <= 0.0 {
+        return None;
+    }
+    let longest = w.max(h);
+    let side = f64::from(rect.width().min(rect.height()) - 3.0);
+    if !side.is_finite() || side <= 0.0 {
+        return None;
+    }
+    let (width, height) = (w / longest * side, h / longest * side);
+    let radii = node.corners.radii.map(|r| if r.is_finite() { r.clamp(0.0, w.min(h) * 0.5) / longest * side } else { 0.0 });
+    let path = figcraft_geom::rounded_rect(width, height, radii, node.corners.smoothing);
+    let origin = rect.center() - vec2(width as f32, height as f32) * 0.5;
+    let mut points = Vec::with_capacity(32);
+    let mut overflow = false;
+    figcraft_geom::kurbo::flatten(path.iter(), 0.15, |el| {
+        use figcraft_geom::kurbo::PathEl::{LineTo, MoveTo};
+        if let MoveTo(p) | LineTo(p) = el {
+            if points.len() < 256 {
+                points.push(origin + vec2(p.x as f32, p.y as f32));
+            } else {
+                overflow = true;
+            }
+        }
+    });
+    (!overflow && points.len() >= 3).then_some(points)
+}
+
 /// The slim icon rail at the far left: main menu, File, Assets, Variables.
 pub fn rail(app: &mut FigApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
@@ -1295,7 +1338,7 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
             let icon_col = custom_color
                 .map(|c| c.gamma_multiply(if shown { 1.0 } else { 0.5 }))
                 .unwrap_or_else(|| row_color(is_comp || icon == Icon::Slot, shown, t.icon, t.text_tertiary));
-            icons::paint(ui.painter(), Rect::from_center_size(pos2(fx(x0 + 22.0), r.center().y), vec2(14.0, 14.0)), icon, icon_col);
+            paint_node_icon(ui.painter(), Rect::from_center_size(pos2(fx(x0 + 22.0), r.center().y), vec2(14.0, 14.0)), n, icon, icon_col);
             let name_x = x0 + 36.0;
             if app.ui.rename.is_some_and(|rn| rn.id == row.id) {
                 if let Some(new) = rename_field(app, ui, row.id, row.depth, &n.name, r) {
@@ -1425,4 +1468,27 @@ fn layers(app: &mut FigApp, ui: &mut Ui) {
         select_clicked(app, &rows, &sel, id, m);
     }
     let _ = Color32::TRANSPARENT;
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+
+    #[test]
+    fn issue_1205_extreme_rectangle_previews_stay_finite_and_inside_the_glyph() {
+        let rect = Rect::from_min_size(pos2(80.0, 250.0), vec2(14.0, 14.0));
+        for (w, h) in [(100.0, 100.0), (f64::MAX, f64::MAX), (f64::MIN_POSITIVE, f64::MAX)] {
+            let mut node = figcraft_doc::Node::new(NodeId(7), NodeKind::Rectangle, "Preview", w, h);
+            node.corners.radii = [f64::MAX, f64::NAN, -1.0, 30.0];
+            node.corners.smoothing = f64::NAN;
+            let points = rectangle_preview(&node, rect).unwrap();
+            assert!((3..=256).contains(&points.len()));
+            assert!(points.iter().all(|p| p.is_finite() && rect.contains(*p)));
+        }
+        for dimension in [0.0, -1.0, f64::INFINITY, f64::NAN] {
+            let mut node = figcraft_doc::Node::new(NodeId(7), NodeKind::Rectangle, "Preview", 100.0, 100.0);
+            node.width = dimension;
+            assert!(rectangle_preview(&node, rect).is_none());
+        }
+    }
 }

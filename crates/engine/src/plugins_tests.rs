@@ -672,6 +672,90 @@ fn create_reload_and_logs_commands_work_for_all_templates() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
+/// Compile the generated Rust, not the seeded starter WASM: a valid scaffold must keep working
+/// after its first real Build & Reload. Use a private target so nested Cargo cannot wait for the
+/// outer workspace test runner's target lock. The workspace CI already requires this WASM target.
+#[test]
+fn generated_exporter_rust_build_exports_only_selected_layer_names() {
+    let work = tempfile::tempdir().unwrap();
+    let dir = work.path().join("exporter");
+    let mut s = Session::new();
+    let made = ex(
+        &mut s,
+        "plugin.create",
+        json!({
+            "dir":dir.to_string_lossy(), "name":"Generated exporter runtime", "id":"org.test.exporter-rust-runtime",
+            "template":"exporter"
+        }),
+    );
+    let manifest_path = dir.join("figcraft-plugin.json");
+    let manifest: Value = serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    let module_path = dir.join(manifest["main"].as_str().unwrap());
+    std::fs::remove_file(&module_path).unwrap();
+    let target = work.path().join("target");
+    let output = std::process::Command::new(crate::plugins::cargo_binary())
+        .args(["build", "--release", "--target", "wasm32-unknown-unknown", "--offline"])
+        .current_dir(&dir)
+        .env("CARGO_TARGET_DIR", &target)
+        .env("CARGO_BUILD_TARGET_DIR", &target)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "generated Rust did not compile: {}", String::from_utf8_lossy(&output.stderr));
+    let built = target.join("wasm32-unknown-unknown/release/generated_exporter_runtime.wasm");
+    let wasm = std::fs::read(&built).unwrap();
+    assert_eq!(&wasm[..4], b"\0asm");
+    std::fs::write(&module_path, wasm).unwrap();
+    ex(&mut s, "plugin.reload", json!({"id":made["id"]}));
+
+    let first = idv(&ex(&mut s, "shape.rectangle", json!({"props":{"name":"First العربية"}})));
+    let second = idv(&ex(&mut s, "shape.rectangle", json!({"props":{"name":"Second \"quoted\"\nline"}})));
+    ex(&mut s, "shape.rectangle", json!({"props":{"name":"Never selected"}}));
+    ex(&mut s, "select.set", json!({"ids":[first.0,second.0]}));
+    let before = s.doc().unwrap().clone();
+    let undo = s.undo_depth();
+    s.ui_requests.clear();
+    let result = ex(&mut s, "plugin.run", json!({"id":made["id"],"command":"export"}));
+    assert_eq!(result["output"]["saved"], "layers.json");
+    assert_eq!(result["output"]["layers"], 2);
+    assert_eq!(s.doc().unwrap(), &before, "a read-only exporter leaves the design intact");
+    assert_eq!(s.undo_depth(), undo);
+    let save = s.ui_requests.iter().filter(|request| request.kind == "dialog.pluginSave").collect::<Vec<_>>();
+    assert_eq!(save.len(), 1);
+    assert_eq!(save[0].data["name"], "layers.json");
+    assert_eq!(save[0].data["mime"], "application/json");
+    let bytes = base64::engine::general_purpose::STANDARD.decode(save[0].data["data"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&bytes).unwrap(),
+        json!([{"id":first.0,"name":"First العربية"},{"id":second.0,"name":"Second \"quoted\"\nline"}])
+    );
+    assert_eq!(manifest["permissions"]["commands"], json!(["node.get"]));
+    ex(&mut s, "select.none", json!({}));
+    s.ui_requests.clear();
+    let error = s.execute("plugin.run", &json!({"id":made["id"],"command":"export"})).unwrap_err().to_string();
+    assert!(error.contains("Select the layers to export first"), "{error}");
+    assert!(s.ui_requests.is_empty(), "an empty selection never offers an empty or misleading export");
+}
+
+#[cfg(unix)]
+#[test]
+fn generated_projects_resolve_the_sdk_from_a_new_folder_below_a_symbolic_parent() {
+    let work = tempfile::tempdir().unwrap();
+    let real = work.path().join("real/deep/folder");
+    std::fs::create_dir_all(&real).unwrap();
+    let alias = work.path().join("shortcut");
+    std::os::unix::fs::symlink(&real, &alias).unwrap();
+    let sdk = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().join("plugins/sdk").canonicalize().unwrap();
+    for template in ["command", "panel", "widget", "exporter"] {
+        let dir = alias.join("new").join(template);
+        assert!(!dir.exists());
+        let mut s = Session::new();
+        ex(&mut s, "plugin.create", json!({"dir":dir.to_string_lossy(),"name":format!("Alias {template}"),"template":template}));
+        let manifest = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap().parse::<toml_edit::DocumentMut>().unwrap();
+        let relative = manifest["dependencies"]["figcraft-plugin-sdk"]["path"].as_str().unwrap();
+        assert_eq!(dir.canonicalize().unwrap().join(relative).canonicalize().unwrap(), sdk, "{template}: {relative}");
+    }
+}
+
 #[test]
 fn cargo_target_dir_resolves_relative_root() {
     let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();

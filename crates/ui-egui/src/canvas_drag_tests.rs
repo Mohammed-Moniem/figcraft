@@ -76,6 +76,94 @@ fn releasing_a_canvas_drag_outside_finishes_the_interaction() {
     assert!(u.app.session.ds().unwrap().interaction.is_none(), "the document interaction is committed");
 }
 
+fn sidebar_drag_scene() -> (Ui, figcraft_doc::NodeId, figcraft_doc::NodeId) {
+    let mut s = Session::new();
+    let id = |v: serde_json::Value| figcraft_engine::params::id_of(&v["id"]).unwrap();
+    let moved = id(s.execute("shape.rectangle", &json!({"x":40,"y":40,"width":80,"height":60})).unwrap());
+    let untouched = id(s.execute("shape.rectangle", &json!({"x":240,"y":40,"width":80,"height":60})).unwrap());
+    s.execute("select.set", &json!({"ids":[moved]})).unwrap();
+    let view = &mut s.ds_mut().unwrap().view;
+    view.snap_objects = false;
+    view.snap_pixel = false;
+    (Ui::new(s), moved, untouched)
+}
+
+/// #2023: the canvas owns a drag from its press until release, including moves over the panels.
+#[test]
+fn issue_2023_canvas_drag_moves_over_both_side_panels() {
+    for left in [true, false] {
+        let (mut u, moved, untouched) = sidebar_drag_scene();
+        let before = u.app.session.doc().unwrap().world_bounds(moved).unwrap();
+        let other = u.app.session.doc().unwrap().node(untouched).unwrap().clone();
+        let start = u.app.to_screen(before.center().x, before.center().y);
+        let canvas = u.app.canvas.rect;
+        let outside = egui::pos2(if left { canvas.min.x - 40.0 } else { canvas.max.x + 40.0 }, start.y);
+        let zoom = u.app.session.ds().unwrap().view.zoom;
+        let history = u.app.session.undo_depth().0;
+        u.button(start, true);
+        u.frame(vec![Event::PointerMoved(start + vec2(if left { -24.0 } else { 24.0 }, 0.0))]);
+        u.frame(vec![Event::PointerMoved(outside)]);
+        let expected_x = before.x0 + f64::from(outside.x - start.x) / zoom;
+        let during = u.app.session.doc().unwrap().world_bounds(moved).unwrap();
+        assert!((during.x0 - expected_x).abs() < 0.01, "left={left}: movement must continue before release: {during:?}, expected x={expected_x}");
+        u.button(outside, false);
+        assert!(u.app.session.ds().unwrap().interaction.is_none());
+        assert_eq!(u.app.session.selection(), [moved], "releasing over a panel keeps the canvas selection");
+        assert_eq!(u.app.session.doc().unwrap().node(untouched).unwrap(), &other);
+        assert_eq!(u.app.session.undo_depth().0, history + 1, "the whole drag is one edit");
+        u.app.session.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(u.app.session.doc().unwrap().world_bounds(moved).unwrap(), before);
+    }
+}
+
+#[test]
+fn issue_2023_releasing_over_a_layer_row_keeps_the_canvas_drag() {
+    let (mut u, moved, untouched) = sidebar_drag_scene();
+    let row = u.row_at(untouched);
+    let before = u.app.session.doc().unwrap().world_bounds(moved).unwrap();
+    let start = u.app.to_screen(before.center().x, before.center().y);
+    let zoom = u.app.session.ds().unwrap().view.zoom;
+    let expected = before.origin() + figcraft_geom::Vec2::new(f64::from(row.x - start.x) / zoom, f64::from(row.y - start.y) / zoom);
+    u.drag_to(start, row);
+    u.button(row, false);
+    let after = u.app.session.doc().unwrap().world_bounds(moved).unwrap();
+    assert!((after.x0 - expected.x).abs() < 0.01 && (after.y0 - expected.y).abs() < 0.01, "{after:?}, expected origin {expected:?}");
+    assert_eq!(u.app.session.selection(), [moved], "the layer row never owned this press");
+    assert!(u.app.session.ds().unwrap().interaction.is_none());
+    assert_eq!(u.app.session.doc().unwrap().node(moved).unwrap().parent, u.app.session.doc().unwrap().node(untouched).unwrap().parent);
+}
+
+#[test]
+fn issue_2023_escape_cancels_a_drag_while_over_the_sidebar() {
+    let (mut u, moved, _) = sidebar_drag_scene();
+    let before = u.app.session.doc().unwrap().world_bounds(moved).unwrap();
+    let start = u.app.to_screen(before.center().x, before.center().y);
+    let outside = egui::pos2(u.app.canvas.rect.max.x + 40.0, start.y);
+    let history = u.app.session.undo_depth().0;
+    u.drag_to(start, outside);
+    key(&mut u, egui::Key::Escape);
+    assert_eq!(u.app.session.doc().unwrap().world_bounds(moved).unwrap(), before);
+    assert!(u.app.session.ds().unwrap().interaction.is_none());
+    u.frame(vec![Event::PointerMoved(outside + vec2(20.0, 10.0))]);
+    u.button(outside, false);
+    assert_eq!(u.app.session.doc().unwrap().world_bounds(moved).unwrap(), before, "the cancelled drag cannot resume");
+    assert_eq!(u.app.session.undo_depth().0, history);
+}
+
+#[test]
+fn issue_2023_a_press_on_the_sidebar_cannot_start_a_canvas_drag() {
+    let (mut u, _, _) = sidebar_drag_scene();
+    u.app.session.execute("tool.rectangle", &json!({})).unwrap();
+    let before = u.app.session.doc().unwrap().node_count();
+    let canvas = u.app.canvas.rect;
+    let outside = egui::pos2(canvas.max.x + 20.0, canvas.center().y);
+    u.button(outside, true);
+    u.frame(vec![Event::PointerMoved(canvas.center())]);
+    u.button(canvas.center(), false);
+    assert_eq!(u.app.session.doc().unwrap().node_count(), before, "the canvas never owned the sidebar press");
+    assert!(u.app.session.ds().unwrap().interaction.is_none());
+}
+
 fn key(u: &mut Ui, key: egui::Key) {
     let modifiers = egui::Modifiers::NONE;
     u.frame(vec![

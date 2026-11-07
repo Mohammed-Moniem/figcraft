@@ -94,6 +94,8 @@ pub static MENU: &[MenuItem] = &[
     m!("View", "Slices", "view.slices"),
     m!("View", "Comments", "view.comments"),
     m!("View", "Multiplayer cursors", "view.multiplayerCursors"),
+    // FigCraft's own: inspect the selected artwork while continuing to edit its properties.
+    m!("View", "Selection outlines", "view.selectionOutlines"),
     m!("View", SEP, ""),
     m!("View/Outlines", "Show outlines", "view.outlines"),
     m!("View/Outlines", "Show outlines for selection", "view.outlinesSelection"),
@@ -299,7 +301,7 @@ pub fn items() -> impl Iterator<Item = &'static MenuItem> {
 }
 
 /// Items of FigCraft's own that the parity count leaves out (as it does the `collab.` ones).
-const OWN: [&str; 8] = [
+const OWN: [&str; 9] = [
     "file.newFromTemplate",
     "file.newBoard",
     "help.gettingStarted",
@@ -308,6 +310,7 @@ const OWN: [&str; 8] = [
     "app.mcp",
     "plugin.newDialog",
     "plugins.console",
+    "view.selectionOutlines",
 ];
 
 /// Coverage: (implemented, total, missing ids). `extra` lists ids implemented by the UI layer.

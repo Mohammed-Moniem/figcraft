@@ -40,7 +40,11 @@ pub fn req_num(cmd: &str, p: &Value, key: &str) -> Result<f64> {
 }
 
 /// A list index from params: a whole number, never negative (no casting -1 to 0).
+/// Boolean numeric coercion is useful for other parameters, but cannot choose a list entry.
 pub fn req_index(cmd: &str, p: &Value, key: &str) -> Result<usize> {
+    if get(p, key).is_some_and(Value::is_boolean) {
+        return Err(bad(cmd, format!("`{key}` must be a whole number")));
+    }
     let k = req_num(cmd, p, key)?;
     if !(0.0..1e9).contains(&k) || k.fract() != 0.0 {
         return Err(bad(cmd, format!("`{key}` out of range")));
@@ -290,6 +294,18 @@ pub fn parse<T: serde::de::DeserializeOwned>(cmd: &str, p: &Value, key: &str) ->
 mod color_of_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn list_indices_refuse_boolean_coercion_without_changing_numeric_parameters() {
+        for value in [json!(true), json!(false)] {
+            assert!(req_index("test", &json!({"index": value}), "index").is_err(), "a boolean cannot name a list position");
+        }
+        assert_eq!(req_index("test", &json!({"index": 0}), "index").unwrap(), 0);
+        assert_eq!(req_index("test", &json!({"index": 1}), "index").unwrap(), 1);
+        assert_eq!(req_index("test", &json!({"index": "1"}), "index").unwrap(), 1);
+        assert_eq!(req_num("test", &json!({"value": true}), "value").unwrap(), 1.0);
+        assert_eq!(req_num("test", &json!({"value": false}), "value").unwrap(), 0.0);
+    }
 
     #[test]
     fn color_of_rejects_non_numeric_array_entries() {

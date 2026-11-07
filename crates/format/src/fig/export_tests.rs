@@ -20,6 +20,42 @@ use super::*;
 #[path = "assets_tests.rs"]
 mod assets;
 
+#[test]
+fn issue_2045_export_opens_the_active_design_page_and_keeps_every_page() {
+    let mut doc = Document::new("Template and design");
+    let first = doc.pages[0];
+    doc.node_mut(first).unwrap().name = "Template".into();
+    let active = doc.add_page("My design");
+    let last = doc.add_page("Archive");
+    doc.current_page = Some(active);
+    let wanted = Color::new(0.2, 0.4, 0.6, 1.0);
+    if let NodeKind::Page { background, .. } = &mut doc.node_mut(active).unwrap().kind {
+        *background = wanted;
+    }
+    let (bytes, _) = export(&doc, None).unwrap();
+    let (back, _) = import(&bytes, "Round trip").unwrap();
+    let names: Vec<_> = back.pages.iter().map(|p| back.node(*p).unwrap().name.as_str()).collect();
+    assert_eq!(names, ["My design", "Template", "Archive"]);
+    assert_eq!(back.current_page, Some(back.pages[0]));
+    assert_eq!(doc.pages, [first, active, last], "export must leave the editable document order intact");
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    let meta: Value = serde_json::from_reader(zip.by_name("meta.json").unwrap()).unwrap();
+    assert!((meta["client_meta"]["background_color"]["r"].as_f64().unwrap() - f64::from(wanted.r)).abs() < 1e-6);
+}
+
+#[test]
+fn issue_2045_export_without_a_valid_active_page_keeps_original_order() {
+    for current in [None, Some(NodeId(u64::MAX))] {
+        let mut doc = Document::new("Fallback");
+        doc.add_page("Second");
+        doc.current_page = current;
+        let before: Vec<_> = doc.pages.iter().map(|p| doc.node(*p).unwrap().name.clone()).collect();
+        let (bytes, _) = export(&doc, None).unwrap();
+        let (back, _) = import(&bytes, "Fallback").unwrap();
+        assert_eq!(back.pages.iter().map(|p| back.node(*p).unwrap().name.clone()).collect::<Vec<_>>(), before);
+    }
+}
+
 /// A cheap deterministic generator.
 struct Lcg(u64);
 impl Lcg {

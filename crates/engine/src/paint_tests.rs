@@ -166,11 +166,17 @@ fn image_preset_index_rejects_invalid_values_without_mutation() {
     let mut s = Session::new();
     let r = image_rect(&mut s);
     let revision = s.ds().unwrap().revision;
-    for index in [json!(-1), json!(1.5), json!("-1"), json!("1.5"), json!("not-an-index"), json!([]), json!({}), json!(1e9)] {
+    let saved_bytes = crate::cmd::file::file_bytes(s.ds().unwrap()).unwrap();
+    let history = s.ds().unwrap().history.undo.len();
+    for index in
+        [json!(-1), json!(1.5), json!("-1"), json!("1.5"), json!("not-an-index"), json!([]), json!({}), json!(1e9), json!(true), json!(false)]
+    {
         let result = s.execute("image.savePreset", &json!({"ids": [r], "name": "Invalid", "index": index}));
         assert!(result.is_err(), "invalid index {index} was accepted");
         assert!(s.doc().unwrap().image_presets.is_empty());
         assert_eq!(s.ds().unwrap().revision, revision, "rejected index must not change revision");
+        assert_eq!(s.ds().unwrap().history.undo.len(), history, "rejected index must not add history");
+        assert_eq!(crate::cmd::file::file_bytes(s.ds().unwrap()).unwrap(), saved_bytes, "rejected index must preserve the native archive");
     }
     assert!(s.execute("image.savePreset", &json!({"ids": [r], "name": "Solid", "index": 0})).is_err());
     assert!(s.execute("image.savePreset", &json!({"ids": [r], "name": "Outside", "index": 2})).is_err());

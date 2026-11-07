@@ -63,7 +63,7 @@ pub(super) fn overlays(app: &FigApp, painter: &egui::Painter, t: &Tokens) -> Vec
     let operands = crate::selection_cache::cached(painter.ctx(), "operands", &unmoved, &sel, &key, || {
         figcraft_engine::booleans::outlined_operands(&unmoved, &sel, editing)
     });
-    for id in operands.iter().filter(|o| !sel.contains(o)) {
+    for id in operands.iter().filter(|o| view.selection_outlines && !sel.contains(o)) {
         draw_outline(app, painter, &doc, *id, stroke(outline_colour(&doc, *id, accent(painter)).gamma_multiply(0.6), 1.0));
     }
     // Mask outlines (a mask doesn't draw itself), frame outlines and slices, as the View menu shows.
@@ -123,7 +123,7 @@ pub(super) fn overlays(app: &FigApp, painter: &egui::Painter, t: &Tokens) -> Vec
     }
     // Selection.
     let editing = ds.text_edit.clone();
-    if !sel.is_empty() && editing.is_none() && ds.vector_edit.is_none() {
+    if view.selection_outlines && !sel.is_empty() && editing.is_none() && ds.vector_edit.is_none() {
         size_label = selection_overlay(app, painter, ds, &doc, &sel, zoom);
     }
     if app.session.tool.tool == ToolId::ShapeBuilder

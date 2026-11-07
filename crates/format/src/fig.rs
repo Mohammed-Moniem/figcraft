@@ -137,7 +137,12 @@ fn import_with_image_limit(bytes: &[u8], name: &str, image_limit: u64) -> Result
     // of them takes gigabytes, and holding them all at once runs out of memory.
     let (schema, message) = decode_canvas(&std::mem::take(&mut archive.canvas))?;
     let root = schema.find("Message").ok_or_else(|| corrupt("the schema has no Message definition"))?;
-    let msg = schema.decode_message_within(root, &message, kiwi::value_budget(packed)).map_err(|e| corrupt(e.to_string()))?;
+    let msg = schema.decode_message_within(root, &message, kiwi::value_budget(packed)).map_err(|e| match e {
+        kiwi::KiwiError::ValueLimit { limit } => {
+            FormatError::TooLarge(format!(".fig file is too large to open: exceeds the supported limit of {limit} decoded values"))
+        }
+        kiwi::KiwiError::Invalid(message) => corrupt(message),
+    })?;
     let max_nodes = layer_budget(packed);
     drop(message);
     let file_name = archive.file_name.as_deref().filter(|n| !n.trim().is_empty()).unwrap_or(name);

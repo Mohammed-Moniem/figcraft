@@ -87,6 +87,8 @@ const JSON_LEVEL: i64 = 3;
 pub enum FormatError {
     Io(String),
     Corrupt(String),
+    /// An import exceeds a supported-size limit; this does not imply corrupt input.
+    TooLarge(String),
     Newer(u32),
 }
 
@@ -95,6 +97,7 @@ impl std::fmt::Display for FormatError {
         match self {
             FormatError::Io(e) => write!(f, "{e}"),
             FormatError::Corrupt(e) => write!(f, "not a valid FigCraft file: {e}"),
+            FormatError::TooLarge(e) => write!(f, "{e}"),
             FormatError::Newer(v) => write!(f, "this file was saved by a newer FigCraft (format version {v})"),
         }
     }
@@ -847,7 +850,7 @@ fn report_lost_images(
         .iter()
         .map(|(hash, e)| {
             let why = match e {
-                FormatError::Corrupt(m) | FormatError::Io(m) => m.clone(),
+                FormatError::Corrupt(m) | FormatError::Io(m) | FormatError::TooLarge(m) => m.clone(),
                 FormatError::Newer(v) => format!("format version {v}"),
             };
             if past_budget.contains(hash) {

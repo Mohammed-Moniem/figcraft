@@ -82,6 +82,18 @@ fn chosen_items_run_their_commands() {
 }
 
 #[test]
+fn selection_outlines_is_a_checked_view_action_in_the_native_menu() {
+    let mut a = app();
+    let bar = menu_bar(&a, true);
+    let row = item(&bar, "view.selectionOutlines");
+    assert_eq!(row.label, "Selection outlines");
+    assert_eq!(row.kind.checked(), Some(true));
+    run(&mut a, "view.selectionOutlines");
+    assert_eq!(item(&menu_bar(&a, true), "view.selectionOutlines").kind.checked(), Some(false));
+    assert!(!a.session.ds().unwrap().view.selection_outlines);
+}
+
+#[test]
 fn the_mac_layout_moves_about_and_settings_to_the_app_menu() {
     let bar = menu_bar(&app(), true);
     let layout = craft_menu::mac_layout(&bar, &LayoutOptions::new("FigCraft"));

@@ -118,8 +118,13 @@ pub(super) fn export(s: &mut Session, p: &Value) -> Result<Value> {
 /// The whole document as a `.fig` file (experimental: only round trips through our own importer
 /// are verified), with the warnings about what was left out.
 pub(super) fn export_fig(s: &mut Session, p: &Value) -> Result<Value> {
-    let doc = s.doc()?;
-    let (bytes, warnings) = fig_bytes(doc)?;
+    let ds = s.ds()?;
+    // Page selection belongs to this viewer, not the shared document. Stamp the export copy as
+    // native saving does, so selecting a design page after a template actually opens that page
+    // in the exported file (#2045). An explicitly chosen opening page still wins.
+    let mut doc = (*ds.doc).clone();
+    doc.current_page = doc.opening_page.filter(|page| doc.pages.contains(page)).or(Some(ds.page));
+    let (bytes, warnings) = fig_bytes(&doc)?;
     match string(p, "path") {
         Some(path) => {
             write(&path, &bytes)?;

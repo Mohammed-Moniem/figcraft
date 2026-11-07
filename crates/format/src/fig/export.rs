@@ -203,12 +203,21 @@ pub fn export(doc: &Document, thumbnail: Option<&[u8]>) -> Result<(Vec<u8>, Vec<
     let root = schema.find("Message").ok_or_else(|| FormatError::Io(".fig export: the schema has no Message".into()))?;
     let body = encode::message(&schema, root, &message).map_err(fail)?;
     let canvas = canvas(&encode::schema(&schema), &body)?;
-    let background = doc.pages.first().and_then(|p| doc.node(*p)).and_then(|p| match &p.kind {
+    let background = opening_page(doc).and_then(|p| doc.node(p)).and_then(|p| match &p.kind {
         NodeKind::Page { background, .. } => Some(*background),
         _ => None,
     });
     let bytes = archive(&doc.name, background.unwrap_or(Color::WHITE), &canvas, &x.files, thumbnail)?;
     Ok((bytes, x.warnings))
+}
+
+fn opening_page(doc: &Document) -> Option<NodeId> {
+    doc.current_page.filter(|page| doc.pages.contains(page)).or_else(|| doc.pages.first().copied())
+}
+
+fn ordered_pages(doc: &Document) -> impl DoubleEndedIterator<Item = NodeId> + '_ {
+    let first = opening_page(doc);
+    first.into_iter().chain(doc.pages.iter().copied().filter(move |p| Some(*p) != first))
 }
 
 fn too_large() -> FormatError {
@@ -590,8 +599,10 @@ impl<'d> Exporter<'d> {
         root.extend(root_fields());
         root.push(("documentColorProfile", e(profile)));
         self.nodes.push(o(root));
-        for (i, p) in doc.pages.iter().enumerate() {
-            self.emit(*p, guid(0, 0), i, None, 0);
+        // Readers open the first serialized page. Put the active design before template pages
+        // (#2045), retaining every other page in its relative order and leaving `doc` unchanged.
+        for (i, p) in ordered_pages(doc).enumerate() {
+            self.emit(p, guid(0, 0), i, None, 0);
         }
         self.assets(doc.pages.len());
         if !doc.comments.is_empty() {
@@ -628,4 +639,25 @@ pub(super) fn face_style(family: &str, style: &str) -> String {
         return standard;
     }
     ["Extra", "Ultra", "Semi", "Demi"].iter().fold(standard, |acc, p| acc.replace(&format!("{p} "), p))
+}
+
+#[cfg(test)]
+mod opening_page_tests {
+    use super::*;
+
+    #[test]
+    fn issue_2045_a_capped_export_prioritises_the_active_page_and_its_content() {
+        let mut doc = Document::new("Template");
+        let template = doc.pages[0];
+        doc.create(template, NodeKind::Rectangle, "Template placeholder", 0.0, 0.0, 10.0, 10.0).unwrap();
+        let active = doc.add_page("Active design");
+        let content = doc.create(active, NodeKind::Rectangle, "My content", 0.0, 0.0, 20.0, 20.0).unwrap();
+        doc.current_page = Some(active);
+        let mut exporter = Exporter::new(&doc);
+        exporter.assign_within(2);
+        assert!(exporter.ids.contains_key(&active));
+        assert!(exporter.ids.contains_key(&content));
+        assert!(!exporter.ids.contains_key(&template));
+        assert_eq!(exporter.warnings.len(), 1, "omitted layers must still be reported");
+    }
 }

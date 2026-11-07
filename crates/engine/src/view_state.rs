@@ -18,6 +18,9 @@ pub struct ViewState {
     pub outlines: bool,
     /// Outline mode for the selected layers only (the rest draws normally).
     pub outlines_selection: bool,
+    /// Selection outlines, transform handles and size labels. Turning these off keeps the
+    /// selection editable, so fills, strokes and corners can be inspected without the overlay.
+    pub selection_outlines: bool,
     /// Outline mode also outlines hidden layers (View ▸ Outlines ▸ Include hidden layers).
     pub outline_hidden: bool,
     /// Outline mode also draws every layer's box (View ▸ Outlines ▸ Include object bounds).
@@ -56,6 +59,7 @@ impl Default for ViewState {
             rulers: false,
             outlines: false,
             outlines_selection: false,
+            selection_outlines: true,
             outline_hidden: false,
             outline_bounds: false,
             mask_outlines: false,

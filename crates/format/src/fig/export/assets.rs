@@ -8,11 +8,16 @@ impl<'d> Exporter<'d> {
     /// GUIDs for every layer (pages first, then depth-first), component property definitions,
     /// flow starting points and overlay settings, before anything refers to them.
     pub(super) fn assign(&mut self) {
+        self.assign_within(MAX_NODES);
+    }
+
+    pub(super) fn assign_within(&mut self, limit: usize) {
         let doc = self.doc;
-        let mut stack: Vec<NodeId> = doc.pages.iter().rev().copied().collect();
+        // Use the same order as emission, so a capped export prioritises the active design too.
+        let mut stack: Vec<NodeId> = super::ordered_pages(doc).rev().collect();
         while let Some(id) = stack.pop() {
             let Some(n) = doc.node(id) else { continue };
-            if self.ids.len() >= MAX_NODES {
+            if self.ids.len() >= limit {
                 self.warn("the document has more layers than a .fig file is read with; the rest were left out");
                 break;
             }

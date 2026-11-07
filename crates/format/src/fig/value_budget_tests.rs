@@ -126,7 +126,9 @@ fn opens_whole(label: &str, pages: usize, rects: usize, texts: usize, chars: usi
     let (sc, msg) = decode_canvas(&file).unwrap();
     let root = sc.find("Message").unwrap();
     let one_per_byte = file.len().clamp(kiwi::value_budget(0), kiwi::value_budget(usize::MAX));
-    let refused = sc.decode_message_within(root, &msg, one_per_byte).is_err_and(|e| e.0 == "message: too many values");
+    let refused = sc
+        .decode_message_within(root, &msg, one_per_byte)
+        .is_err_and(|e| matches!(e, kiwi::KiwiError::ValueLimit { limit } if limit == one_per_byte));
     assert!(refused, "{label}: one value per compressed byte no longer refuses it");
     let (doc, warnings) = import(&file, label).unwrap_or_else(|e| panic!("{label}: refused: {e}"));
     assert_eq!(doc.node_count(), pages * (rects + texts) + pages, "{label}: layers");
@@ -161,5 +163,20 @@ fn a_small_canvas_that_unpacks_to_millions_of_values_is_refused() {
     let file = one_list_canvas(&Schema::parse("message Message uint[] xs").unwrap(), n, std::iter::repeat_n(0, n as usize));
     assert!(file.len() < 100_000, "{} bytes", file.len());
     let Err(e) = import(&file, "x") else { panic!("a {} byte canvas holding {n} values opened", file.len()) };
-    assert_eq!(e.to_string(), "not a valid FigCraft file: .fig file: message: too many values");
+    assert!(matches!(&e, crate::FormatError::TooLarge(_)));
+    assert_eq!(
+        e.to_string(),
+        format!(".fig file is too large to open: exceeds the supported limit of {} decoded values", kiwi::value_budget(file.len()))
+    );
+    assert!(!e.to_string().contains("not a valid"), "a supported-size limit is not evidence of corruption");
+}
+
+#[test]
+fn a_truncated_canvas_is_still_reported_as_corrupt() {
+    // The array promises three values, but the final message terminator is its only byte.
+    // This fits well within the size budget, but the promised values exceed its data.
+    let file = one_list_canvas(&Schema::parse("message Message uint[] xs").unwrap(), 3, []);
+    let Err(e) = import(&file, "truncated") else { panic!("a truncated array opened") };
+    assert!(matches!(&e, crate::FormatError::Corrupt(_)));
+    assert_eq!(e.to_string(), "not a valid FigCraft file: .fig file: message: array longer than the data");
 }

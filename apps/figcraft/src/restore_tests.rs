@@ -206,7 +206,8 @@ fn after_a_crash_unsaved_documents_come_back_beside_the_restored_tabs_and_a_quit
     // Killed: the lock goes with the process. The next start gets both back, and the tab.
     drop(r);
     let mut killed = next(&dir);
-    assert_eq!(recover(&recovery, &mut killed), 2);
+    let recovered = crate::recovery::recover_all(&recovery, &mut killed);
+    assert_eq!(recovered.copies, 2);
     assert_eq!(start_session(Some(&dir), &mut killed, false), Start::Restore);
     assert_eq!(killed.docs.iter().filter(|d| d.is_dirty() && d.path.is_none()).count(), 2, "the recovered copies, unsaved");
     assert_eq!(killed.docs.iter().filter(|d| d.path.as_deref() == Some(paths[0].as_str()) && !d.is_dirty()).count(), 1, "the tab, as saved");
@@ -214,7 +215,11 @@ fn after_a_crash_unsaved_documents_come_back_beside_the_restored_tabs_and_a_quit
     // A normal quit instead (Don't save was the answer, or there was nothing to ask): the
     // copies go, and the saved file is all that comes back.
     let mut r = Recovery::start(&recovery).unwrap();
-    r.write(&s, true);
+    // Keep and adopt the old copies exactly as startup does. Their held lock also forces this
+    // run into another directory: a normal quit must remove both, without relying on PID-folder
+    // reuse (a concurrent fork may temporarily inherit a lock too, #334).
+    r.adopt(recovered.waiting);
+    r.write(&killed, true);
     r.finish();
     let mut quit = next(&dir);
     assert_eq!(recover(&recovery, &mut quit), 0);

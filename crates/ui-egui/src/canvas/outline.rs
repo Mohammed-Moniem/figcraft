@@ -93,6 +93,9 @@ pub(super) fn quad(painter: &egui::Painter, q: [Pos2; 4], s: Stroke) {
 /// outline and the slot's name above its top-left corner, like a frame label (never over the
 /// content).
 pub(super) fn slot_badges(app: &FigApp, painter: &egui::Painter, doc: &Arc<Document>, sel: &[NodeId], drop: Option<NodeId>) {
+    if !app.session.ds().is_ok_and(|ds| ds.view.selection_outlines) {
+        return;
+    }
     let key = [drop.map_or(0, |d| d.0.wrapping_add(1))];
     // Which slots show doesn't change while the selection is only moved: the gesture's start keeps it.
     let base = app.session.ds().ok().and_then(crate::selection_cache::moved).map(|(b, _)| b);

@@ -1197,7 +1197,7 @@ fn scalar_fields_count_against_the_value_budget() {
     let mut data = [1u8, 1].repeat(1000);
     data.push(0);
     let e = sc.decode_message_within(0, &data, 10).unwrap_err();
-    assert_eq!(e.0, "message: too many values");
+    assert_eq!(e.to_string(), "message is too large to decode: exceeds the supported limit of 10 values");
     assert!(sc.decode_message_within(0, &data, 1001).is_ok());
 }
 
@@ -1210,7 +1210,7 @@ fn empty_arrays_count_against_the_value_budget() {
     let mut data = [1u8, 0].repeat(1000);
     data.push(0);
     let e = sc.decode_message_within(0, &data, 10).unwrap_err();
-    assert_eq!(e.0, "message: too many values");
+    assert_eq!(e.to_string(), "message is too large to decode: exceeds the supported limit of 10 values");
     assert!(sc.decode_message_within(0, &data, 1001).is_ok());
 }
 
@@ -1252,7 +1252,7 @@ fn a_schema_is_refused_past_its_total_field_count() {
             w.var_uint(i);
         }
     }
-    assert_eq!(Schema::decode(&w.0).unwrap_err().0, "schema: too many fields");
+    assert_eq!(Schema::decode(&w.0).unwrap_err().to_string(), "schema: too many fields");
 }
 
 #[test]
