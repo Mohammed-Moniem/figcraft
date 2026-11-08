@@ -41,8 +41,8 @@ pub fn read(b: &mut dyn Backend, uri: &str) -> Result<Value, ReadError> {
         return b.call("engine.execute", json!({"command": "comment.list", "params": {"page": "all", "filter": "open"}})).map_err(ReadError::Backend);
     }
     if let Some(id) = uri.strip_prefix("figcraft://node/") {
-        let Some(id) = figcraft_engine::params::id_of(&Value::String(id.to_string())) else { return Err(ReadError::NotFound(uri.into())) };
-        return match b.call("node.get", json!({"id": id.0, "depth": 2})) {
+        let Some(id) = figcraft_automation_json::id_of(&Value::String(id.to_string())) else { return Err(ReadError::NotFound(uri.into())) };
+        return match b.call("node.get", json!({"id": id, "depth": 2})) {
             Ok(Value::Null) => Err(ReadError::NotFound(uri.into())),
             Ok(v) => Ok(v),
             Err(e) if e.contains("no such node") => Err(ReadError::NotFound(uri.into())),

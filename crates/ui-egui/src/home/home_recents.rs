@@ -20,7 +20,7 @@ use crate::FigApp;
 use crate::a11y;
 use crate::i18n::{tr, tr_noop, trf, trn};
 use crate::icons::{self, Icon};
-use crate::theme::{ACCENT, Tokens, regular, semibold};
+use crate::theme::{Tokens, regular, semibold};
 use crate::widgets;
 
 /// The gap between cards, across and down.
@@ -971,7 +971,7 @@ fn card(paint: CardPaint<'_>) {
         crate::home_projects::favorite_badge(p, t, pos2(area.max.x - 18.0, area.min.y + 18.0));
     }
     if selected {
-        p.rect_stroke(rect, CornerRadius::same(8), Stroke::new(2.0, ACCENT), StrokeKind::Inside);
+        p.rect_stroke(rect, CornerRadius::same(8), Stroke::new(2.0, crate::theme::accent(p.ctx())), StrokeKind::Inside);
     } else {
         p.rect_stroke(rect, CornerRadius::same(8), Stroke::new(1.0, if resp.hovered() { t.border_strong } else { t.border }), StrokeKind::Inside);
         if resp.has_focus() {

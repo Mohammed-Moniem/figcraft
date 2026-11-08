@@ -520,6 +520,7 @@ fn variable(id: &str, name: &str, collection: &str, kind: VariableType, values: 
         hidden_from_publishing: false,
         extends: None,
         overrides: BTreeSet::new(),
+        design_token_type: None,
         code_syntax: BTreeMap::new(),
     }
 }

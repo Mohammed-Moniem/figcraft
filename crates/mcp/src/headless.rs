@@ -131,29 +131,33 @@ impl Headless {
     }
 
     fn key(&mut self, p: &Value) -> Result<Value, String> {
-        use figcraft_engine::keymap::{Context, Mods, Platform, lookup, normalize};
+        use figcraft_engine::keymap::{Context, Mods, Platform, normalize};
         let key = p.get("key").and_then(Value::as_str).ok_or("`key` required")?;
         let m = Mods { shift: b(p, "shift"), alt: b(p, "alt"), cmd: b(p, "cmd"), ctrl: b(p, "ctrl") };
         let platform = Platform::current();
-        // Text editing keys go to the editor, after the shortcuts live while editing; other
-        // Cmd+letter shortcuts (undo…) still reach the canvas.
+        // Text-context bindings use the same resolved map as the UI. Native editing chords keep
+        // their canonical editing meaning; a custom Canvas-only command cannot escape the editor.
         if self.session.ds().map(|d| d.text_edit.is_some()).unwrap_or(false) {
-            if let Some(bd) = lookup(platform, Context::Text, key, m).filter(|_| m.cmd || m.alt || m.ctrl) {
+            if let Some(bd) = self.session.prefs.shortcuts.lookup(platform, Context::Text, key, m).filter(|_| m.cmd || m.alt || m.ctrl) {
                 self.execute(bd.id, &json!({}))?;
                 return Ok(json!({"command": bd.id}));
             }
-            if !(m.cmd && key.len() == 1) {
-                let (word, line) = figcraft_engine::keymap::text_motion(platform, key, m);
-                textedit::key(&mut self.session, key, m.shift, word, line).map_err(|e| e.to_string())?;
-                return Ok(json!({"ok": true, "textEdit": true}));
+            if let Some(binding) = figcraft_engine::keymap::lookup(platform, Context::Canvas, key, m)
+                .filter(|binding| matches!(binding.id, "edit.undo" | "edit.redo" | "edit.copy" | "edit.cut" | "edit.paste" | "select.all"))
+            {
+                self.execute(binding.id, &json!({}))?;
+                return Ok(json!({"command": binding.id}));
             }
+            let (word, line) = figcraft_engine::keymap::text_motion(platform, key, m);
+            textedit::key(&mut self.session, key, m.shift, word, line).map_err(|e| e.to_string())?;
+            return Ok(json!({"ok": true, "textEdit": true}));
         }
         // Vector edit mode and shape builder keys (tools, nudging points, delete, join, Enter), as
         // on the canvas.
         if self.session.tool_key(key, m.shift, m.alt, m.cmd).map_err(|e| e.to_string())? {
             return Ok(json!({"ok": true}));
         }
-        if let Some(bd) = lookup(platform, Context::Canvas, key, m) {
+        if let Some(bd) = self.session.prefs.shortcuts.lookup(platform, Context::Canvas, key, m) {
             match bd.id {
                 "select.none" => self.session.escape().map_err(|e| e.to_string())?,
                 // Enter with a shape or frame tool chosen places one in the middle of the view.
@@ -248,7 +252,7 @@ impl Headless {
                 self.execute_as(p.get("agent").and_then(Value::as_str), &cmd, &params)
             }
             "engine.commands" => Ok(Value::Array(
-                figcraft_engine::all_commands().iter().map(|c| json!({"id": c.id, "label": c.label, "params": c.params, "menu": c.menu(), "shortcut": c.shortcut(), "undoable": c.history})).collect(),
+                figcraft_engine::all_commands().iter().map(|c| json!({"id": c.id, "label": c.label, "params": c.params, "menu": c.menu(), "shortcut": self.session.prefs.shortcuts.primary(c.id, figcraft_engine::keymap::Platform::current()), "undoable": c.history})).collect(),
             )),
             "document.inspect" => {
                 let depth = p.get("depth").and_then(Value::as_u64).unwrap_or(8).min(64) as usize;

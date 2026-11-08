@@ -111,8 +111,9 @@ pub fn section(app: &mut FigApp, ui: &mut Ui, main: Rect, t: &Tokens) {
             crate::live::join_status(app, ui, t, session);
         }
         let files = app.session.prefs.online_files.clone();
+        let joined = super::joined::visible(&app.session);
         let team = app.session.team().cloned();
-        if files.is_empty() {
+        if files.is_empty() && joined.is_empty() {
             ui.add_space(8.0);
             widgets::label(ui, tr("Nothing online yet. Use Share on a file to put it online and it is listed here."), t.text_secondary);
         }
@@ -123,6 +124,7 @@ pub fn section(app: &mut FigApp, ui: &mut Ui, main: Rect, t: &Tokens) {
             for f in &files {
                 row(app, ui, t, f, busy);
             }
+            super::joined::section(app, ui, t, &joined);
             if let Some(team) = &team {
                 team_section(app, ui, t, team);
             }

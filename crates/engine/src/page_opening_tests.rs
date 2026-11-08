@@ -85,3 +85,55 @@ fn deleting_or_converting_the_explicit_opening_page_clears_the_choice_and_undo_r
     ex(&mut s, "edit.undo", json!({}));
     assert_eq!(s.doc().unwrap().opening_page, Some(cover));
 }
+
+/// The actual authored choice undoes and redoes independently of the local viewed page,
+/// and the redone state survives actual native archive bytes rather than only inspection.
+#[test]
+fn opening_page_redo_restores_the_explicit_choice_without_moving_the_view() {
+    let mut s = Session::new();
+    let first = s.page().unwrap();
+    let cover = id_of(&ex(&mut s, "page.add", json!({"name":"Redo cover"})));
+    ex(&mut s, "page.select", json!({"id":first}));
+    let before = s.undo_depth();
+    ex(&mut s, "page.setOpening", json!({"id":cover}));
+    assert_eq!(s.doc().unwrap().opening_page, Some(cover));
+    assert_eq!(s.page().unwrap(), first);
+    assert_eq!(s.undo_depth().0, before.0 + 1);
+    ex(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc().unwrap().opening_page, None);
+    assert_eq!(s.page().unwrap(), first);
+    ex(&mut s, "edit.redo", json!({}));
+    assert_eq!(s.doc().unwrap().opening_page, Some(cover));
+    assert_eq!(s.page().unwrap(), first, "redo changes the shared opening choice, never this viewer's page");
+    assert_eq!(s.undo_depth().0, before.0 + 1);
+    let bytes = crate::cmd::file::file_bytes(s.ds().unwrap()).unwrap();
+    let (loaded, _) = figcraft_format::load_bytes(&bytes).unwrap();
+    assert_eq!((loaded.opening_page, loaded.current_page), (Some(cover), Some(cover)));
+    assert_eq!(Session::with_document(loaded).page().unwrap(), cover);
+}
+
+/// A supplied integer may be a valid NodeId yet name no node. Refusal must precede
+/// changes to authored data, viewed page, selection, revision and undo/redo history.
+#[test]
+fn nonexistent_opening_page_is_refused_before_any_document_view_or_history_change() {
+    let mut s = Session::new();
+    let first = s.page().unwrap();
+    let cover = id_of(&ex(&mut s, "page.add", json!({"name":"Existing cover"})));
+    ex(&mut s, "page.setOpening", json!({"id":cover}));
+    ex(&mut s, "page.select", json!({"id":first}));
+    ex(&mut s, "shape.rectangle", json!({"width":40,"height":30}));
+    let missing = u64::MAX;
+    assert!(s.doc().unwrap().node(NodeId(missing)).is_none());
+    let before = s.ds().unwrap().doc.clone();
+    let revision = s.ds().unwrap().revision;
+    let view = s.page().unwrap();
+    let selection = s.selection();
+    let history = s.undo_depth();
+    let bytes = crate::cmd::file::file_bytes(s.ds().unwrap()).unwrap();
+    assert!(s.execute("page.setOpening", &json!({"id":missing})).is_err());
+    assert!(std::sync::Arc::ptr_eq(&before, &s.ds().unwrap().doc));
+    assert_eq!(s.ds().unwrap().revision, revision);
+    assert_eq!((s.page().unwrap(), s.selection(), s.undo_depth()), (view, selection, history));
+    assert_eq!(s.doc().unwrap().opening_page, Some(cover));
+    assert_eq!(crate::cmd::file::file_bytes(s.ds().unwrap()).unwrap(), bytes);
+}

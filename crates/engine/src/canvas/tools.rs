@@ -31,8 +31,8 @@ use handles::DRAG_SLOP_PX;
 #[cfg(test)]
 pub(crate) use handles::scale_factor;
 pub use handles::{
-    PENCIL_STROKE, SMALL_BOX_PX, anchor_name, anchor_of, box_sides_px, handle_at, handle_at_corners, label_at, locked_in, scale_anchor_point,
-    selection_box, selection_frame,
+    PENCIL_STROKE, SMALL_BOX_PX, anchor_name, anchor_of, box_sides_px, handle_at, handle_at_corners, label_at, locked_in, pencil_stroke,
+    scale_anchor_point, selection_box, selection_frame,
 };
 pub(crate) use handles::{SNAP_PX, handle_cursor, readable_text_fills, resized_box};
 #[cfg(test)]

@@ -2487,11 +2487,16 @@ fn a_dragged_card_keeps_its_blur() {
         let mut canvas = CanvasGpu::new(&device, w, h).unwrap();
         assert!(gpu_frame(&mut canvas, &device, &queue, &d, &view, scene::background(&d, p)));
         let first = canvas.kept_shadow_hits();
+        let repeated_at = std::time::Instant::now();
         for i in 1..8u32 {
             let was = canvas.kept_shadow_hits();
             assert!(gpu_frame(&mut canvas, &device, &queue, &moved(f64::from(i) * step), &view, scene::background(&d, p)));
             println!("  {zoom:.2}× move {i}: kept {}", canvas.kept_shadow_hits() - was);
         }
+        // Read waits for queued GPU work: record completed seven-frame latency, not submit latency.
+        let gpu = canvas.read(&device, &queue).unwrap();
+        let repeated_ms = repeated_at.elapsed().as_secs_f64() * 1000.0;
+        println!("qualification drag: zoom={zoom:.2}, frames=7, completed_ms={repeated_ms:.3}, kept_shadows={}", canvas.kept_shadows());
         let hits = canvas.kept_shadow_hits() - first;
         println!("{zoom:.2}×: seven moves found the kept layer {hits} times");
         assert!(hits >= 7, "a drag at {zoom:.2}× re-blurred its layer ({hits} of 7 kept)");
@@ -2499,7 +2504,6 @@ fn a_dragged_card_keeps_its_blur() {
         // snapped to a whole device pixel, so a fractional drag is off by less than one).
         let d7 = moved(7.0 * step);
         let cpu = render_view(&d7, p, &view, &Options::default()).unwrap();
-        let gpu = canvas.read(&device, &queue).unwrap();
         let (worst, mean, at, over) = diff(&cpu, &gpu);
         println!("  dragged card parity at {zoom:.2}×: worst {worst} at {at:?}, mean {mean:.3}, {over} pixels differ by more than 8");
         assert!(worst <= 160, "a channel differs by {worst} (mean {mean:.3})");

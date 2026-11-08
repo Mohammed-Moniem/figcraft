@@ -101,7 +101,11 @@ pub(super) fn slot_badges(app: &FigApp, painter: &egui::Painter, doc: &Arc<Docum
     let base = app.session.ds().ok().and_then(crate::selection_cache::moved).map(|(b, _)| b);
     let from = base.as_ref().unwrap_or(doc);
     let slots = crate::selection_cache::cached(painter.ctx(), "slots", from, sel, &key, || slots_shown(from, sel, drop));
+    let mut selection_painter = painter.clone();
+    selection_painter.multiply_opacity((app.session.prefs.selection_outline_opacity() / 100.0) as f32);
     for (id, name) in slots {
+        // A live drop target is an editing indicator, independent of selection-chrome opacity.
+        let painter = if drop == Some(id) { painter } else { &selection_painter };
         let Some(q) = node_quad(app, doc, id) else { continue };
         if !Rect::from_points(&q).intersects(app.canvas.rect) {
             continue;

@@ -615,7 +615,7 @@ pub fn show(app: &mut FigApp, ui: &mut Ui) {
         title(ui, w, tr("Local components"));
         if listing.local.is_empty() {
             if q.is_empty() {
-                let keys = crate::toolbar::pretty_shortcut(crate::shortcuts::shortcut("component.create").unwrap_or(""));
+                let keys = crate::toolbar::pretty_shortcut(crate::shortcuts::shortcut_for(app, "component.create").unwrap_or(""));
                 hint(ui, &trf("No components yet. Select layers and press {keys}.", &[("keys", &keys)]));
             } else {
                 hint(ui, tr("No matching components"));

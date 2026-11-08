@@ -184,6 +184,7 @@ impl Presenter {
     }
 
     fn arrive(&mut self, now: f64) {
+        self.key_inputs.clear();
         if let Some(doc) = self.doc.as_ref() {
             figcraft_engine::proto_run::remember_sections(doc, self.current, &mut self.sections);
         }
@@ -240,6 +241,7 @@ impl Presenter {
 
     pub(super) fn revert(&mut self, now: f64) {
         let Some(t) = self.temp.take() else { return };
+        self.key_inputs.clear();
         self.begin(t.transition.reversed(), t.dur, t.easing, now);
         self.current = t.snap.current;
         self.design = Some(t.snap.doc);

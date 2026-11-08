@@ -56,6 +56,59 @@ fn issue_2045_export_without_a_valid_active_page_keeps_original_order() {
     }
 }
 
+#[test]
+fn issue_2045_archive_background_matches_the_active_page() {
+    let mut doc = Document::new("Background");
+    let active = doc.add_page("Active");
+    doc.current_page = Some(active);
+    let wanted = Color::new(0.2, 0.4, 0.6, 0.8);
+    if let NodeKind::Page { background, .. } = &mut doc.node_mut(active).unwrap().kind {
+        *background = wanted;
+    }
+    let (bytes, _) = export(&doc, None).unwrap();
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    let meta: Value = serde_json::from_reader(zip.by_name("meta.json").unwrap()).unwrap();
+    for (channel, expected) in [("r", wanted.r), ("g", wanted.g), ("b", wanted.b), ("a", wanted.a)] {
+        assert!(
+            (meta["client_meta"]["background_color"][channel].as_f64().unwrap() - f64::from(expected)).abs() < 1e-6,
+            "background channel {channel}"
+        );
+    }
+}
+
+#[test]
+fn issue_2045_reordered_pages_keep_image_assets_and_every_page_content() {
+    let mut doc = Document::new("Image pages");
+    let first = doc.pages[0];
+    doc.node_mut(first).unwrap().name = "Template".into();
+    let active = doc.add_page("Design");
+    let last = doc.add_page("Archive");
+    let original = super::tests::png();
+    let (image, _, _) = crate::add_image(&mut doc, original.clone()).unwrap();
+    for (page, name) in [(first, "Template image"), (active, "Design image"), (last, "Archive image")] {
+        let node = doc.create(page, NodeKind::Rectangle, name, 0.0, 0.0, 32.0, 32.0).unwrap();
+        doc.node_mut(node).unwrap().fills = vec![Paint::image(image.clone(), ImageScaleMode::Fill)];
+    }
+    doc.current_page = Some(active);
+    let (bytes, warnings) = export(&doc, None).unwrap();
+    assert!(warnings.is_empty());
+    let archive = Archive::open(&bytes).unwrap();
+    assert_eq!(archive.image(&export::sha1_hex(&original)).unwrap(), original);
+    let (back, warnings) = import(&bytes, "Image pages").unwrap();
+    assert!(warnings.is_empty());
+    let pages: Vec<_> = back.pages.iter().map(|p| back.node(*p).unwrap().name.as_str()).collect();
+    assert_eq!(pages, ["Design", "Template", "Archive"]);
+    assert_eq!(back.images.len(), 1);
+    for name in ["Template image", "Design image", "Archive image"] {
+        let nodes: Vec<_> = back.nodes().filter(|n| n.name == name).collect();
+        assert_eq!(nodes.len(), 1, "each page retains its authored layer once");
+        let PaintKind::Image(paint) = &nodes[0].fills[0].kind else { panic!("image paint retained") };
+        assert_eq!(back.images[&paint.image].bytes.as_ref(), original.as_slice());
+    }
+    assert_eq!(doc.pages, [first, active, last]);
+    assert_eq!(doc.current_page, Some(active));
+}
+
 /// A cheap deterministic generator.
 struct Lcg(u64);
 impl Lcg {
@@ -1645,6 +1698,41 @@ fn a_name_used_with_two_types_in_a_set_writes_both_definitions() {
         for d in v.get("componentPropDefs").unwrap().list() {
             assert!(written.contains(&key(d.get("parentPropDefId").unwrap())));
         }
+    }
+}
+
+#[test]
+fn prototype_key_timing_fig_export_keeps_standard_down_and_warns_without_misrepresenting_extensions() {
+    for trigger in [
+        Trigger::KeyDown { key: "Shift+A".into(), ms: 0 },
+        Trigger::KeyDown { key: "Shift+A".into(), ms: 500 },
+        Trigger::KeyUp { key: "Shift+A".into(), ms: 0 },
+        Trigger::KeyUp { key: "Shift+A".into(), ms: 500 },
+    ] {
+        let mut doc = Document::new("Original trigger export fixture");
+        let page = doc.first_page().unwrap();
+        let node = doc.create(page, NodeKind::Rectangle, "Original trigger", 0.0, 0.0, 100.0, 100.0).unwrap();
+        doc.node_mut(node).unwrap().interactions.push(Interaction {
+            trigger: trigger.clone(),
+            actions: vec![Action::Back],
+            transition: Transition::Instant,
+            duration_ms: 0,
+            easing: Easing::Linear,
+            delay_ms: 0,
+        });
+        let (bytes, warnings) = export(&doc, None).unwrap();
+        let (back, _) = import(&bytes, "Phase export control").unwrap();
+        let result = back.ids().filter_map(|id| back.node(id)).find(|node| node.name == "Original trigger").unwrap();
+        if matches!(trigger, Trigger::KeyDown { ms: 0, .. }) {
+            assert!(warnings.is_empty(), "zero-hold down is representable: {warnings:?}");
+            assert_eq!(result.interactions.len(), 1);
+            assert_eq!(result.interactions[0].trigger, Trigger::KeyPress { key: "Shift+A".into() });
+            assert_eq!(result.interactions[0].actions, [Action::Back]);
+        } else {
+            assert!(result.interactions.is_empty(), "an unsupported phase must not turn into a different trigger: {trigger:?}");
+            assert!(warnings.iter().any(|warning| warning == "timed key-down and key-up prototype triggers were left out"), "{warnings:?}");
+        }
+        assert_eq!(doc.node(node).unwrap().interactions[0].trigger, trigger, "export leaves the editable native trigger intact");
     }
 }
 

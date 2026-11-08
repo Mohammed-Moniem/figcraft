@@ -15,6 +15,8 @@ pub struct Desktop {
     /// Where the preferences live ([`config_dir`]).
     dir: Option<PathBuf>,
     pub prefs: Option<Prefs>,
+    /// Last preferences save failed; consumed once by the app's existing error UI.
+    prefs_failed: bool,
     /// The project library read at startup (`None`: none yet), what to tell about it, and why it
     /// must not be saved (its file is there but couldn't be read).
     pub projects: Option<figcraft_engine::projects::Projects>,
@@ -126,6 +128,7 @@ impl Desktop {
             egui_ctx: None,
             dir,
             prefs,
+            prefs_failed: false,
             projects: loaded.projects,
             projects_notice: loaded.notice,
             projects_blocked: loaded.blocked,
@@ -451,12 +454,20 @@ pub fn shutdown(app: &mut FigApp, dir: Option<&Path>, recovery: Option<crate::re
 /// Write `prefs` to `dir` atomically (a temporary file renamed over the old one: a crash leaves
 /// either version whole). They hold online owner tokens, so on Unix only the owner can read them.
 pub(crate) fn write_prefs(dir: &Path, prefs: &Prefs) {
+    let _ = try_write_prefs(dir, prefs);
+}
+
+fn try_write_prefs(dir: &Path, prefs: &Prefs) -> bool {
     let tmp = dir.join("state.json.tmp");
     let written = std::fs::create_dir_all(dir)
         .and_then(|()| write_private(&tmp, json!({"prefs": prefs}).to_string().as_bytes()))
         .and_then(|()| std::fs::rename(&tmp, dir.join(STATE)));
-    if let Err(e) = written {
-        log::warn!("preferences: couldn't save them in {}: {e}", dir.display());
+    match written {
+        Ok(()) => true,
+        Err(e) => {
+            log::warn!("preferences: couldn't save them in {}: {e}", dir.display());
+            false
+        }
     }
 }
 
@@ -627,9 +638,10 @@ impl Services for Desktop {
         }
     }
     fn save_prefs(&mut self, prefs: &Prefs) {
-        if let Some(dir) = &self.dir {
-            write_prefs(dir, prefs);
-        }
+        self.prefs_failed = self.dir.as_ref().is_some_and(|dir| !try_write_prefs(dir, prefs));
+    }
+    fn take_prefs_save_failure(&mut self) -> bool {
+        std::mem::take(&mut self.prefs_failed)
     }
     fn save_projects(&mut self, projects: &figcraft_engine::projects::Projects) -> Result<(), String> {
         if let Some(why) = &self.projects_blocked {

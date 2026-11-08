@@ -20,7 +20,7 @@ figcraft-render = { workspace = true }
 figcraft-text = { workspace = true }
 figcraft-svg = { workspace = true }
 figcraft-format = { workspace = true }
-figcraft-mcp = { workspace = true }
+figcraft-mcp = { workspace = true, features = ["headless"] }
 serde_json = { workspace = true }
 clap = { workspace = true }
 thiserror = { workspace = true }

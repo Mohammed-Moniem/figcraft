@@ -202,7 +202,7 @@ pub fn tab_bar(app: &mut FigApp, ui: &mut Ui) {
             && (rect.min.y - 12.0..=rect.max.y + 12.0).contains(&p.y)
             && let Some((_, at)) = tab_drop_position(&visible, from, p.x)
         {
-            ui.painter().line_segment([pos2(at, rect.min.y + 5.0), pos2(at, rect.max.y - 5.0)], Stroke::new(3.0, crate::theme::ACCENT));
+            ui.painter().line_segment([pos2(at, rect.min.y + 5.0), pos2(at, rect.max.y - 5.0)], Stroke::new(3.0, crate::theme::accent(ui.ctx())));
         }
         let reorder = dropped.and_then(|(from, at)| tab_drop_position(&visible, from, at).map(|(to, _)| (from, to)));
         if layout.overflow {
@@ -233,7 +233,8 @@ pub fn tab_bar(app: &mut FigApp, ui: &mut Ui) {
         }
         // New tab.
         let nr = Rect::from_center_size(pos2(x + 20.0, rect.center().y), vec2(28.0, 28.0));
-        let nresp = ui.interact(nr, ui.scope_id().with("newtab"), Sense::click()).tip(crate::shortcuts::tip(tr("New design file"), "file.new"));
+        let nresp =
+            ui.interact(nr, ui.scope_id().with("newtab"), Sense::click()).tip(crate::shortcuts::tip_for(app, tr("New design file"), "file.new"));
         if nresp.hovered() {
             ui.painter().rect_filled(nr, CornerRadius::same(5), t.hover);
         }
@@ -476,7 +477,7 @@ fn paint_tab(ui: &Ui, t: &Tokens, tab: &TabPaint) {
         &painter,
         Rect::from_center_size(pos2(paint_r.min.x + 18.0, paint_r.center().y), vec2(14.0, 14.0)),
         icons::file_mark(kind),
-        crate::theme::ACCENT.linear_multiply(progress),
+        crate::theme::accent(ui.ctx()).linear_multiply(progress),
     );
     // The unsaved-changes dot follows the name on screen, whichever way the name reads.
     let shown = crate::bidi::paint_name(

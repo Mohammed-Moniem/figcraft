@@ -58,7 +58,7 @@ impl<'d> Exporter<'d> {
                 event.push(("transitionTimeout", fl(f64::from(*ms) / 1000.0)));
                 "AFTER_TIMEOUT"
             }
-            Trigger::KeyPress { key } => {
+            Trigger::KeyPress { key } | Trigger::KeyDown { key, ms: 0 } => {
                 let Some((codes, pad)) = key_codes(key) else {
                     self.warn("key triggers on keys the format has no code for were left out");
                     return None;
@@ -66,6 +66,10 @@ impl<'d> Exporter<'d> {
                 let device = e(if pad { "UNKNOWN_CONTROLLER" } else { "KEYBOARD" });
                 event.push(("keyTrigger", o(vec![("keyCodes", arr(codes.into_iter().map(int).collect())), ("triggerDevice", device)])));
                 "ON_KEY_DOWN"
+            }
+            Trigger::KeyDown { .. } | Trigger::KeyUp { .. } => {
+                self.warn("timed key-down and key-up prototype triggers were left out");
+                return None;
             }
         };
         // A mouse trigger's delay is the event's timeout.

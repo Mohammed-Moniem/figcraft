@@ -13,6 +13,9 @@ pub struct ViewState {
     pub vw: f64,
     pub vh: f64,
     pub pixel_grid: bool,
+    /// Page-unit spacing, copied from the app preference.
+    #[serde(deserialize_with = "crate::pixel_grid::read_size")]
+    pub pixel_grid_size: f64,
     pub layout_grids: bool,
     pub rulers: bool,
     pub outlines: bool,
@@ -55,6 +58,7 @@ impl Default for ViewState {
             vw: 1200.0,
             vh: 800.0,
             pixel_grid: true,
+            pixel_grid_size: crate::pixel_grid::DEFAULT_SIZE,
             layout_grids: true,
             rulers: false,
             outlines: false,
@@ -109,11 +113,16 @@ impl ViewState {
         self.cx = r.center().x;
         self.cy = r.center().y;
     }
-    /// The zoom from which the pixel grid shows (400%).
+    /// The default 1 px grid appears at 400%; custom cells use this minimum screen spacing.
     pub const PIXEL_GRID_ZOOM: f64 = 4.0;
-    /// Whether the pixel grid draws: it's on and the canvas is zoomed in to 400% or more.
+    /// Safe spacing even if a programmatic caller supplied a malformed view.
+    pub fn pixel_grid_step(&self) -> f64 {
+        crate::pixel_grid::size_or_default(self.pixel_grid_size)
+    }
+    /// Cells are visible at four screen pixels apart; the default size keeps the 400% threshold.
     pub fn pixel_grid_shown(&self) -> bool {
-        self.pixel_grid && self.zoom >= Self::PIXEL_GRID_ZOOM - 1e-9
+        let gap = self.zoom * self.pixel_grid_step();
+        self.pixel_grid && self.zoom.is_finite() && gap.is_finite() && gap >= Self::PIXEL_GRID_ZOOM - 1e-9
     }
     /// Pixel preview's resolution (rendered pixels per page pixel) when it's on and zoomed in past
     /// it; below that the canvas is already coarser than the preview.

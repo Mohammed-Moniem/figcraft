@@ -67,6 +67,7 @@ fn colourful() -> (Document, NodeId) {
         hidden_from_publishing: false,
         extends: None,
         overrides: Default::default(),
+        design_token_type: None,
         code_syntax: Default::default(),
     });
     d.document_colors.push(RED);

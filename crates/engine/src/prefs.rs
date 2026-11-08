@@ -25,6 +25,16 @@ fn read_ui_scale<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<
     Ok(Value::deserialize(d)?.as_f64().and_then(clamp_ui_scale).unwrap_or(1.0))
 }
 
+pub(crate) const DEFAULT_SELECTION_OUTLINE_OPACITY: f64 = 100.0;
+
+pub(crate) fn valid_selection_outline_opacity(opacity: f64) -> Option<f64> {
+    (opacity.is_finite() && (0.0..=100.0).contains(&opacity)).then_some(opacity)
+}
+
+fn read_selection_outline_opacity<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<f64, D::Error> {
+    Ok(Value::deserialize(d)?.as_f64().and_then(valid_selection_outline_opacity).unwrap_or(DEFAULT_SELECTION_OUTLINE_OPACITY))
+}
+
 /// App-wide preferences that commands read (nudge amounts, behaviours).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -32,15 +42,28 @@ pub struct Prefs {
     pub nudge_small: f64,
     pub nudge_big: f64,
     pub keep_tool: bool,
+    /// Keep the in-app main menu open after toggling a checked option. Off by default.
+    pub keep_menu_open: bool,
+    /// Keyboard shortcut replacements, separately for macOS and Windows/Linux (#2036).
+    /// Missing commands retain the canonical defaults; an empty list unbinds a command.
+    pub shortcuts: crate::keymap::ShortcutOverrides,
     pub rename_duplicates: bool,
     pub highlight_on_hover: bool,
     pub number_keys_opacity: bool,
     pub show_dimensions: bool,
+    /// Opacity of selection chrome only, in percent. Documents and their rendered artwork are unchanged.
+    #[serde(deserialize_with = "read_selection_outline_opacity")]
+    pub selection_outline_opacity: f64,
     /// A mouse wheel zooms the canvas about the pointer, and Cmd/Ctrl+wheel scrolls it (off: the
     /// other way round). Trackpads are unchanged.
     pub scroll_wheel_zoom: bool,
+    /// Step a focused numeric field with the wheel over it. Off by default, so panels scroll.
+    pub number_wheel: bool,
     /// "system" by default; an explicit "light" or "dark" choice stays saved.
     pub theme: String,
+    /// Opaque sRGB interface accent. The default preserves the existing green palettes.
+    #[serde(deserialize_with = "read_accent")]
+    pub accent: String,
     /// The widths of the main window's left and right panels (the interface keeps them within its
     /// limits; other windows have their own while they are open).
     pub panel_widths: (f32, f32),
@@ -101,6 +124,10 @@ pub struct Prefs {
     /// [`online`]), most recently opened first, at most [`online::MAX_ONLINE_FILES`].
     #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "online::read")]
     pub online_files: Vec<online::OnlineFile>,
+    /// Files successfully joined here, newest first. Their private capabilities stay in local
+    /// preferences, never in documents or command summaries.
+    #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "crate::joined::read")]
+    pub joined_files: Vec<crate::joined::JoinedFile>,
     /// The Getting started tips on the home screen were closed (Help ▸ Getting started shows them
     /// again).
     pub getting_started_dismissed: bool,
@@ -123,6 +150,9 @@ pub struct Prefs {
     /// files opened or made later start with them. Missing: the toggle's default.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub view: BTreeMap<String, bool>,
+    /// Page-unit spacing for the canvas pixel grid and pixel snapping, independent of visibility.
+    #[serde(deserialize_with = "crate::pixel_grid::read_size")]
+    pub pixel_grid_size: f64,
     /// Design review ignores, by document path: whole rule ids and `rule@layer` entries.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub design_review_ignored: BTreeMap<String, Vec<String>>,
@@ -151,12 +181,17 @@ impl Default for Prefs {
             nudge_small: 1.0,
             nudge_big: 10.0,
             keep_tool: false,
+            keep_menu_open: false,
+            shortcuts: Default::default(),
             rename_duplicates: false,
             highlight_on_hover: true,
             number_keys_opacity: true,
             show_dimensions: true,
+            selection_outline_opacity: DEFAULT_SELECTION_OUTLINE_OPACITY,
             scroll_wheel_zoom: false,
+            number_wheel: false,
             theme: "system".into(),
+            accent: UI_ACCENT_DEFAULT.into(),
             panel_widths: (240.0, 240.0),
             pages_height: None,
             language: "system".into(),
@@ -177,6 +212,7 @@ impl Default for Prefs {
             publish_server: live::DEFAULT_SERVER.into(),
             recent_files: Vec::new(),
             online_files: Vec::new(),
+            joined_files: Vec::new(),
             getting_started_dismissed: false,
             restore_session: true,
             session: crate::restore::SavedSession::default(),
@@ -185,6 +221,7 @@ impl Default for Prefs {
             home_sort: "modified".into(),
             home_order: "desc".into(),
             view: BTreeMap::new(),
+            pixel_grid_size: crate::pixel_grid::DEFAULT_SIZE,
             design_review_ignored: BTreeMap::new(),
             board_grid: Default::default(),
             recent_actions: Vec::new(),
@@ -231,4 +268,38 @@ pub struct Clipboard {
     /// The document copied from (pastes into other files follow its mains) and its file path.
     pub source: Option<Arc<Document>>,
     pub source_path: Option<String>,
+}
+
+/// The existing green interface accent, also used for old or malformed saved settings.
+pub const UI_ACCENT_DEFAULT: &str = "#02DA96";
+
+fn read_accent<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<String, D::Error> {
+    let value = Value::deserialize(d)?;
+    Ok(value.as_str().and_then(Prefs::parse_accent).map(accent_hex).unwrap_or_else(|| UI_ACCENT_DEFAULT.into()))
+}
+
+pub(crate) fn accent_hex(rgb: [u8; 3]) -> String {
+    format!("#{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2])
+}
+
+impl Prefs {
+    /// A safe percentage for painting and programmatic queries, including hand-edited preferences.
+    pub fn selection_outline_opacity(&self) -> f64 {
+        valid_selection_outline_opacity(self.selection_outline_opacity).unwrap_or(DEFAULT_SELECTION_OUTLINE_OPACITY)
+    }
+
+    /// Parse an opaque six-digit sRGB hex accent. Shorthand, alpha and named colors are rejected.
+    pub fn parse_accent(value: &str) -> Option<[u8; 3]> {
+        let value = value.trim().as_bytes();
+        if value.len() != 7 || value.first() != Some(&b'#') || !value[1..].iter().all(u8::is_ascii_hexdigit) {
+            return None;
+        }
+        let nibble = |b: u8| if b.is_ascii_digit() { b - b'0' } else { b.to_ascii_uppercase() - b'A' + 10 };
+        Some([nibble(value[1]) * 16 + nibble(value[2]), nibble(value[3]) * 16 + nibble(value[4]), nibble(value[5]) * 16 + nibble(value[6])])
+    }
+
+    /// The saved accent for UI rendering. A programmatic invalid field value also uses green.
+    pub fn accent_rgb(&self) -> [u8; 3] {
+        Self::parse_accent(&self.accent).unwrap_or([2, 218, 150])
+    }
 }

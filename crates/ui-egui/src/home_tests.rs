@@ -952,3 +952,150 @@ fn a_jam_file_is_a_document_open_and_drops_take() {
         assert!(crate::open::opens(path) && crate::open::is_document(path), "{name}");
     }
 }
+
+/// Production shared-egui fixtures: real widget clicks, keyboard traversal and field input.
+/// They do not claim physical keyboard, native window delivery or OS preferences persistence.
+fn home_preferences_button(u: &mut Ui) -> (Pos2, Rect) {
+    u.ctx.enable_accesskit();
+    u.frame(vec![]);
+    let out = u.frame_output(vec![]);
+    let nodes = out.platform_output.accesskit_update.unwrap().nodes;
+    let button = nodes.iter().map(|(_, n)| n).find(|n| n.role() == Role::Button && n.label() == Some("Preferences")).unwrap();
+    let b = button.bounds().unwrap();
+    let rect = Rect::from_min_max(egui::pos2(b.x0 as f32, b.y0 as f32), egui::pos2(b.x1 as f32, b.y1 as f32));
+    assert!(!button.is_disabled());
+    (rect.center(), rect)
+}
+
+#[test]
+fn home_preferences_click_again_and_command_comma_both_toggle_without_a_document() {
+    let mut u = first_run();
+    let (at, _) = home_preferences_button(&mut u);
+    for expected in [true, false, true, false] {
+        click(&mut u, at);
+        assert_eq!(u.app.ui.preferences, expected, "a second actual sidebar click closes the same dialog");
+        assert!(!u.app.ui.shortcuts_panel);
+        assert!(u.app.session.docs.is_empty());
+    }
+    for expected in [true, false] {
+        let key = |pressed| Event::Key { key: Key::Comma, physical_key: None, pressed, repeat: false, modifiers: Modifiers::COMMAND };
+        u.frame_with(vec![key(true), key(false)], Modifiers::COMMAND);
+        assert_eq!(u.app.ui.preferences, expected);
+        assert!(!u.app.ui.shortcuts_panel);
+    }
+}
+
+#[test]
+fn home_preferences_escape_discards_a_focused_name_draft_across_reopen() {
+    use std::sync::{Arc, Mutex};
+    struct Kept(Arc<Mutex<Vec<String>>>);
+    impl crate::Services for Kept {
+        fn save_prefs(&mut self, prefs: &figcraft_engine::Prefs) {
+            self.0.lock().unwrap().push(prefs.user_name.clone());
+        }
+    }
+    let mut u = first_run();
+    u.app.session.execute("pref.userName", &json!({"name":"Owned original name"})).unwrap();
+    let kept = Arc::new(Mutex::new(Vec::new()));
+    u.app.services = Box::new(Kept(kept.clone()));
+    let (at, _) = home_preferences_button(&mut u);
+    click(&mut u, at);
+    for _ in 0..4 {
+        u.frame(vec![]);
+    }
+    let ctx = u.ctx.clone();
+    crate::preferences_test_support::show(&ctx, |events| u.frame_output(events), "Your name", Role::TextInput);
+    let current = shapes(&mut u);
+    click(&mut u, text_center(&current, "Owned original name"));
+    let select = |pressed| Event::Key { key: Key::A, physical_key: None, pressed, repeat: false, modifiers: Modifiers::COMMAND };
+    u.frame_with(vec![select(true), select(false)], Modifiers::COMMAND);
+    u.frame(vec![Event::Text("Cancelled name draft".into())]);
+    assert!(has_text(&shapes(&mut u), "Cancelled name draft"), "a real uncommitted field draft is visible");
+    assert_eq!(u.app.session.prefs.user_name, "Owned original name");
+    press(&mut u, Key::Escape);
+    assert!(!u.app.ui.preferences, "the actual dialog Escape handler closed Preferences");
+    assert_eq!(u.app.session.prefs.user_name, "Owned original name");
+    assert!(!kept.lock().unwrap().iter().any(|name| name == "Cancelled name draft"));
+    click(&mut u, at);
+    for _ in 0..4 {
+        u.frame(vec![]);
+    }
+    crate::preferences_test_support::show(&ctx, |events| u.frame_output(events), "Your name", Role::TextInput);
+    let reopened = shapes(&mut u);
+    assert!(!has_text(&reopened, "Cancelled name draft"), "reopening must not revive the abandoned widget buffer");
+    assert!(has_text(&reopened, "Owned original name"));
+    press(&mut u, Key::Enter);
+    assert_eq!(u.app.session.prefs.user_name, "Owned original name", "Enter after reopening cannot commit a cancelled draft");
+    let current = shapes(&mut u);
+    click(&mut u, text_center(&current, "Owned original name"));
+    u.frame_with(vec![select(true), select(false)], Modifiers::COMMAND);
+    u.frame(vec![Event::Text("Owned fresh name".into())]);
+    press(&mut u, Key::Enter);
+    u.frame(vec![]);
+    assert_eq!(u.app.session.prefs.user_name, "Owned fresh name", "a fresh deliberate edit still commits");
+    let saved = kept.lock().unwrap();
+    assert!(!saved.iter().any(|name| name == "Cancelled name draft"));
+    assert_eq!(saved.iter().filter(|name| name.as_str() == "Owned fresh name").count(), 1);
+    assert!(u.app.session.docs.is_empty());
+    assert!(!u.app.ui.shortcuts_panel);
+}
+
+fn short_home_frame(u: &mut Ui, screen: Rect, mut events: Vec<Event>) -> egui::FullOutput {
+    events.insert(0, Event::ModifiersChanged(Modifiers::NONE));
+    u.frame_raw(egui::RawInput { screen_rect: Some(screen), events, ..Default::default() })
+}
+
+#[test]
+fn short_home_keeps_preferences_visible_keyboard_reachable_ringed_and_named_with_its_shortcut() {
+    let mut u = first_run();
+    u.ctx.enable_accesskit();
+    let screen = Rect::from_min_size(Pos2::ZERO, egui::vec2(760.0, 320.0));
+    let mut out = short_home_frame(&mut u, screen, vec![]);
+    for _ in 0..8 {
+        out = short_home_frame(&mut u, screen, vec![]);
+    }
+    let update = out.platform_output.accesskit_update.as_ref().unwrap();
+    let (pref_id, pref_node) = update.nodes.iter().find(|(_, node)| node.role() == Role::Button && node.label() == Some("Preferences")).unwrap();
+    let pref_id = *pref_id;
+    let b = pref_node.bounds().unwrap();
+    let pref = Rect::from_min_max(egui::pos2(b.x0 as f32, b.y0 as f32), egui::pos2(b.x1 as f32, b.y1 as f32));
+    assert!(screen.contains_rect(pref), "the complete Preferences control remains in a short Home viewport: {pref:?}");
+    assert!(!pref_node.is_disabled());
+    let key_label = figcraft_engine::keymap::display("Cmd+,", crate::shortcuts::platform());
+    assert!(has_text(&flat(&out.shapes), &key_label), "the actual platform shortcut is painted");
+    short_home_frame(&mut u, screen, vec![Event::PointerMoved(pref.center())]);
+    u.advance_clock(2.0);
+    // The first eligible popup frame is egui's hidden sizing pass. Give that real popup
+    // a bounded number of subsequent presentation frames, retaining its actual text assertion.
+    let expected_tooltip = format!("Preferences ({key_label})");
+    let tooltip_shown = (0..4).any(|_| {
+        let hovered = short_home_frame(&mut u, screen, vec![]);
+        has_text(&flat(&hovered.shapes), &expected_tooltip)
+    });
+    assert!(tooltip_shown, "the actual hover tooltip names the control and platform shortcut after its sizing pass");
+    short_home_frame(&mut u, screen, vec![Event::PointerGone]);
+    let mut reached = false;
+    for _ in 0..64 {
+        let key = |pressed| Event::Key { key: Key::Tab, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE };
+        short_home_frame(&mut u, screen, vec![key(true)]);
+        out = short_home_frame(&mut u, screen, vec![key(false)]);
+        if out.platform_output.accesskit_update.as_ref().unwrap().focus == pref_id {
+            reached = true;
+            break;
+        }
+    }
+    assert!(reached, "bounded real Tab traversal reaches Home Preferences");
+    let focus_color = crate::theme::Tokens::get(&u.ctx).focus;
+    assert!(
+        flat(&out.shapes).iter().any(
+            |shape| matches!(shape,Shape::Rect(rect) if rect.stroke.width>=2.0 && rect.stroke.color==focus_color && rect.rect.contains(pref.center()))
+        ),
+        "the focused Preferences control has an actual visible focus border"
+    );
+    let key = |pressed| Event::Key { key: Key::Enter, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE };
+    short_home_frame(&mut u, screen, vec![key(true)]);
+    short_home_frame(&mut u, screen, vec![key(false)]);
+    assert!(u.app.ui.preferences, "the keyboard-focused real button opens Preferences");
+    assert!(u.app.session.docs.is_empty());
+    assert!(!u.app.ui.shortcuts_panel);
+}

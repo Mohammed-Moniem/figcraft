@@ -258,6 +258,8 @@ pub static MENU: &[MenuItem] = &[
     m!("Preferences", "Snap to geometry", "view.snapGeometry"),
     m!("Preferences", "Snap to objects", "view.snapObjects"),
     m!("Preferences", "Snap to pixel grid", "view.snapPixel"),
+    m!("Preferences", "Pixel grid size…", "pref.pixelGridSize"),
+    m!("Preferences", "Selection outline opacity…", "pref.selectionOutlineOpacity"),
     m!("Preferences", "Keep tool selected after use", "pref.keepTool"),
     m!("Preferences", "Highlight layers on hover", "pref.highlightHover"),
     m!("Preferences", "Rename duplicated layers", "pref.renameDuplicates"),
@@ -301,7 +303,9 @@ pub fn items() -> impl Iterator<Item = &'static MenuItem> {
 }
 
 /// Items of FigCraft's own that the parity count leaves out (as it does the `collab.` ones).
-const OWN: [&str; 9] = [
+const OWN: [&str; 11] = [
+    "pref.selectionOutlineOpacity",
+    "pref.pixelGridSize",
     "file.newFromTemplate",
     "file.newBoard",
     "help.gettingStarted",

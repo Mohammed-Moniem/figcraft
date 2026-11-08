@@ -24,6 +24,8 @@ const MAX_TIMEOUT: Duration = Duration::from_secs(600);
 /// example while the process has no file descriptors left, and retrying at once would keep a
 /// core busy until it recovers.
 const ACCEPT_RETRY: Duration = Duration::from_millis(100);
+/// Back off while every bounded worker slot is still owned; never spin or accept an excess socket.
+const CAPACITY_POLL: Duration = Duration::from_millis(10);
 
 /// Why a request's transport wait ended without a control reply.
 #[derive(Debug, PartialEq, Eq)]
@@ -120,6 +122,10 @@ struct ControlInner {
     data_dir: Mutex<Option<std::path::PathBuf>>,
     auth: Mutex<Option<Arc<crate::control_auth::Lease>>>,
     apply_lock: Mutex<()>,
+    #[cfg(test)]
+    retirement_hook: Mutex<Option<tests::RetirementHook>>,
+    #[cfg(test)]
+    capacity_observer: Mutex<Option<std::sync::mpsc::SyncSender<usize>>>,
 }
 
 impl ControlHandle {
@@ -223,7 +229,9 @@ impl ControlHandle {
         let inner = self.inner.clone();
         let spawned = std::thread::Builder::new().name("figcraft-control".into()).spawn(move || {
             let mut workers = Vec::new();
-            for stream in accepted(listener.incoming(), || std::thread::sleep(ACCEPT_RETRY)) {
+            let mut incoming = accepted(listener.incoming(), || std::thread::sleep(ACCEPT_RETRY));
+            while wait_for_connection_capacity(&mut workers, &inner, next_gen) {
+                let Some(stream) = incoming.next() else { break };
                 if inner.generation.load(Ordering::SeqCst) != next_gen {
                     break;
                 }
@@ -240,6 +248,24 @@ impl ControlHandle {
                 *err = Some(format!("can't start the server thread: {e}"));
             }
         }
+    }
+}
+
+/// Pending peers remain in the OS-managed listen backlog until a worker slot is free.
+/// Authentication's2s deadline starts at admission; clients bound their pre-admission wait.
+/// No socket/task/heap queue is created here, and retirement is checked on every poll.
+fn wait_for_connection_capacity(workers: &mut Vec<std::thread::JoinHandle<()>>, inner: &ControlInner, generation: u64) -> bool {
+    loop {
+        if inner.generation.load(Ordering::SeqCst) != generation {
+            return false;
+        }
+        workers.retain(|worker| !worker.is_finished());
+        if workers.len() < MAX_CONNECTIONS {
+            return true;
+        }
+        #[cfg(test)]
+        tests::observe_full_capacity(Some(inner), workers.len());
+        std::thread::sleep(CAPACITY_POLL);
     }
 }
 
@@ -275,6 +301,10 @@ fn spawn_connection_tracked(
         return;
     }
     workers.retain(|worker| !worker.is_finished());
+    #[cfg(test)]
+    if workers.len() >= MAX_CONNECTIONS {
+        tests::observe_full_capacity(inner.as_deref(), workers.len());
+    }
     if workers.len() >= MAX_CONNECTIONS {
         return;
     }
@@ -284,6 +314,8 @@ fn spawn_connection_tracked(
         }
         let _ = serve_session(stream, queue, ctx, events, timeout, auth);
         if let Some(ref inner) = inner {
+            #[cfg(test)]
+            tests::observe_worker_retirement(inner);
             inner.active_connections.fetch_sub(1, Ordering::Relaxed);
         }
     }) {
@@ -368,6 +400,12 @@ fn serve_session(
                     drop(pending);
                     writeln!(out, "{}", json!({"id": id, "ok": false, "error": "control request queue is full"}))?;
                     continue;
+                }
+                // Full-queue refusals above register nothing. From here, retirement must
+                // also reach this gate after the request moves to a deferred window queue.
+                if auth.as_ref().is_some_and(|lease| !lease.register_request(&gate)) {
+                    drop(pending);
+                    return Ok(());
                 }
                 let needs_frame = matches!(method.as_str(), "ui.screenshot" | "ui.input");
                 pending.push(ControlRequest { id: id.clone(), method, params, reply: tx, state: gate.clone() });

@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use figcraft_doc::color::PaintKind;
 use figcraft_doc::{
-    ALL_SCOPES, CODE_PLATFORMS, Collection, Mode, Node, NodeKind, Variable, VariableType, VariableValue, Variables, normalize_scopes,
+    ALL_SCOPES, CODE_PLATFORMS, Collection, DesignTokenType, Mode, Node, NodeKind, Variable, VariableType, VariableValue, Variables, normalize_scopes,
 };
 use serde_json::{Map, Value, json};
 
@@ -106,12 +106,13 @@ pub fn export(vars: &Variables, collections: &[&Collection]) -> Value {
             VariableType::Boolean => "BOOLEAN",
         };
         let scopes = v.scopes.clone().unwrap_or_else(|| vec![ALL_SCOPES.to_string()]);
-        out.insert(
-            v.id.clone(),
-            json!({"id": v.id, "name": v.name, "key": v.id, "variableCollectionId": v.collection, "resolvedType": kind, "valuesByMode": values,
+        let mut entry = json!({"id": v.id, "name": v.name, "key": v.id, "variableCollectionId": v.collection, "resolvedType": kind, "valuesByMode": values,
                    "remote": false, "description": v.description, "hiddenFromPublishing": v.hidden_from_publishing, "scopes": scopes,
-                   "codeSyntax": v.code_syntax}),
-        );
+                   "codeSyntax": v.code_syntax});
+        if let Some(hint) = v.design_token_type {
+            entry["designTokenType"] = json!(hint);
+        }
+        out.insert(v.id.clone(), entry);
     }
     json!({"status": 200, "error": false, "meta": {"variableCollections": colls, "variables": out}})
 }
@@ -220,6 +221,16 @@ impl Ctx<'_> {
             self.warn("variables of unknown types were skipped");
             return None;
         };
+        let design_token_type = match v.get("designTokenType") {
+            None | Some(Value::Null) => None,
+            Some(value) => match value.as_str().and_then(DesignTokenType::parse).filter(|hint| hint.variable_type() == kind) {
+                Some(hint) => Some(hint),
+                None => {
+                    self.warn("variables with invalid or incompatible designTokenType hints were skipped");
+                    return None;
+                }
+            },
+        };
         let Some((collection, mode_ids)) = text(v, "variableCollectionId").and_then(|c| self.var_modes.get_key_value(c)) else {
             self.warn("variables whose collection isn't in the variables JSON were skipped");
             return None;
@@ -251,6 +262,7 @@ impl Ctx<'_> {
             values,
             description: text(v, "description").map(|s| s.chars().take(MAX_STRING).collect()).unwrap_or_default(),
             scopes: scopes.flatten(),
+            design_token_type,
             hidden_from_publishing: v.get("hiddenFromPublishing").and_then(Value::as_bool).unwrap_or(false),
             extends: None,
             overrides: Default::default(),

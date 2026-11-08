@@ -86,16 +86,26 @@ fn look(n: i64) -> Value {
 /// a timer in a minute, `soon` draws 5 and asks for one in 100 ms, a timer draws 3, text typed
 /// into the title draws 4, the menu's `reset` draws 0 and its other items draw nothing.
 pub(crate) fn session() -> Session {
+    session_with_input(false, 12)
+}
+
+pub(crate) fn session_with_input(multiline: bool, max: usize) -> Session {
+    let input_look = |n| {
+        let mut value = look(n);
+        value["root"]["children"][0]["multiline"] = json!(multiline);
+        value["root"]["children"][0]["maxLength"] = json!(max);
+        value
+    };
     let imports = r#"(import "figcraft" "widget_render" (func $draw (param i32 i32) (result i32)))
           (import "figcraft" "widget_timer" (func $timer (param i32) (result i32)))"#;
     let cases = [
-        (r#""timer":true"#, look(3), -1),
-        (r#""target":"go""#, look(2), 60_000),
-        (r#""target":"soon""#, look(5), 100),
-        (r#""input":"title""#, look(4), -1),
-        (r#""menu":"reset""#, look(0), -1),
+        (r#""timer":true"#, input_look(3), -1),
+        (r#""target":"go""#, input_look(2), 60_000),
+        (r#""target":"soon""#, input_look(5), 100),
+        (r#""input":"title""#, input_look(4), -1),
+        (r#""menu":"reset""#, input_look(0), -1),
         (r#""menu":""#, Value::Null, -1),
-        ("", look(1), -1),
+        ("", input_look(1), -1),
     ];
     let manifest =
         json!({"id": NOTE, "name": "Note", "version": "1.0.0", "main": "w.wasm", "api": 4, "widget": true, "permissions": {"access": "read"}});
@@ -172,6 +182,50 @@ fn a_widgets_text_is_typed_in_place_on_the_canvas_and_committed_to_its_plugin() 
     let ds = u.app.session.ds().unwrap();
     assert!(ds.text_edit.is_none());
     assert_eq!((state(&ds.doc, w), ds.history.undo.len(), ds.selection.clone()), (r#"{"n":4}"#.to_string(), undo + 1, vec![w]));
+}
+
+#[test]
+fn widget_ime_composition_is_preview_only_and_bounded_commit_reaches_plugin_once() {
+    // This is the production event path with platform-shaped events, not a physical IME test.
+    let mut s = session();
+    let w = insert(&mut s);
+    s.execute("select.set", &json!({"ids": []})).unwrap();
+    let mut u = Ui::new(s);
+    let title = part(u.app.session.doc().unwrap(), w, "Title");
+    let undo = u.app.session.undo_depth();
+    let at = on_canvas(&u.app, w, "Title").center();
+    click(&mut u, at);
+    let original = u.app.session.doc().unwrap().node(title).unwrap().kind.text().unwrap().characters.clone();
+    let out = u.frame_output(vec![Event::Ime(egui::ImeEvent::Preedit { text: "nihao".into(), active_range_chars: Some(5..5) })]);
+    assert!(out.platform_output.ime.is_some(), "widget text keeps the platform IME descriptor");
+    let ds = u.app.session.ds().unwrap();
+    assert_eq!(
+        ds.interaction.as_ref().unwrap().doc.node(title).unwrap().kind.text().unwrap().characters,
+        original,
+        "the gesture retains the authored text before composition"
+    );
+    assert!(
+        !ds.doc.node(title).unwrap().kind.text().unwrap().characters.contains("nihao"),
+        "preedit characters are rendered separately from committed text"
+    );
+    assert_eq!(ds.text_edit.as_ref().unwrap().preedit.as_ref().unwrap().text, "nihao");
+    assert_eq!(state(u.app.session.doc().unwrap(), w), r#"{"n":1}"#);
+    assert_eq!(u.app.session.undo_depth(), undo);
+    u.frame(vec![
+        Event::Ime(egui::ImeEvent::Preedit { text: String::new(), active_range_chars: None }),
+        Event::Ime(egui::ImeEvent::Commit("你好世界文字输入测试完成额".into())),
+    ]);
+    let shown = u.app.session.doc().unwrap().node(title).unwrap().kind.text().unwrap().characters.clone();
+    assert_eq!(shown, "你好世界文字输入测试完成", "IME input observes the widget's twelve-character bound");
+    u.frame(vec![Event::Ime(egui::ImeEvent::Commit(String::new()))]);
+    assert_eq!(u.app.session.doc().unwrap().node(title).unwrap().kind.text().unwrap().characters, shown);
+    assert_eq!(state(u.app.session.doc().unwrap(), w), r#"{"n":1}"#, "only finishing the field calls the plugin");
+    u.frame(key(Key::Enter));
+    u.frame(vec![]);
+    assert_eq!(state(u.app.session.doc().unwrap(), w), r#"{"n":4}"#);
+    assert_eq!(u.app.session.undo_depth(), (undo.0 + 1, undo.1));
+    u.frame(vec![]);
+    assert_eq!(u.app.session.undo_depth(), (undo.0 + 1, undo.1), "idle frames do not replay the committed widget event");
 }
 
 #[test]

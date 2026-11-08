@@ -233,3 +233,95 @@ fn a_copy_of_a_page_keeps_a_flow_that_starts_in_a_section() {
         _ => panic!("expected a page"),
     }
 }
+
+#[test]
+fn theme_background_native_data_authority_is_preserved_before_first_ui_theme() {
+    use base64::Engine as _;
+    for color in ["#F5F5F5", "#1E1E1E", "#336699"] {
+        let mut original = Session::new();
+        ex(&mut original, "page.setBackground", json!({"color":color}));
+        let bytes = figcraft_format::save_bytes(original.doc().unwrap(), None).unwrap();
+        let mut opened = Session::empty();
+        ex(&mut opened, "file.open", json!({"name":"Original saved blank.figcraft","data":base64::engine::general_purpose::STANDARD.encode(bytes)}));
+        let before = opened.doc().unwrap().clone();
+        assert_eq!(opened.ui_dark, None, "the input arrives before an interface reports its theme");
+        opened.set_ui_dark(true);
+        assert_eq!(backgrounds(&opened), [color], "a saved page is authoritative even when opened without a path");
+        assert_eq!(opened.doc().unwrap(), &before);
+        assert!(!opened.ds().unwrap().is_dirty());
+        assert_eq!(opened.undo_depth(), (0, 0));
+    }
+}
+
+#[test]
+fn theme_background_first_light_theme_is_consumed_before_a_new_owner_receives_the_document() {
+    let mut first = Session::new();
+    first.set_ui_dark(false);
+    let mut second = Session::empty();
+    second.docs.push(first.docs.pop().unwrap());
+    second.set_ui_dark(true);
+    assert_eq!(backgrounds(&second), ["#F5F5F5"], "an initialized page does not become fresh again in a new interface owner");
+    assert!(!second.ds().unwrap().is_dirty());
+    assert_eq!(second.undo_depth(), (0, 0));
+}
+
+#[test]
+fn theme_background_live_welcome_and_remote_edits_keep_authoritative_page_color() {
+    let mut room = crate::collab_live_tests::Room::new(figcraft_doc::Document::new("Original shared blank"), 2, 207_600);
+    for index in 0..2 {
+        let peer = room.s(index);
+        let before = peer.doc().unwrap().clone();
+        peer.set_ui_dark(true);
+        assert_eq!(backgrounds(peer), ["#F5F5F5"]);
+        assert_eq!(peer.doc().unwrap(), &before, "a welcome is authoritative, not a fresh Design creation");
+        assert_eq!(peer.undo_depth(), (0, 0));
+    }
+    room.check();
+    room.s(0).execute("shape.rectangle", &json!({"x":10,"y":10,"width":20,"height":20})).unwrap();
+    room.settle();
+    room.check();
+    assert_eq!(backgrounds(room.s(1)), ["#F5F5F5"]);
+    assert_eq!(room.s(1).undo_depth().0, 0, "a peer's real edit is separate from local theme state");
+}
+
+#[test]
+fn theme_background_version_copies_and_branch_tabs_preserve_snapshot_page_authority() {
+    for version in [false, true] {
+        let mut session = Session::new();
+        if version {
+            let saved = ex(&mut session, "file.saveVersion", json!({"name":"Original light version"}));
+            ex(&mut session, "version.duplicate", json!({"id":saved["id"]}));
+        } else {
+            ex(&mut session, "branch.create", json!({"name":"Original light branch"}));
+        }
+        let before: Vec<_> = session.docs.iter().map(|doc| (doc.doc.clone(), doc.is_dirty())).collect();
+        let history = session.undo_depth();
+        session.set_ui_dark(true);
+        assert_eq!(backgrounds(&session), ["#F5F5F5"], "version={version}");
+        let after: Vec<_> = session.docs.iter().map(|doc| (doc.doc.clone(), doc.is_dirty())).collect();
+        assert_eq!(after, before, "theme initialization changes neither the snapshot nor its source file");
+        assert_eq!(session.undo_depth(), history);
+    }
+}
+
+#[test]
+fn theme_background_an_edited_new_design_keeps_its_existing_color_and_undo_state() {
+    for content in [false, true] {
+        let mut session = Session::new();
+        if content {
+            ex(&mut session, "shape.rectangle", json!({"x":10,"y":10,"width":20,"height":20}));
+        } else {
+            ex(&mut session, "page.rename", json!({"name":"Original authored blank page"}));
+        }
+        assert!(session.ds().unwrap().is_dirty());
+        let before = session.doc().unwrap().clone();
+        let history = session.undo_depth();
+        for dark in [true, false, true] {
+            session.set_ui_dark(dark);
+            assert_eq!(backgrounds(&session), ["#F5F5F5"]);
+            assert_eq!(session.doc().unwrap(), &before);
+            assert!(session.ds().unwrap().is_dirty());
+            assert_eq!(session.undo_depth(), history);
+        }
+    }
+}

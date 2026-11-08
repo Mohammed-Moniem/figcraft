@@ -37,7 +37,7 @@ use crate::FigApp;
 use crate::a11y::Tip;
 use crate::i18n::{tr, tr_noop};
 use crate::icons::{self, Icon};
-use crate::theme::{ACCENT, Tokens, regular, semibold};
+use crate::theme::{Tokens, regular, semibold};
 use crate::widgets;
 
 mod actions;
@@ -45,6 +45,7 @@ mod chrome;
 mod device;
 mod draw;
 mod input;
+mod keys;
 mod layout;
 mod navigate;
 mod player;
@@ -86,6 +87,8 @@ pub struct Visit {
 #[derive(Clone, Debug)]
 pub struct OverlayState {
     pub id: NodeId,
+    /// A reopened overlay with the same node id is a different input owner.
+    key_owner: Arc<()>,
     pub position: OverlayPosition,
     pub close_on_outside: bool,
     pub background: Option<Color>,
@@ -337,6 +340,8 @@ pub struct Presenter {
     uses_pads: bool,
     /// The controller buttons held at the last poll (bit i: standard layout index i).
     pads_held: u32,
+    /// Bounded keyboard/controller state owned by this particular player.
+    key_inputs: keys::KeyInputs,
     /// Clicks on widgets' clickable parts (widget, target), for [`Presenter::click_widgets`].
     widget_events: Vec<(&'static str, Value)>,
     widget_timers: Vec<(NodeId, f64)>,
@@ -397,6 +402,7 @@ impl Presenter {
             pads: Vec::new(),
             uses_pads: false,
             pads_held: 0,
+            key_inputs: keys::KeyInputs::default(),
             widget_events: Vec::new(),
             widget_timers: Vec::new(),
             widget_hover: None,
@@ -422,6 +428,7 @@ impl Presenter {
     /// A new device changes the viewport and may relayout every frame. Start at its top instead
     /// of carrying scroll offsets or a drag from the old screen into the new one.
     fn reset_for_device(&mut self) {
+        self.key_inputs.clear();
         self.pan = None;
         self.scroll.clear();
         self.scroll_anim = None;
@@ -433,6 +440,7 @@ impl Presenter {
 
     /// The prototype's copy of the file starts over: its widgets' timers, hover and typing go.
     fn forget_widgets(&mut self) {
+        self.key_inputs.clear();
         self.widget_events.clear();
         self.widget_timers.clear();
         (self.widget_hover, self.widget_tip, self.widget_input) = (None, None, None);
@@ -482,3 +490,6 @@ mod overlay_anchor_tests;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod key_timing_tests;

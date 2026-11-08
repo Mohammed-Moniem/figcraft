@@ -8,6 +8,7 @@ use std::process::Command;
 const TABLE: &[(&str, u8)] = &[
     ("geom", 0),
     ("color", 0),
+    ("automation-json", 0),
     ("doc", 1),
     ("layout", 2),
     ("text", 2),
@@ -74,5 +75,11 @@ pub fn check(root: &std::path::Path) -> bool {
 fn same_layer_ok(from: &str, to: &str) -> bool {
     // Within L0: color uses geom types; within L2: text/layout/pathops/collab are independent;
     // within L6 the MCP server joins live sessions through collab-net.
-    matches!((from, to), ("figcraft-color", "figcraft-geom") | ("figcraft-render", "figcraft-format") | ("figcraft-mcp", "figcraft-collab-net"))
+    matches!(
+        (from, to),
+        ("figcraft-color", "figcraft-geom")
+            | ("figcraft-automation-json", "figcraft-color")
+            | ("figcraft-render", "figcraft-format")
+            | ("figcraft-mcp", "figcraft-collab-net")
+    )
 }

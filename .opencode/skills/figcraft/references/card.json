@@ -1,0 +1,27 @@
+[
+  {
+    "command": "node.create",
+    "as": "card",
+    "params": {
+      "type": "frame", "name": "Skill Card", "x": 100, "y": 50,
+      "width": 320, "height": 120,
+      "props": {"layout": "horizontal", "padding": 16, "gap": 12, "crossAlign": "min", "fill": "#F2F4F8"}
+    }
+  },
+  {
+    "command": "node.create",
+    "as": "blue",
+    "params": {
+      "type": "rectangle", "name": "Blue Tile", "parent": {"$ref": "card"},
+      "width": 80, "height": 40, "props": {"fill": "#2463EB", "cornerRadius": 8}
+    }
+  },
+  {
+    "command": "node.create",
+    "as": "orange",
+    "params": {
+      "type": "rectangle", "name": "Orange Tile", "parent": {"$ref": "card"},
+      "width": 120, "height": 60, "props": {"fill": "#F59E0B", "cornerRadius": 8}
+    }
+  }
+]

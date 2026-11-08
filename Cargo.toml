@@ -2,7 +2,7 @@
 resolver = "3"
 members = ["crates/*", "apps/*", "xtask"]
 # The plugin SDK and examples build for wasm32 in a workspace of their own (`cargo xtask plugins`).
-exclude = ["plugins", "vendor/craft-print-stack", "vendor/craft-print-ui"]
+exclude = ["plugins", "vendor/craft-print-stack", "vendor/craft-print-ui", "vendor/zune-jpeg"]
 # default-members = ["crates/*", "apps/figcraft", "apps/figcraft-cli", "xtask"]
 
 [workspace.package]
@@ -18,6 +18,7 @@ craft-print-ui = { path = "vendor/craft-print-ui" }
 # internal
 figcraft-geom = { path = "crates/geom" }
 figcraft-color = { path = "crates/color" }
+figcraft-automation-json = { path = "crates/automation-json" }
 figcraft-doc = { path = "crates/doc" }
 figcraft-layout = { path = "crates/layout" }
 figcraft-text = { path = "crates/text" }
@@ -32,7 +33,7 @@ figcraft-tools = { path = "crates/tools" }
 figcraft-collab = { path = "crates/collab" }
 figcraft-engine = { path = "crates/engine" }
 figcraft-ui-egui = { path = "crates/ui-egui" }
-figcraft-mcp = { path = "crates/mcp" }
+figcraft-mcp = { path = "crates/mcp", default-features = false }
 figcraft-collab-net = { path = "crates/collab-net" }
 figcraft-plugin = { path = "crates/plugin" }
 
@@ -168,6 +169,8 @@ panic = "abort"
 
 # Keep the complete egui family and native event bridge on reviewed fork commits.
 [patch.crates-io]
+# Issue #1492: published 0.5.15 with the reviewed PR374 sampling/upsampling fixes backported.
+zune-jpeg = { path = "vendor/zune-jpeg" }
 ecolor = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
 emath = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }
 epaint = { git = "https://github.com/storytold/egui.git", rev = "6d518fc799681571963842f95b55a6b68431b15a" }

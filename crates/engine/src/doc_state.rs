@@ -72,6 +72,9 @@ pub struct DocState {
     pub page: NodeId,
     pub history: History,
     pub(crate) saved_doc: Arc<Document>,
+    /// Only an actual new Design made before the interface knows its theme may adopt it once.
+    /// Opened, supplied and shared documents keep their authoritative page colors.
+    pub(crate) initial_theme_pending: bool,
     pub path: Option<String>,
     pub revision: u64,
     pub view: ViewState,
@@ -160,6 +163,23 @@ impl DocState {
         self.text_preview.as_ref().filter(|_| self.widget_hover.is_some()).unwrap_or(&self.doc)
     }
 
+    /// A native path/data/recovery input may contain older derived automatic board routes.
+    /// Adopt their refreshed geometry into the clean baseline. Live and version snapshots use
+    /// `new` instead, so their authoritative input geometry is never migrated locally.
+    pub(crate) fn from_native(mut doc: Document, path: Option<String>) -> Self {
+        crate::board::settle_loaded_routes(&mut doc);
+        Self::new(doc, path)
+    }
+
+    /// A freshly created Design whose first interface theme is not yet known. Generic input
+    /// documents use `new`: a missing path or an empty page does not make saved input new.
+    pub(crate) fn for_new_design(doc: Document) -> Self {
+        let design = doc.kind == figcraft_doc::FileKind::Design;
+        let mut state = Self::new(doc, None);
+        state.initial_theme_pending = design;
+        state
+    }
+
     pub fn new(mut doc: Document, path: Option<String>) -> Self {
         if doc.pages.is_empty() {
             doc.repair();
@@ -174,6 +194,7 @@ impl DocState {
         let mut st = Self {
             checkpoint: None,
             saved_doc: doc.clone(),
+            initial_theme_pending: false,
             doc,
             selection: Vec::new(),
             page,

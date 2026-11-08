@@ -41,11 +41,18 @@ pub fn anchor_name(a: (u8, u8)) -> &'static str {
 /// out whose top visible fill is a mostly opaque solid colour, else the page (#362). For text made
 /// in the app: by the Text tool, or by a command that names no fill while the interface is up.
 pub(crate) fn readable_text_fills(doc: &Document, parent: NodeId) -> Option<Vec<figcraft_color::Paint>> {
-    let dark = std::iter::once(parent).chain(doc.ancestors(parent)).filter_map(|id| doc.node(id)).find_map(|n| match &n.kind {
-        NodeKind::Page { background, .. } => Some(background.is_dark()),
-        _ => n.fills.iter().rev().find(|p| p.visible).and_then(|p| p.solid_color()).filter(|c| c.a >= 0.5).map(|c| c.is_dark()),
-    });
-    dark.unwrap_or(false).then(|| vec![figcraft_color::Paint::solid(figcraft_color::Color::WHITE)])
+    readable_background_is_dark(doc, parent).then(|| vec![figcraft_color::Paint::solid(figcraft_color::Color::WHITE)])
+}
+
+fn readable_background_is_dark(doc: &Document, parent: NodeId) -> bool {
+    std::iter::once(parent)
+        .chain(doc.ancestors(parent))
+        .filter_map(|id| doc.node(id))
+        .find_map(|n| match &n.kind {
+            NodeKind::Page { background, .. } => Some(background.is_dark()),
+            _ => n.fills.iter().rev().find(|p| p.visible).and_then(|p| p.solid_color()).filter(|c| c.a >= 0.5).map(|c| c.is_dark()),
+        })
+        .unwrap_or(false)
 }
 
 const ANCHORS: [&str; 9] = ["tl", "t", "tr", "l", "c", "r", "bl", "b", "br"];
@@ -190,8 +197,16 @@ pub(super) fn on_corner_square(doc: &Document, sel: &[NodeId], p: Point, zoom: f
 /// handles: the canvas draws just its outline (the handles still answer just outside it).
 pub const SMALL_BOX_PX: f64 = 16.0;
 
-/// The stroke the Pencil draws: its colour and weight (the canvas previews it the same).
+/// The Pencil's default stroke; [`pencil_stroke`] adapts its color to the starting background.
 pub const PENCIL_STROKE: (figcraft_color::Color, f64) = (figcraft_color::Color::BLACK, 2.0);
+
+/// The stroke drawn and previewed by the Pencil, chosen at its first point. Use the same
+/// containing-frame/page policy as new text, so a white frame on a dark page still gets black.
+pub fn pencil_stroke(doc: &Document, page: NodeId, at: Point) -> (figcraft_color::Color, f64) {
+    let parent = super::frame_at(doc, page, at, &[]).unwrap_or(page);
+    let color = if readable_background_is_dark(doc, parent) { figcraft_color::Color::WHITE } else { PENCIL_STROKE.0 };
+    (color, PENCIL_STROKE.1)
+}
 
 /// The shorter and longer sides, in screen pixels, of the box with `corners` (tl, tr, br, bl).
 pub fn box_sides_px(corners: &[Point; 4], zoom: f64) -> (f64, f64) {

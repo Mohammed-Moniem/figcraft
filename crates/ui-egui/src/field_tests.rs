@@ -502,13 +502,13 @@ fn scrubbing_colour_picker_fields_is_live_and_one_undo_step() {
     let rgba = |u: &Ui| u.app.session.doc().unwrap().node(a).unwrap().fills[0].solid_color().unwrap().to_rgba8();
     let [r0, .., a0] = rgba(&u);
     u.ctx.data_mut(|d| d.insert_temp(Id::unique("cp_model"), 1usize));
-    u.app.ui.picker = Some(crate::colorpicker::PickerTarget::Paint { fills: true, index: 0, ids: vec![a] });
+    u.app.open_picker(crate::colorpicker::PickerTarget::Paint { fills: true, index: 0, ids: vec![a] }, None);
     // Settle sizing and the anchored position before reading field hit rectangles.
     for _ in 0..5 {
         u.frame(vec![]);
     }
     let steps = undo_steps(&u);
-    let from = lead(&u, Id::unique(("cp_f", "r")));
+    let from = lead(&u, crate::colorpicker::current_field_id(&u.ctx, ("cp_f", "r")));
     drag(&mut u, from, -20.0, Modifiers::NONE);
     assert_eq!((rgba(&u)[0], undo_steps(&u)), (r0 - 20, steps + 1), "R");
     // Committing adds a recent colour row and can lift the anchored picker. Settle its layout.
@@ -516,7 +516,7 @@ fn scrubbing_colour_picker_fields_is_live_and_one_undo_step() {
         u.frame(vec![]);
     }
     // The alpha field: a scrub moves it too.
-    let from = lead(&u, Id::unique("cp_a"));
+    let from = lead(&u, crate::colorpicker::current_field_id(&u.ctx, "cp_a"));
     drag(&mut u, from, -30.0, Modifiers::NONE);
     let [.., alpha] = rgba(&u);
     assert!(alpha < a0, "alpha {a0} → {alpha}");
@@ -534,12 +534,12 @@ fn lch_and_oklch_picker_fields_edit_lightness_keeping_hue() {
         let before = color(&u);
         assert_eq!(before.to_hex(), "0D99FF");
         u.ctx.data_mut(|d| d.insert_temp(Id::unique("cp_model"), model));
-        u.app.ui.picker = Some(crate::colorpicker::PickerTarget::Paint { fills: true, index: 0, ids: vec![a] });
+        u.app.open_picker(crate::colorpicker::PickerTarget::Paint { fills: true, index: 0, ids: vec![a] }, None);
         for _ in 0..5 {
             u.frame(vec![]);
         }
         let steps = undo_steps(&u);
-        let from = lead(&u, Id::unique(("cp_f", l)));
+        let from = lead(&u, crate::colorpicker::current_field_id(&u.ctx, ("cp_f", l)));
         drag(&mut u, from, -20.0, Modifiers::NONE);
         let after = color(&u);
         let hue = |c| figcraft_color::Oklch::from_color(c).h;
@@ -551,7 +551,11 @@ fn lch_and_oklch_picker_fields_edit_lightness_keeping_hue() {
 
 /// Type `text` into the picker field `id` (`("cp_f", id)`) and press Enter.
 fn type_into_picker(u: &mut Ui, id: &str, text: &str) {
-    let rect = u.ctx.read_response(Id::unique(("cp_f", id)).with("field")).unwrap_or_else(|| panic!("no picker field {id}")).rect;
+    let rect = u
+        .ctx
+        .read_response(crate::colorpicker::current_field_id(&u.ctx, ("cp_f", id)).with("field"))
+        .unwrap_or_else(|| panic!("no picker field {id}"))
+        .rect;
     click(u, rect.center());
     u.frame(vec![Event::Text(text.into())]);
     key(u, Key::Enter, Modifiers::NONE);
@@ -563,14 +567,15 @@ fn type_into_picker(u: &mut Ui, id: &str, text: &str) {
 /// A picker on layer `a` in model `model` (an index into the model menu), drawn and settled.
 fn open_picker(u: &mut Ui, a: NodeId, model: usize) {
     u.ctx.data_mut(|d| d.insert_temp(Id::unique("cp_model"), model));
-    u.app.ui.picker = Some(crate::colorpicker::PickerTarget::Paint { fills: true, index: 0, ids: vec![a] });
+    u.app.open_picker(crate::colorpicker::PickerTarget::Paint { fills: true, index: 0, ids: vec![a] }, None);
     for _ in 0..5 {
         u.frame(vec![]);
     }
 }
 
 fn kept_polar(u: &Ui) -> [f64; 3] {
-    u.ctx.data(|d| d.get_temp::<(&'static str, [f64; 3], [u8; 4])>(Id::unique("cp_polar"))).unwrap().1
+    let key = crate::colorpicker::current_field_id(&u.ctx, "cp_polar");
+    u.ctx.data(|d| d.get_temp::<(&'static str, [f64; 3], [u8; 4])>(key)).unwrap().1
 }
 
 #[test]

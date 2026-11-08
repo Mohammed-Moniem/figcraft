@@ -213,3 +213,35 @@ fn a_selected_layer_shows_its_constraint_guides_in_its_frame() {
     u.app.run("node.set", json!({"id": c, "props": {"absolute": true}}));
     assert!(guide(&mut u) > 0, "an absolute child is pinned by its constraints again");
 }
+#[test]
+fn pencil_1741_previews_the_same_adaptive_color_that_it_saves() {
+    for (page, frame, expected) in [
+        ("#101010", None, figcraft_color::Color::WHITE),
+        ("#FFFFFF", Some("#101010"), figcraft_color::Color::WHITE),
+        ("#101010", Some("#FFFFFF"), figcraft_color::Color::BLACK),
+    ] {
+        let mut s = Session::new();
+        s.execute("page.setBackground", &json!({"color": page})).unwrap();
+        if let Some(fill) = frame {
+            let f = s.execute("frame.create", &json!({"x": 0, "y": 0, "width": 180, "height": 100})).unwrap()["id"].clone();
+            s.execute("node.set", &json!({"id": f, "props": {"fill": fill}})).unwrap();
+        }
+        let mut u = Ui::new(s);
+        u.app.run("tool.set", json!({"tool": "pencil"}));
+        let at = |u: &Ui, x: f64, y: f64| u.app.to_screen(x, y);
+        u.button(at(&u, 20.0, 20.0), true);
+        for i in 1..=6 {
+            u.frame(vec![egui::Event::PointerMoved(at(&u, 20.0 + f64::from(i) * 8.0, 20.0 + f64::from(i % 2) * 5.0))]);
+        }
+        let shapes = flat(&u.frame_output(vec![]).shapes);
+        let color = egui::epaint::ColorMode::Solid(crate::theme::c32(expected));
+        assert!(
+            shapes.iter().any(|s| matches!(s, Shape::Path(p) if !p.closed && p.points.len() >= 5 && p.stroke.color == color)),
+            "adaptive preview on page {page}, frame {frame:?}"
+        );
+        u.button(at(&u, 68.0, 20.0), false);
+        let id = *u.app.session.selection().first().unwrap();
+        let node = u.app.session.doc().unwrap().node(id).unwrap();
+        assert_eq!(node.strokes.first().and_then(|p| p.solid_color()), Some(expected));
+    }
+}

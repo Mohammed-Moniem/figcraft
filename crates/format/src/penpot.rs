@@ -2328,6 +2328,7 @@ fn import_themed_tokens(
             hidden_from_publishing: false,
             extends: None,
             overrides: BTreeSet::new(),
+            design_token_type: None,
             code_syntax: BTreeMap::new(),
         });
         used_collections.insert(index);
@@ -2450,6 +2451,7 @@ fn import_token_variables(
                     hidden_from_publishing: false,
                     extends: None,
                     overrides: BTreeSet::new(),
+                    design_token_type: None,
                     code_syntax: BTreeMap::new(),
                 });
                 count += 1;

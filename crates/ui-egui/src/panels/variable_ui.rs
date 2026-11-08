@@ -35,14 +35,56 @@ enum Target {
 /// The open variable picker: what it does, the variable type (None: any), where it opens.
 #[derive(Clone)]
 struct Picker {
+    /// Session UID captured by the opening control, never inferred from a later draw.
+    owner: u64,
     target: Target,
     kind: Option<VariableType>,
     at: Pos2,
 }
 
 /// Stable egui id for the variable picker.
-fn picker_id() -> Id {
-    Id::unique("variable_picker")
+fn picker_id(ctx: &egui::Context) -> Id {
+    Id::unique(("variable_picker", ctx.viewport_id()))
+}
+
+fn owner_id(ctx: &egui::Context) -> Id {
+    Id::unique(("variable_picker_owner", ctx.viewport_id()))
+}
+
+fn area_id(ctx: &egui::Context, owner: u64) -> Id {
+    picker_id(ctx).with(("area", owner))
+}
+
+fn query_id(ctx: &egui::Context, owner: u64) -> Id {
+    picker_id(ctx).with(("query", owner))
+}
+
+/// Publish the document that this viewport is currently drawing, and discard a popup whose
+/// captured targets belong to another file. Called before keys and after tab/control changes.
+pub(crate) fn sync_owner(app: &FigApp, ctx: &egui::Context) {
+    let owner = app.session.ds().ok().map(|ds| ds.uid);
+    let current = owner_id(ctx);
+    let key = picker_id(ctx);
+    let stale = ctx.data(|d| d.get_temp::<Picker>(key)).filter(|p| Some(p.owner) != owner);
+    let stale_query = stale.as_ref().map(|p| query_id(ctx, p.owner));
+    ctx.data_mut(|d| {
+        if let Some(owner) = owner {
+            d.insert_temp(current, owner);
+        } else {
+            d.remove::<u64>(current);
+        }
+        if let Some(query) = stale_query {
+            d.remove::<Picker>(key);
+            d.remove::<String>(query);
+        }
+    });
+}
+
+fn open_owned(ui: &Ui, target: Target, kind: Option<VariableType>, at: Pos2) {
+    let key = owner_id(ui.ctx());
+    let Some(owner) = ui.data(|d| d.get_temp::<u64>(key)) else { return };
+    let key = picker_id(ui.ctx());
+    ui.data_mut(|d| d.insert_temp(key, Picker { owner, target, kind, at }));
 }
 
 /// The variable `field` is bound to on every one of `ids` (its name), if they agree.
@@ -183,34 +225,38 @@ pub fn group_caption(ui: &mut Ui, lib: Option<&PublishedLibrary>, coll: &Collect
 /// Open the picker for `field` of `ids` at `at`.
 pub fn open(ui: &Ui, ids: &[NodeId], field: &str, kind: VariableType, at: Pos2) {
     let target = Target::Bind { ids: ids.to_vec(), field: field.to_string() };
-    ui.data_mut(|d| d.insert_temp(picker_id(), Picker { target, kind: Some(kind), at }));
+    open_owned(ui, target, Some(kind), at);
 }
 
 /// Open the picker at `at` to pick a variable (of `kind`, or any) for a prototype action.
 pub fn open_proto(ui: &Ui, slot: crate::proto_editor::VarSlot, kind: Option<VariableType>, at: Pos2) {
-    ui.data_mut(|d| d.insert_temp(picker_id(), Picker { target: Target::Proto(slot), kind, at }));
+    open_owned(ui, Target::Proto(slot), kind, at);
 }
 
 /// Open the picker at `at` to bind a variable of `kind` to `field` of the shared style `style`.
 pub fn open_style(ui: &Ui, style: &str, field: &str, kind: VariableType, at: Pos2) {
     let target = Target::Style { style: style.to_string(), field: field.to_string() };
-    ui.data_mut(|d| d.insert_temp(picker_id(), Picker { target, kind: Some(kind), at }));
+    open_owned(ui, target, Some(kind), at);
 }
 
 /// Where the open picker is on screen (clicks in it don't close what opened it).
 pub fn picker_rect(ctx: &egui::Context) -> Option<Rect> {
-    picker_open(ctx).then(|| ctx.memory(|m| m.area_rect(Id::unique("variable_picker_area")))).flatten()
+    let key = picker_id(ctx);
+    let picker = ctx.data(|d| d.get_temp::<Picker>(key))?;
+    let area = area_id(ctx, picker.owner);
+    ctx.memory(|m| m.area_rect(area))
 }
 
 /// Whether the picker is open (Escape closes it before what opened it).
 pub fn picker_open(ctx: &egui::Context) -> bool {
-    ctx.data(|d| d.get_temp::<Picker>(picker_id()).is_some())
+    let key = picker_id(ctx);
+    ctx.data(|d| d.get_temp::<Picker>(key).is_some())
 }
 
 /// Open the picker at `at` to alias `variable`'s value in `mode` to another variable.
 pub fn open_alias(ui: &Ui, variable: &str, mode: &str, kind: VariableType, at: Pos2) {
     let target = Target::Alias { variable: variable.to_string(), mode: mode.to_string() };
-    ui.data_mut(|d| d.insert_temp(picker_id(), Picker { target, kind: Some(kind), at }));
+    open_owned(ui, target, Some(kind), at);
 }
 
 /// Open the picker for `field` of `ids` under the pointer (from a section header button).
@@ -221,6 +267,7 @@ pub fn open_at_pointer(ui: &Ui, ids: &[NodeId], field: &str, kind: VariableType)
 
 /// Act on a bound field's event: change the variable, or detach it.
 fn handle(app: &mut FigApp, ui: &Ui, ids: &[NodeId], field: &str, kind: VariableType, ev: Option<BindEvent>) {
+    sync_owner(app, ui.ctx());
     match ev {
         Some(BindEvent::Open(at)) => open(ui, ids, field, kind, at),
         Some(BindEvent::Detach) => {
@@ -410,11 +457,13 @@ fn kind_fits(want: Option<VariableType>, field: Option<&str>, have: VariableType
 
 /// The picker popover (call once per frame).
 pub fn picker(app: &mut FigApp, ctx: &egui::Context) {
-    let Some(p) = ctx.data(|d| d.get_temp::<Picker>(picker_id())) else { return };
+    sync_owner(app, ctx);
+    let key = picker_id(ctx);
+    let Some(p) = ctx.data(|d| d.get_temp::<Picker>(key)) else { return };
     let Ok(doc) = app.session.ds().map(|d| d.doc.clone()) else { return };
     let libs = libraries(app, &doc);
     let t = Tokens::get(ctx);
-    let query_id = Id::unique("variable_picker_query");
+    let query_id = query_id(ctx, p.owner);
     let mut query: String = ctx.data(|d| d.get_temp(query_id)).unwrap_or_default();
     let q = query.trim().to_lowercase();
     // Bindings offer variables scoped to the property; aliases, any that wouldn't loop (library
@@ -446,7 +495,7 @@ pub fn picker(app: &mut FigApp, ctx: &egui::Context) {
     let groups = groups(&doc, &libs, keep);
     let mut chosen: Option<Pick> = None;
     let mut close = false;
-    let area = egui::Area::new(Id::unique("variable_picker_area")).order(egui::Order::Foreground).fixed_pos(p.at + vec2(0.0, 4.0)).show(ctx, |ui| {
+    let area = egui::Area::new(area_id(ctx, p.owner)).order(egui::Order::Foreground).fixed_pos(p.at + vec2(0.0, 4.0)).show(ctx, |ui| {
         egui::Frame::NONE.fill(t.menu).corner_radius(CornerRadius::same(10)).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
             ui.set_width(240.0);
             ui.horizontal(|ui| {
@@ -493,7 +542,7 @@ pub fn picker(app: &mut FigApp, ctx: &egui::Context) {
         });
     });
     let rect = area.response.rect;
-    ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, Id::unique("variable_picker_border"))).rect_stroke(
+    ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, area_id(ctx, p.owner).with("border"))).rect_stroke(
         rect,
         CornerRadius::same(10),
         Stroke::new(1.0, Color32::from_black_alpha(40)),
@@ -521,7 +570,7 @@ pub fn picker(app: &mut FigApp, ctx: &egui::Context) {
     }
     if close {
         ctx.data_mut(|d| {
-            d.remove::<Picker>(picker_id());
+            d.remove::<Picker>(key);
             d.remove::<String>(query_id);
         });
     } else {
@@ -638,7 +687,9 @@ mod scope_tests {
         ] {
             let id = u.app.session.doc().unwrap().style(style).unwrap().id.clone();
             let target = Target::Style { style: id, field: field.to_string() };
-            u.ctx.data_mut(|d| d.insert_temp(picker_id(), Picker { target, kind: Some(kind), at: pos2(400.0, 100.0) }));
+            let key = picker_id(&u.ctx);
+            let owner = u.app.session.ds().unwrap().uid;
+            u.ctx.data_mut(|d| d.insert_temp(key, Picker { owner, target, kind: Some(kind), at: pos2(400.0, 100.0) }));
             u.frame(vec![]);
             check(&drawn(&mut u), shown, hidden, &format!("{style} {field}"));
         }
@@ -672,5 +723,89 @@ mod scope_tests {
         crate::style_picker::open_for_selection(&mut u.app, StyleSlot::Fill, None);
         u.frame(vec![]);
         check(&drawn(&mut u), &["both fills"], &["frame fill", "shape fill"], "frame and rectangle");
+    }
+}
+
+#[cfg(test)]
+mod document_owner_tests {
+    use super::*;
+    use crate::layers_drag_tests::Ui as TestUi;
+    use egui::{Event, PointerButton};
+    use figcraft_engine::Session;
+
+    fn native_copied_variables() -> (TestUi, String, String, usize, usize) {
+        let mut session = Session::new();
+        let collection = session.execute("variable.createCollection", &json!({"name":"Owner tokens"})).unwrap();
+        let variable = session
+            .execute("variable.create", &json!({"collection":collection["id"],"name":"Owner brand","type":"Color","value":"#FF0000"}))
+            .unwrap();
+        session
+            .execute("variable.create", &json!({"collection":collection["id"],"name":"Owned alias source","type":"Color","value":"#0000FF"}))
+            .unwrap();
+        let id = variable["id"].as_str().unwrap().to_string();
+        let mode = session.doc().unwrap().variables.get_by_id(&id).unwrap().values.keys().next().unwrap().clone();
+        let a = session.active;
+        let native = figcraft_format::save_bytes(session.doc().unwrap(), None).unwrap();
+        let (copy, issues) = figcraft_format::load_bytes(&native).unwrap();
+        assert!(issues.is_empty());
+        session.execute("file.new", &json!({"name":"Other native owner"})).unwrap();
+        let b = session.active;
+        session.ds_mut().unwrap().doc = Arc::new(copy);
+        assert_ne!(session.docs[a].uid, session.docs[b].uid);
+        assert_eq!(session.docs[a].doc.variables, session.docs[b].doc.variables);
+        session.execute("doc.switch", &json!({"index":a})).unwrap();
+        (TestUi::new(session), id, mode, a, b)
+    }
+
+    fn source_position(shapes: &[egui::epaint::ClippedShape]) -> Option<Pos2> {
+        fn point(shape: &egui::Shape) -> Option<Pos2> {
+            match shape {
+                egui::Shape::Text(text) if text.galley.text() == "Owned alias source" => Some(text.pos + text.galley.rect.center().to_vec2()),
+                egui::Shape::Vec(shapes) => shapes.iter().find_map(point),
+                _ => None,
+            }
+        }
+        shapes.iter().find_map(|shape| point(&shape.shape))
+    }
+
+    fn cannot_retarget(first_draw: bool) {
+        let (mut u, id, mode, a, b) = native_copied_variables();
+        let mut opened = u.ctx.run_ui(egui::RawInput::default(), |ui| open_alias(ui, &id, &mode, VariableType::Color, pos2(500.0, 180.0)));
+        opened.textures_delta.clear();
+        assert!(picker_open(&u.ctx), "the real alias picker was admitted for A");
+        if !first_draw {
+            for _ in 0..3 {
+                u.frame(vec![]);
+            }
+        }
+        let before_a = u.app.session.docs[a].doc.clone();
+        let before_b = u.app.session.docs[b].doc.clone();
+        let undo_b = u.app.session.docs[b].history.undo.len();
+        u.app.session.execute("doc.switch", &json!({"index":b})).unwrap();
+        let mut output = u.frame_output(vec![]);
+        // On the broken code the old popup redraws against B's identical UUIDs. Click its real row.
+        let at = source_position(&output.shapes);
+        output.textures_delta.clear();
+        if let Some(at) = at {
+            u.frame(vec![Event::PointerMoved(at)]);
+            for pressed in [true, false] {
+                u.frame(vec![Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers: Default::default() }]);
+            }
+            u.frame(vec![]);
+        }
+        assert_eq!(u.app.session.docs[b].doc, before_b, "old alias UI cannot bind into native-copy B");
+        assert_eq!(u.app.session.docs[a].doc, before_a);
+        assert_eq!(u.app.session.docs[b].history.undo.len(), undo_b);
+        assert!(!picker_open(&u.ctx), "stale alias popup is closed");
+    }
+
+    #[test]
+    fn alias_picker_cannot_retarget_a_native_copy_before_its_first_draw() {
+        cannot_retarget(true);
+    }
+
+    #[test]
+    fn alias_picker_cannot_retarget_a_native_copy_after_being_drawn() {
+        cannot_retarget(false);
     }
 }

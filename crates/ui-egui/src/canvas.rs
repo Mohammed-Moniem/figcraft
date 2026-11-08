@@ -21,6 +21,7 @@ type GpuTexture = (u64, egui::TextureId, (u32, u32), wgpu::FilterMode);
 
 mod builder;
 mod input;
+pub(crate) mod locked;
 mod outline;
 mod overlays;
 mod render;
@@ -109,6 +110,8 @@ pub struct CanvasState {
     /// The hover last sent to the tools and the state it was found in ([`input::HoverKey`]): the
     /// frames egui draws after a pointer move carry no new input, and would find the same again.
     last_hover: Option<input::HoverKey>,
+    /// A hovered/context-menu lock belongs to one document and presentation of this canvas.
+    unlock: locked::State,
     /// What the pointer shows over the canvas (`ui.inspect`); none while it is elsewhere or
     /// something on the canvas with a cursor of its own has it (a ruler guide, a gradient handle).
     pub cursor: Option<crate::cursors::Shown>,
@@ -161,6 +164,7 @@ impl Default for CanvasState {
             last_pointer: None,
             hovering: false,
             last_hover: None,
+            unlock: Default::default(),
             preedit: None,
             pressure: None,
             wheel_is_mouse: false,
@@ -343,6 +347,7 @@ pub fn show(app: &mut FigApp, ui: &mut Ui, worker: &mut Worker) {
             ds.zoom_to_fit();
         }
     }
+    locked::sync(app);
     let own_cursor = input(app, ui, &resp);
     // A browser names no dragged file until the drop, so documents there still say "import", or
     // in Dev Mode show the Dev Mode note, though they open when dropped.
@@ -487,6 +492,7 @@ pub fn show(app: &mut FigApp, ui: &mut Ui, worker: &mut Worker) {
     crate::dev_mode::refresh_measurements(app);
     app.session.tool.labels = overlays(app, &painter, &t);
     crate::frame_labels::rename_field(app, ui);
+    locked::show(app, ui);
     // The zoom tool's area.
     if let (Some(start), Some(p)) = (app.canvas.zoom_drag, ctx.input(|i| i.pointer.hover_pos())) {
         let area = Rect::from_two_pos(start, p);
@@ -618,3 +624,5 @@ mod zoom_preview_tests;
 
 #[cfg(test)]
 mod tab_switch_tests;
+#[cfg(test)]
+mod theme_background_tests;

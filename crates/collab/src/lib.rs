@@ -28,6 +28,7 @@ mod diff;
 mod docprops;
 pub mod frac;
 mod history;
+pub mod invite;
 pub mod merge;
 pub mod message;
 pub mod replica;

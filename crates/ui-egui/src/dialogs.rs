@@ -14,6 +14,7 @@ use crate::export_panel::{export_layers, save_one, suggested_name};
 use crate::i18n::{self, tr, tr_noop, trf, trn};
 use crate::theme::{Tokens, regular, semibold};
 
+mod accent;
 mod batch_rename;
 mod color_profile;
 mod export;
@@ -211,6 +212,49 @@ pub fn keys(app: &mut FigApp, ctx: &Context) {
     }
 }
 
+/// A Preferences opening owns all of its temporary widget state. The viewport key keeps
+/// separate native windows independent; a fresh content scope also covers egui's own
+/// number editors, while the explicit text editors use that same opening scope.
+fn preferences_scope(ctx: &Context, open: bool) -> Option<egui::Id> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let viewport = ctx.viewport_id();
+    let key = egui::Id::unique(("preferences_opening", viewport));
+    let previous = ctx.data(|data| data.get_temp::<u64>(key));
+    if !open {
+        if let Some(epoch) = previous {
+            let scope = egui::Id::unique(("preferences_contents", viewport, epoch));
+            let text_fields = [
+                scope.with("pref_user_name"),
+                scope.with("pref_publish_server"),
+                scope.with("pref_pixel_grid_size"),
+                scope.with("pref_selection_outline_opacity"),
+            ];
+            let focused = ctx.memory(|memory| memory.focused());
+            if let Some(focused) = focused.filter(|focused| text_fields.iter().any(|field| field.with("te") == *focused)) {
+                ctx.memory_mut(|memory| memory.surrender_focus(focused));
+            }
+            ctx.data_mut(|data| {
+                data.remove::<u64>(key);
+                for field in text_fields {
+                    data.remove::<String>(field.with("editing"));
+                    data.remove::<egui::text_edit::TextEditState>(field.with("te"));
+                }
+            });
+        }
+        return None;
+    }
+    let epoch = match previous {
+        Some(epoch) => epoch,
+        None => {
+            let epoch = NEXT.fetch_add(1, Ordering::Relaxed);
+            ctx.data_mut(|data| data.insert_temp(key, epoch));
+            epoch
+        }
+    };
+    Some(egui::Id::unique(("preferences_contents", viewport, epoch)))
+}
+
 /// Draw the app's dialogs and cards: pending opens/imports/missing fonts, About,
 /// Preferences, shortcuts, find/replace, batch rename, menu input, variables, dev compare,
 /// branch, export preview, colour profile, plugin, live join/publish, online dialogs and
@@ -238,150 +282,182 @@ pub fn show(app: &mut FigApp, ctx: &Context) {
             app.ui.about = false;
         }
     }
-    if app.ui.preferences {
+    if let Some(fields) = preferences_scope(ctx, app.ui.preferences) {
         let mut open = true;
-        window(tr("Preferences"), ctx).open(&mut open).show(ctx, |ui| {
-            ui.set_width(360.0);
-            let prefs = app.session.prefs.clone();
-            let mut toggles = vec![];
-            for (label, val, cmd) in [
-                (tr("Keep tool selected after use"), prefs.keep_tool, "pref.keepTool"),
-                (tr("Highlight layers on hover"), prefs.highlight_on_hover, "pref.highlightHover"),
-                (tr("Rename duplicated layers"), prefs.rename_duplicates, "pref.renameDuplicates"),
-                (tr("Show dimensions on objects"), prefs.show_dimensions, "pref.showDimensions"),
-                (tr("Use number keys for opacity"), prefs.number_keys_opacity, "pref.numberKeysOpacity"),
-                (tr("Scroll wheel zoom"), prefs.scroll_wheel_zoom, "pref.scrollWheelZoom"),
-                (tr("Reduce motion"), prefs.reduce_motion, "pref.reduceMotion"),
-                (tr("Reopen windows and tabs from last time"), prefs.restore_session, "pref.restoreSession"),
-            ] {
-                if crate::widgets::checkbox(ui, val, label) {
-                    toggles.push(cmd);
+        let max_height = (ctx.content_rect().height() - 16.0).max(0.0);
+        window(tr("Preferences"), ctx).max_height(max_height).vscroll(true).open(&mut open).show(ctx, |ui| {
+            ui.push_id(fields, |ui| {
+                ui.set_width(360.0);
+                let prefs = app.session.prefs.clone();
+                let mut toggles = vec![];
+                for (label, val, cmd) in [
+                    (tr("Keep menus open when toggling options"), prefs.keep_menu_open, "pref.keepMenuOpen"),
+                    (tr("Keep tool selected after use"), prefs.keep_tool, "pref.keepTool"),
+                    (tr("Highlight layers on hover"), prefs.highlight_on_hover, "pref.highlightHover"),
+                    (tr("Rename duplicated layers"), prefs.rename_duplicates, "pref.renameDuplicates"),
+                    (tr("Show dimensions on objects"), prefs.show_dimensions, "pref.showDimensions"),
+                    (tr("Use number keys for opacity"), prefs.number_keys_opacity, "pref.numberKeysOpacity"),
+                    (tr("Scroll wheel zoom"), prefs.scroll_wheel_zoom, "pref.scrollWheelZoom"),
+                    (tr("Scroll to change focused number fields"), prefs.number_wheel, "pref.numberWheel"),
+                    (tr("Reduce motion"), prefs.reduce_motion, "pref.reduceMotion"),
+                    (tr("Reopen windows and tabs from last time"), prefs.restore_session, "pref.restoreSession"),
+                ] {
+                    if crate::widgets::checkbox(ui, val, label) {
+                        toggles.push(cmd);
+                    }
                 }
-            }
-            if app.services.reduce_motion() {
-                crate::widgets::label(ui, tr("Your system asks for reduced motion: animations stay off."), t.text_secondary);
-            }
-            // The GPU rasterizer is desktop-only; the browser keeps the CPU renderer.
-            if !cfg!(target_arch = "wasm32") && crate::widgets::checkbox(ui, prefs.gpu_canvas, tr("Draw the canvas on the GPU")) {
-                toggles.push("pref.gpuCanvas");
-            }
-            if !cfg!(target_arch = "wasm32") {
-                crate::widgets::label(
-                    ui,
-                    tr("Faster canvas draws on supported pages. Pages the GPU can't draw exactly, and machines without one, stay on the CPU renderer."),
-                    t.text_secondary,
-                );
-            }
-            // The browser has no files to save to.
-            if !cfg!(target_arch = "wasm32") && crate::widgets::checkbox(ui, prefs.auto_save, tr("Save files automatically")) {
-                toggles.push("pref.autoSave");
-            }
-            if !cfg!(target_arch = "wasm32") && crate::widgets::checkbox(ui, prefs.start_on_home, tr("Start on the Home screen")) {
-                toggles.push("pref.startOnHome");
-            }
-            for c in toggles {
-                app.run(c, json!({}));
-            }
-            // Where the app registers itself as the opener of invite links (Windows).
-            if let Some(on) = app.session.invite_links_on() {
-                if crate::widgets::checkbox(ui, on, tr("Open invite links in FigCraft")) {
-                    app.run("collab.registerLinks", json!({"on": !on}));
-                }
-                crate::widgets::label(
-                    ui,
-                    tr("figcraft:// links from a browser, chat or email open this app and join the session."),
-                    t.text_secondary,
-                );
-            }
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.label(tr("Your name"));
-                crate::live::name_field(app, ui, egui::Id::unique("pref_user_name"), 160.0);
-            });
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.label(tr("Server for online sharing"));
-                // Where Share ▸ Online keeps files and join codes are asked; no key here
-                // (preferences are saved as text).
-                let name = tr("Server for online sharing");
-                if let Some(url) = crate::widgets::text_field_named(ui, egui::Id::unique("pref_publish_server"), &prefs.publish_server, 220.0, name) {
-                    app.run("pref.publishServer", json!({"url": url}));
-                }
-                let usual = prefs.publish_server == figcraft_engine::live::DEFAULT_SERVER;
-                if crate::widgets::button(ui, tr("Reset"), false, !usual).on_hover_text(tr("Back to the FigCraft server")).clicked() {
-                    app.run("pref.publishServer", json!({}));
-                }
-            });
-            if prefs.publish_server.is_empty() {
-                crate::widgets::label(ui, tr("Online sharing is off: files are shared on the local network only."), t.text_secondary);
-            }
-            if !cfg!(target_arch = "wasm32") {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    ui.label(tr("Local MCP server"));
-                    if crate::widgets::button(ui, tr("Configure MCP & Harnesses…"), false, true).clicked() {
-                        app.ui.mcp_window = true;
+                    let label = tr("Selection outline opacity");
+                    let opacity = prefs.selection_outline_opacity();
+                    ui.label(label).on_hover_text(tr("Fade selection outlines, handles and labels without changing the artwork."));
+                    if let Some(crate::widgets::FieldEdit::Set(value) | crate::widgets::FieldEdit::Scrub(value,_)) = crate::widgets::number_field_exact(
+                        ui,fields.with("pref_selection_outline_opacity"),crate::widgets::Lead::Named(label),Some(opacity),"%",76.0,1.0,
+                    ) { app.run("pref.selectionOutlineOpacity",json!({"opacity":value.clamp(0.0,100.0)})); }
+                    if crate::widgets::icon_button(ui,crate::icons::Icon::Reset,tr("Reset selection outline opacity")) {
+                        app.run("pref.selectionOutlineOpacity",json!({"reset":true}));
                     }
                 });
-            }
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.label(tr("Nudge amount"));
-                let mut small = prefs.nudge_small;
-                let mut big = prefs.nudge_big;
-                let a = ui.add(egui::DragValue::new(&mut small).range(0.1..=100.0));
-                let b = ui.add(egui::DragValue::new(&mut big).range(1.0..=1000.0));
-                if a.changed() || b.changed() {
-                    app.run("pref.nudge", json!({"small": small, "big": big}));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let label = tr("Pixel grid size");
+                    ui.label(label).on_hover_text(tr("Grid cells and pixel snapping use this size (0.125–10000 px)."));
+                    if let Some(crate::widgets::FieldEdit::Set(size) | crate::widgets::FieldEdit::Scrub(size,_)) = crate::widgets::number_field_exact(
+                        ui,fields.with("pref_pixel_grid_size"),crate::widgets::Lead::Named(label),Some(prefs.pixel_grid_size),"px",100.0,0.125,
+                    ) { app.run("pref.pixelGridSize",json!({"size":size.clamp(figcraft_engine::pixel_grid::MIN_SIZE,figcraft_engine::pixel_grid::MAX_SIZE)})); }
+                    if crate::widgets::button(ui,tr("Reset"),false,prefs.pixel_grid_size != 1.0).clicked() { app.run("pref.pixelGridSize",json!({"reset":true})); }
+                });
+                if app.services.reduce_motion() {
+                    crate::widgets::label(ui, tr("Your system asks for reduced motion: animations stay off."), t.text_secondary);
                 }
-            });
-            ui.add_space(8.0);
-            interface_size(app, ui, prefs.ui_scale);
-            ui.add_space(8.0);
-            crate::board_bar::grid_settings(app, ui);
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.label(tr("Theme"));
-                for (l, c) in [(tr_noop("Light"), "view.themeLight"), (tr_noop("Dark"), "view.themeDark"), (tr_noop("System"), "view.themeSystem")] {
-                    if ui.selectable_label(app.session.prefs.theme.eq_ignore_ascii_case(l), tr(l)).clicked() {
-                        app.run(c, json!({}));
+                // The GPU rasterizer is desktop-only; the browser keeps the CPU renderer.
+                if !cfg!(target_arch = "wasm32") && crate::widgets::checkbox(ui, prefs.gpu_canvas, tr("Draw the canvas on the GPU")) {
+                    toggles.push("pref.gpuCanvas");
+                }
+                if !cfg!(target_arch = "wasm32") {
+                    crate::widgets::label(
+                        ui,
+                        tr("Faster canvas draws on supported pages. Pages the GPU can't draw exactly, and machines without one, stay on the CPU renderer."),
+                        t.text_secondary,
+                    );
+                }
+                // The browser has no files to save to.
+                if !cfg!(target_arch = "wasm32") && crate::widgets::checkbox(ui, prefs.auto_save, tr("Save files automatically")) {
+                    toggles.push("pref.autoSave");
+                }
+                if !cfg!(target_arch = "wasm32") && crate::widgets::checkbox(ui, prefs.start_on_home, tr("Start on the Home screen")) {
+                    toggles.push("pref.startOnHome");
+                }
+                for c in toggles {
+                    app.run(c, json!({}));
+                }
+                // Where the app registers itself as the opener of invite links (Windows).
+                if let Some(on) = app.session.invite_links_on() {
+                    if crate::widgets::checkbox(ui, on, tr("Open invite links in FigCraft")) {
+                        app.run("collab.registerLinks", json!({"on": !on}));
                     }
+                    crate::widgets::label(
+                        ui,
+                        tr("figcraft:// links from a browser, chat or email open this app and join the session."),
+                        t.text_secondary,
+                    );
                 }
-            });
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.label(tr("Language"));
-                // Each language by its own name; System follows the OS (the browser on the web).
-                let langs = || {
-                    [("system", tr("System"))]
-                        .into_iter()
-                        .chain(i18n::languages().iter().filter(|l| crate::cjk::can_show(l.code)).map(|l| (l.code, l.name)))
-                };
-                let on = |code: &str| app.session.prefs.language.eq_ignore_ascii_case(code);
-                let selected = langs().find(|(code, _)| on(code)).map_or(tr("System"), |(_, name)| name);
-                let resp = crate::widgets::dropdown(ui, selected, 220.0, None);
-                let mut pick = None;
-                crate::right::menu_popup(&resp).show(|ui| {
-                    for (code, name) in langs() {
-                        if crate::right::menu_check(ui, on(code), name, "") {
-                            pick = Some(code);
-                            ui.close();
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label(tr("Your name"));
+                    crate::live::name_field(app, ui, fields.with("pref_user_name"), 160.0);
+                });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label(tr("Server for online sharing"));
+                    // Where Share ▸ Online keeps files and join codes are asked; no key here
+                    // (preferences are saved as text).
+                    let name = tr("Server for online sharing");
+                    if let Some(url) = crate::widgets::text_field_named(ui, fields.with("pref_publish_server"), &prefs.publish_server, 220.0, name) {
+                        app.run("pref.publishServer", json!({"url": url}));
+                    }
+                    let usual = prefs.publish_server == figcraft_engine::live::DEFAULT_SERVER;
+                    if crate::widgets::button(ui, tr("Reset"), false, !usual).on_hover_text(tr("Back to the FigCraft server")).clicked() {
+                        app.run("pref.publishServer", json!({}));
+                    }
+                });
+                if prefs.publish_server.is_empty() {
+                    crate::widgets::label(ui, tr("Online sharing is off: files are shared on the local network only."), t.text_secondary);
+                }
+                if !cfg!(target_arch = "wasm32") {
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.label(tr("Local MCP server"));
+                        if crate::widgets::button(ui, tr("Configure MCP & Harnesses…"), false, true).clicked() {
+                            app.ui.mcp_window = true;
+                        }
+                    });
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label(tr("Nudge amount"));
+                    let mut small = prefs.nudge_small;
+                    let mut big = prefs.nudge_big;
+                    let a = ui.add(egui::DragValue::new(&mut small).range(0.1..=100.0));
+                    let b = ui.add(egui::DragValue::new(&mut big).range(1.0..=1000.0));
+                    if a.changed() || b.changed() {
+                        app.run("pref.nudge", json!({"small": small, "big": big}));
+                    }
+                });
+                ui.add_space(8.0);
+                interface_size(app, ui, prefs.ui_scale);
+                ui.add_space(8.0);
+                crate::board_bar::grid_settings(app, ui);
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label(tr("Theme"));
+                    for (l, c) in [(tr_noop("Light"), "view.themeLight"), (tr_noop("Dark"), "view.themeDark"), (tr_noop("System"), "view.themeSystem")] {
+                        if ui.selectable_label(app.session.prefs.theme.eq_ignore_ascii_case(l), tr(l)).clicked() {
+                            app.run(c, json!({}));
                         }
                     }
                 });
-                if let Some(code) = pick {
-                    app.run("pref.language", json!({"language": code}));
-                    ui.ctx().request_repaint();
+                ui.add_space(8.0);
+                accent::controls(app, ui);
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label(tr("Language"));
+                    // Each language by its own name; System follows the OS (the browser on the web).
+                    let langs = || {
+                        [("system", tr("System"))]
+                            .into_iter()
+                            .chain(i18n::languages().iter().filter(|l| crate::cjk::can_show(l.code)).map(|l| (l.code, l.name)))
+                    };
+                    let on = |code: &str| app.session.prefs.language.eq_ignore_ascii_case(code);
+                    let selected = langs().find(|(code, _)| on(code)).map_or(tr("System"), |(_, name)| name);
+                    let resp = crate::widgets::dropdown(ui, selected, 220.0, None);
+                    let mut pick = None;
+                    crate::right::menu_popup(&resp).show(|ui| {
+                        for (code, name) in langs() {
+                            if crate::right::menu_check(ui, on(code), name, "") {
+                                pick = Some(code);
+                                ui.close();
+                            }
+                        }
+                    });
+                    if let Some(code) = pick {
+                        app.run("pref.language", json!({"language": code}));
+                        ui.ctx().request_repaint();
+                    }
+                });
+                if let Some(lang) = i18n::current().filter(|l| l.draft) {
+                    let note = trf("{language}: draft translation, waiting for a native speaker's review.", &[("language", &lang.name)]);
+                    crate::widgets::label(ui, &note, t.text_secondary);
                 }
             });
-            if let Some(lang) = i18n::current().filter(|l| l.draft) {
-                let note = trf("{language}: draft translation, waiting for a native speaker's review.", &[("language", &lang.name)]);
-                crate::widgets::label(ui, &note, t.text_secondary);
-            }
         });
         if !open {
             app.ui.preferences = false;
+            preferences_scope(ctx, false);
         }
+    }
+    if !app.ui.preferences {
+        accent::cancel(ctx);
     }
     crate::shortcuts_panel::show(app, ctx);
     if let Some((mut find, mut replace)) = app.ui.find.clone() {

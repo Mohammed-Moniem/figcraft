@@ -15,6 +15,7 @@ MIT OR Apache-2.0. No third-party icon sets are used.
 | `docs/brand/artcraft-logo.svg`, `docs/brand/artcraft-logo.png`, `docs/brand/artcraft-logo-white.svg`, `docs/brand/artcraft-logo-white.png`, `docs/brand/artcraft-mark.svg`, `docs/brand/artcraft-mark.png`, `docs/brand/artcraft-mark-black.svg`, `docs/brand/artcraft-mark-black.png` | ArtCraft Team | ArtCraft brand kit | ArtCraft brand terms (`docs/brand/LICENSE-brand.txt`), not open source | Trademarks; unmodified use within FigCraft only |
 | `docs/images/` (all screenshots and exports: `shot-*.png`, `art-*.png`) | FigCraft contributors | Screenshots of FigCraft showing synthetic demo documents made in FigCraft, and PNG exports of those documents by FigCraft's renderer | MIT OR Apache-2.0 | No third-party artwork |
 | `examples/*.figcraft` | FigCraft contributors | Synthetic demo documents built through FigCraft's command API; invented copy, shapes and vectors drawn from scratch, no images or embedded fonts | MIT OR Apache-2.0 | Text uses Inter (OFL, from craft-fonts or the system); no third-party artwork |
+| `.opencode/skills/figcraft/references/card.json` | FigCraft contributors | Original synthetic command recipe: one auto-layout frame and two solid-color rectangles | MIT OR Apache-2.0 | No fonts, images, third-party skill code or product assets |
 
 ## Offline spelling dictionary
 
@@ -56,3 +57,13 @@ egui's default fonts (compiled into the `egui`/`epaint` crates) keep their own l
 | Path | Contributor | Source | Licence | Review |
 |---|---|---|---|---|
 | `crates/ui-egui/locales/ar.toml` | @hussain-hz with OpenAI Codex (AI-assisted) | Original Arabic wording from FigCraft's English catalog and engine command labels; no proprietary localisation consulted | MIT OR Apache-2.0 | Draft; native-speaker review and maintainer approval pending |
+
+## Original JPEG regression fixtures
+
+| Path | Author | Source | Licence | Notes |
+|---|---|---|---|---|
+| `crates/format/tests/fixtures/jpeg/progressive-cmyk-8x8.jpg` | FigCraft contributors | Original synthetic TINY_BASELINE_CMYK seed; [recipe](crates/format/tests/fixtures/jpeg/README.md) | MIT OR Apache-2.0 | Progressive CMYK C/M/Y 1×1, K 2×2; SHA256 `f64cd3a8359fcc4567e65cb18e00d66ea43b37b5c2620e93bca8cc0e17b504b9` |
+| `crates/format/tests/fixtures/jpeg/progressive-cmyk-300x200.jpg` | FigCraft contributors | Original synthetic TINY_BASELINE_CMYK seed; [recipe](crates/format/tests/fixtures/jpeg/README.md) | MIT OR Apache-2.0 | Progressive CMYK C/M/Y 1×1, K 2×2; SHA256 `45a0e22f1f80df41d7d98b47edeb3ee3c41fe6d07517262051ed106e430c4a05` |
+| `crates/format/tests/fixtures/jpeg/progressive-cmyk-17x19.jpg` | FigCraft contributors | Original synthetic TINY_BASELINE_CMYK seed; [recipe](crates/format/tests/fixtures/jpeg/README.md) | MIT OR Apache-2.0 | Progressive CMYK C/M/Y 1×1, K 2×2; SHA256 `c4ff081c7b5c472c0d065164c07b54ba07e004079683d9162dd5a20bd689ccbe` |
+
+The decoder source package has separate [backport provenance and original license texts](vendor/zune-jpeg/FIGCRAFT-BACKPORT.md), under its unchanged MIT OR Apache-2.0 OR Zlib expression and the narrow local-fork exception. No third-party encoder/transcoder is redistributed.

@@ -13,9 +13,10 @@ use crate::FigApp;
 use crate::a11y;
 use crate::i18n::{tr, tr_noop};
 use crate::icons::{self, Icon};
-use crate::theme::{ACCENT, Tokens, regular, semibold};
+use crate::theme::{Tokens, regular, semibold};
 use crate::widgets;
 pub mod home_recents;
+pub mod joined;
 pub mod online;
 
 /// The section the home screen shows.
@@ -236,37 +237,56 @@ fn sidebar(app: &mut FigApp, ui: &mut Ui, t: &Tokens, left: Rect) {
         }
     });
     y += widgets::FIELD_H + 12.0;
-    for (i, (section, icon, label)) in Section::ALL.into_iter().enumerate() {
-        if section.library() && !crate::home_projects::available() {
-            continue;
-        }
-        if i == 3 {
-            // The project library below the files and templates.
-            y += 6.0;
-            ui.painter().line_segment([pos2(left.min.x + 16.0, y), pos2(left.max.x - 16.0, y)], Stroke::new(1.0, t.border));
-            y += 8.0;
-        }
-        let r = Rect::from_min_size(pos2(left.min.x + 8.0, y), vec2(SIDEBAR - 16.0, 32.0));
-        let resp = ui.interact(r, ui.scope_id().with(("home_section", label)), Sense::click());
-        let current = app.ui.home_view.file_query.trim().is_empty() && app.ui.home_view.section == section;
-        a11y::tab(&resp, tr(label), current);
-        if current || resp.hovered() {
-            ui.painter().rect_filled(r, CornerRadius::same(5), if current { t.selected_row } else { t.hover });
-        }
-        focus_ring(ui, t, r, &resp, 5);
-        icons::paint(ui.painter(), Rect::from_min_size(pos2(r.min.x + 10.0, r.center().y - 8.0), vec2(16.0, 16.0)), icon, t.icon);
-        ui.painter().text(pos2(r.min.x + 36.0, r.center().y), Align2::LEFT_CENTER, tr(label), regular(12.0), t.text);
-        if resp.clicked() {
-            app.ui.home_view.section = section;
-            app.ui.home_view.file_query.clear();
-        }
-        y += 34.0;
-    }
-    if crate::home_projects::available() {
-        crate::home_projects::sidebar(app, ui, t, Rect::from_min_max(pos2(left.min.x, y), pos2(left.max.x, left.max.y - 48.0)));
-    }
-    let pref_y = (left.max.y - 44.0).max(y + 12.0);
-    if pref_y > y + 12.0 {
+    // Preferences owns the bottom row. The navigation above it scrolls instead of pushing
+    // that keyboard-accessible control below a short window.
+    let pref_y = (left.max.y - 44.0).max(left.min.y + 8.0);
+    let navigation = Rect::from_min_max(pos2(left.min.x, y), pos2(left.max.x, (pref_y - 12.0).max(y)));
+    ui.scope_builder(egui::UiBuilder::new().max_rect(navigation), |ui| {
+        egui::ScrollArea::vertical()
+            .id_salt("home_sidebar_navigation")
+            .auto_shrink([false, false])
+            .max_height(navigation.height())
+            .min_scrolled_height(0.0)
+            .show(ui, |ui| {
+                let left = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), navigation.height()));
+                let mut y = left.min.y;
+                for (i, (section, icon, label)) in Section::ALL.into_iter().enumerate() {
+                    if section.library() && !crate::home_projects::available() {
+                        continue;
+                    }
+                    if i == 3 {
+                        // The project library below the files and templates.
+                        y += 6.0;
+                        ui.painter().line_segment([pos2(left.min.x + 16.0, y), pos2(left.max.x - 16.0, y)], Stroke::new(1.0, t.border));
+                        y += 8.0;
+                    }
+                    let r = Rect::from_min_size(pos2(left.min.x + 8.0, y), vec2(SIDEBAR - 16.0, 32.0));
+                    let resp = ui.interact(r, ui.scope_id().with(("home_section", label)), Sense::click());
+                    let current = app.ui.home_view.file_query.trim().is_empty() && app.ui.home_view.section == section;
+                    a11y::tab(&resp, tr(label), current);
+                    if current || resp.hovered() {
+                        ui.painter().rect_filled(r, CornerRadius::same(5), if current { t.selected_row } else { t.hover });
+                    }
+                    focus_ring(ui, t, r, &resp, 5);
+                    icons::paint(ui.painter(), Rect::from_min_size(pos2(r.min.x + 10.0, r.center().y - 8.0), vec2(16.0, 16.0)), icon, t.icon);
+                    ui.painter().text(pos2(r.min.x + 36.0, r.center().y), Align2::LEFT_CENTER, tr(label), regular(12.0), t.text);
+                    if resp.clicked() {
+                        app.ui.home_view.section = section;
+                        app.ui.home_view.file_query.clear();
+                    }
+                    y += 34.0;
+                }
+                let mut height = (y - left.min.y).max(0.0);
+                if crate::home_projects::available() {
+                    let bottom = left.max.y.max(y + 100.0);
+                    crate::home_projects::sidebar(app, ui, t, Rect::from_min_max(pos2(left.min.x, y), pos2(left.max.x, bottom)));
+                    height = bottom - left.min.y;
+                }
+                // The sidebar paints fixed rows: publish their extent to its scroll area.
+                ui.set_min_height(height);
+            });
+    });
+    if pref_y > left.min.y + 12.0 {
         ui.painter().line_segment([pos2(left.min.x + 12.0, pref_y - 6.0), pos2(left.max.x - 12.0, pref_y - 6.0)], Stroke::new(1.0, t.border));
     }
     let r = Rect::from_min_size(pos2(left.min.x + 8.0, pref_y), vec2(SIDEBAR - 16.0, 32.0));
@@ -449,7 +469,7 @@ fn open_files(app: &mut FigApp, ui: &mut Ui, t: &Tokens, query: &str) -> usize {
     for (i, d) in app.session.docs.iter().enumerate().filter(|(_, d)| hit(d)) {
         let detail = d.path.as_deref().unwrap_or_default();
         let row = FileRow {
-            mark: Some((icons::file_mark(d.doc.kind), ACCENT)),
+            mark: Some((icons::file_mark(d.doc.kind), crate::theme::accent(ui.ctx()))),
             name: &d.doc.name,
             ink: t.text,
             detail,
@@ -512,7 +532,8 @@ fn getting_started(app: &mut FigApp, ui: &mut Ui, t: &Tokens) {
         ui.painter().text(badge.center(), Align2::CENTER_CENTER, (i + 1).to_string(), semibold(10.0), t.text_secondary);
         let x = cell.min.x + 30.0;
         let title_end = ui.painter().text(pos2(x, cell.min.y + 12.0), Align2::LEFT_CENTER, tr(title), semibold(12.0), t.text).max.x;
-        if let Some(key) = shortcut(command) {
+        if let Some(key) = crate::shortcuts::shortcut_for(app, command).map(|key| figcraft_engine::keymap::display(key, crate::shortcuts::platform()))
+        {
             ui.painter().text(pos2(title_end + 8.0, cell.min.y + 12.0), Align2::LEFT_CENTER, key, regular(11.0), t.text_tertiary);
         }
         let galley = lines(ui, tr(line), regular(11.0), t.text_secondary, cell.max.x - x, 2);
@@ -521,6 +542,7 @@ fn getting_started(app: &mut FigApp, ui: &mut Ui, t: &Tokens) {
 }
 
 /// A command's shortcut as this platform writes it, as the keymap has it now.
+#[cfg(test)]
 pub(crate) fn shortcut(command: &str) -> Option<String> {
     crate::shortcuts::shortcut(command).map(|key| figcraft_engine::keymap::display(key, crate::shortcuts::platform()))
 }

@@ -29,7 +29,7 @@ pub mod vector_faces;
 pub mod vector_regions;
 
 pub use board::*;
-pub use board_route::{RouteEnd, attached_sides, path_handles, reshaped, route_along, route_points};
+pub use board_route::{END_GAP, RouteEnd, attached_sides, path_handles, reshaped, route_along, route_points};
 pub use colors::*;
 pub use comments::*;
 pub use design_review::{DesignPreset, DesignReview, GRID_MAX, GRID_MIN, MAX_BRAND_COLORS, MAX_RADII};
@@ -69,14 +69,7 @@ impl std::fmt::Display for NodeId {
 impl std::str::FromStr for NodeId {
     type Err = std::num::ParseIntError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // Accept "12" and Figma-style "0:12".
-        let t = s.trim();
-        let t = t.rsplit(':').next().unwrap_or(t);
-        if t.starts_with('+') {
-            // `u64::parse` accepts a leading '+'; ids are digits only.
-            return "-".parse::<u64>().map(NodeId);
-        }
-        t.parse::<u64>().map(NodeId)
+        figcraft_automation_json::parse_node_id(s).map(NodeId)
     }
 }
 
@@ -1115,6 +1108,11 @@ impl Document {
             }
         }
         let mut issues = Vec::new();
+        for v in &self.variables.variables {
+            if v.design_token_type.is_some_and(|hint| hint.variable_type() != v.kind) {
+                note(&mut issues, || format!("variable {} has an incompatible design token type", v.name));
+            }
+        }
         // Every (parent, child) edge and the page list, indexed once so each node's checks are
         // lookups: a wide parent or a long page list doesn't make validation quadratic.
         let edges: std::collections::BTreeSet<(NodeId, NodeId)> = self.nodes.iter().flat_map(|(p, n)| n.children.iter().map(|c| (*p, *c))).collect();
@@ -1175,6 +1173,11 @@ impl Document {
 
     /// Repair what [`validate`](Self::validate) reports (lenient loading of untrusted files).
     pub fn repair(&mut self) {
+        for v in &mut self.variables.variables {
+            if v.design_token_type.is_some_and(|hint| hint.variable_type() != v.kind) {
+                v.design_token_type = None;
+            }
+        }
         let ids: Vec<NodeId> = self.nodes.keys().copied().collect();
         for id in &ids {
             if let Some(n) = self.nodes.get_mut(id) {
@@ -1327,6 +1330,8 @@ fn remap_action(a: &mut proto::Action, map: &BTreeMap<NodeId, NodeId>) {
 
 #[cfg(test)]
 mod blur_tests;
+#[cfg(test)]
+mod board_end_gap_tests;
 #[cfg(test)]
 mod board_shape_tests;
 #[cfg(test)]

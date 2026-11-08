@@ -241,6 +241,8 @@ The desktop app also offers a loopback-only control channel (`figcraft --control
 equivalents are `mcp --install CLIENT` and `mcp --snippet CLIENT`; attached configurations require
 the running app's actual token file. No client configuration is installed automatically.
 
+OpenCode: the [FigCraft skill](.opencode/skills/figcraft/SKILL.md) is discovered in this checkout; to add it to another project, run `mkdir -p /path/to/project/.opencode/skills && cp -R .opencode/skills/figcraft /path/to/project/.opencode/skills/` from this checkout, after checking that no `figcraft` skill already exists there.
+
 ## Under the hood
 
 - **Engine first:** a pure-data document model and a command engine, with a thin, swappable egui UI on top. Layering is checked at build time across the workspace crates (`cargo xtask layers`).

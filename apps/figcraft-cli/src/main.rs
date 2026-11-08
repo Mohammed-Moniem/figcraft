@@ -177,14 +177,9 @@ fn mcp(
     let backend: Box<dyn figcraft_mcp::Backend> = match attach {
         Some(addr) => {
             let no_app = |e: std::io::Error| format!("can't reach the FigCraft app at {addr}: {e} (start it with `figcraft --control PORT`)");
-            let derived = std::env::var_os("FIGCRAFT_CONTROL_TOKEN_FILE").map(std::path::PathBuf::from).or_else(|| {
-                let port = addr.rsplit(':').next()?;
-                std::env::var_os("FIGCRAFT_LOCAL_DATA_DIR").map(|dir| std::path::PathBuf::from(dir).join(format!("control-{port}.token")))
-            });
-            let token_file = token_file
-                .or(derived.as_deref())
+            let token_file = figcraft_mcp::control_token_path(addr, token_file)
                 .ok_or_else(|| CliError::Usage("attached native control requires --control-token-file or FIGCRAFT_LOCAL_DATA_DIR".into()))?;
-            let b = figcraft_mcp::Attached::connect_with_token_file(addr, token_file).map_err(no_app)?;
+            let b = figcraft_mcp::Attached::connect_with_token_file(addr, &token_file).map_err(no_app)?;
             match timeout {
                 Some(secs) => Box::new(b.with_timeout(std::time::Duration::from_secs(secs)).map_err(no_app)?),
                 None => Box::new(b),

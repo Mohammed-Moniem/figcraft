@@ -18,7 +18,7 @@ pub(crate) struct Script {
     pub(crate) sent: Vec<Presence>,
     pub(crate) hosted: Vec<HostOptions>,
     refuse_host: bool,
-    joined: Vec<String>,
+    pub(crate) joined: Vec<String>,
     pub(crate) left: usize,
     pub(crate) msgs: Vec<ClientMsg>,
     pub(crate) published: Vec<PublishOptions>,
@@ -51,7 +51,7 @@ impl LiveLink for Mock {
         Ok(i)
     }
     fn join(&mut self, session: u64, link: &str, _: &str) -> Result<(), String> {
-        if !link.starts_with("figcraft://") {
+        if !(link.starts_with("figcraft://") || link.starts_with("ws://") || link.starts_with("wss://")) {
             return Err("not an invite".into());
         }
         let mut s = self.0.lock().unwrap();

@@ -77,6 +77,7 @@ impl FigApp {
         };
         let Ok(doc) = self.session.doc() else { return };
         let values: Vec<(NodeId, f64)> = ids.iter().filter_map(|i| Some((*i, rel.apply(shown(doc.node(*i)?))?))).collect();
+        crate::number_wheel::before_edit(self);
         if values.is_empty() || self.session.begin_interaction("Edit").is_err() {
             return;
         }
@@ -85,7 +86,9 @@ impl FigApp {
                 self.failed("node.set", &e);
             }
         }
-        let _ = self.session.commit_interaction();
+        if !crate::number_wheel::applying(self) {
+            let _ = self.session.commit_interaction();
+        }
     }
 
     /// Apply a field edit through any command: `params` builds the command's params from the value.
@@ -137,7 +140,7 @@ pub fn right_panel(app: &mut FigApp, ui: &mut Ui) {
     let play = Rect::from_min_size(pos2(share.min.x - 50.0, top.center().y - 14.0), vec2(42.0, 28.0));
     let (tri_r, chev_r) =
         (Rect::from_min_max(play.min, pos2(play.max.x - 16.0, play.max.y)), Rect::from_min_max(pos2(play.max.x - 16.0, play.min.y), play.max));
-    let present_keys = crate::toolbar::pretty_shortcut(crate::shortcuts::shortcut("proto.present").unwrap_or(""));
+    let present_keys = crate::toolbar::pretty_shortcut(crate::shortcuts::shortcut_for(app, "proto.present").unwrap_or(""));
     let presp = ui.interact(tri_r, ui.scope_id().with("play"), Sense::click()).tip(format!("{}  {present_keys}", tr("Present")));
     let mresp = ui.interact(chev_r, ui.scope_id().with("play_menu"), Sense::click()).tip(tr("Present or preview"));
     if presp.hovered() || mresp.hovered() {
@@ -206,7 +209,7 @@ pub fn right_panel(app: &mut FigApp, ui: &mut Ui) {
             (tr("Zoom to 200%"), "view.zoom200"),
             (tr("Zoom to selection"), "view.zoomSelection"),
         ] {
-            if menu_item(ui, label, crate::shortcuts::shortcut(cmd).unwrap_or("")) {
+            if menu_item(ui, label, crate::shortcuts::shortcut_for(app, cmd).unwrap_or("")) {
                 app.run(cmd, json!({}));
                 ui.close();
             }
@@ -228,7 +231,7 @@ pub fn right_panel(app: &mut FigApp, ui: &mut Ui) {
             (tr("Outlines"), "view.outlines", v.outlines),
         ];
         for (label, cmd, on) in toggles {
-            if menu_check(ui, on, label, crate::shortcuts::shortcut(cmd).unwrap_or("")) {
+            if menu_check(ui, on, label, crate::shortcuts::shortcut_for(app, cmd).unwrap_or("")) {
                 app.run(cmd, json!({}));
                 ui.close();
             }
@@ -441,7 +444,7 @@ fn header(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeId]) {
         }
         let fit_ltr = sr_ltr.translate(vec2(26.0, 0.0));
         let fit_r = flip(fit_ltr);
-        let fit_tip = crate::shortcuts::tip(tr("Fit to contents"), "object.resizeToFit");
+        let fit_tip = &crate::shortcuts::tip_for(app, tr("Fit to contents"), "object.resizeToFit");
         if widgets::icon_button_at(ui, ui.scope_id().with("frame_fit_contents"), fit_r, Icon::FitContents, fit_tip) {
             app.run("object.resizeToFit", json!({"ids": sel}));
         }
@@ -478,7 +481,7 @@ fn header(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeId]) {
     let current = figcraft_engine::booleans::shown_op(doc, sel);
     for (icon, label, cmd) in actions.into_iter().rev() {
         let br = flip(Rect::from_min_size(pos2(x - 24.0, r.center().y - 12.0), vec2(24.0, 24.0)));
-        let tip = if cmd == "bool.union" { label } else { crate::shortcuts::tip(label, cmd) };
+        let tip = if cmd == "bool.union" { label.to_string() } else { crate::shortcuts::tip_for(app, label, cmd) };
         let bresp = ui.interact(br, ui.scope_id().with(("qa", cmd)), Sense::click()).tip(tip);
         if bresp.hovered() {
             ui.painter().rect_filled(br, CornerRadius::same(5), t.hover);
@@ -497,7 +500,7 @@ fn header(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeId]) {
                     (BoolOp::Intersect, "bool.intersect"),
                     (BoolOp::Exclude, "bool.exclude"),
                 ] {
-                    let key = crate::shortcuts::shortcut(c).unwrap_or("");
+                    let key = crate::shortcuts::shortcut_for(app, c).unwrap_or("");
                     let picked = match current {
                         Some(cur) => menu_check(ui, cur == op, tr(op.label()), key),
                         None => menu_item(ui, tr(op.label()), key),
@@ -507,7 +510,7 @@ fn header(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeId]) {
                         ui.close();
                     }
                 }
-                let key = crate::shortcuts::shortcut("vector.flatten").unwrap_or("");
+                let key = crate::shortcuts::shortcut_for(app, "vector.flatten").unwrap_or("");
                 let flatten = if current.is_some() { menu_item_beside_checks(ui, tr("Flatten"), key) } else { menu_item(ui, tr("Flatten"), key) };
                 if flatten {
                     app.run("vector.flatten", json!({}));
@@ -616,7 +619,7 @@ fn align_row(app: &mut FigApp, ui: &mut Ui, sel: &[NodeId], can_align: bool, col
     widgets::sublabels(ui, tr("Alignment"), None);
     row(ui, 32.0, |ui| {
         let cmds = ["align.left", "align.hcenter", "align.right", "align.top", "align.vcenter", "align.bottom"];
-        let tip = crate::shortcuts::tip;
+        let tip = |label, id| crate::shortcuts::tip_for(app, label, id);
         let items = [
             (Icon::AlignLeft, tip(tr("Align left"), cmds[0])),
             (Icon::AlignHCenter, tip(tr("Align horizontal centers"), cmds[1])),
@@ -625,6 +628,7 @@ fn align_row(app: &mut FigApp, ui: &mut Ui, sel: &[NodeId], can_align: bool, col
             (Icon::AlignVCenter, tip(tr("Align vertical centers"), cmds[4])),
             (Icon::AlignBottom, tip(tr("Align bottom"), cmds[5])),
         ];
+        let items: Vec<_> = items.iter().map(|(icon, text)| (*icon, text.as_str())).collect();
         let w = col / 3.0;
         let picked = ui.add_enabled_ui(can_align, |ui| {
             let h = widgets::segmented(ui, &items[..3], None, w);
@@ -643,7 +647,7 @@ fn align_row(app: &mut FigApp, ui: &mut Ui, sel: &[NodeId], can_align: bool, col
                     (tr("Distribute vertical spacing"), "distribute.vertical"),
                     (tr("Tidy up"), "arrange.tidy"),
                 ] {
-                    if menu_item(ui, l, crate::shortcuts::shortcut(c).unwrap_or("")) {
+                    if menu_item(ui, l, crate::shortcuts::shortcut_for(app, c).unwrap_or("")) {
                         app.run(c, json!({"ids": ids}));
                         ui.close();
                     }
@@ -689,8 +693,8 @@ fn rotation_row(app: &mut FigApp, ui: &mut Ui, sel: &[NodeId], rot: Option<f64>,
         app.field_of(&ids, "rotation", e, rot_of, |v| json!(v));
         let items = [
             (Icon::Rotate, tr("Rotate 90° right")),
-            (Icon::FlipH, crate::shortcuts::tip(tr("Flip horizontal"), "object.flipH")),
-            (Icon::FlipV, crate::shortcuts::tip(tr("Flip vertical"), "object.flipV")),
+            (Icon::FlipH, &crate::shortcuts::tip_for(app, tr("Flip horizontal"), "object.flipH")),
+            (Icon::FlipV, &crate::shortcuts::tip_for(app, tr("Flip vertical"), "object.flipV")),
         ];
         if let Some(i) = widgets::segmented(ui, &items, None, col / 3.0) {
             app.run(["object.rotateRight", "object.flipH", "object.flipV"][i], json!({"ids": ids}));

@@ -214,6 +214,7 @@ fn foundations(doc: &mut Document) -> (CollectionId, ModeId, ModeId) {
         hidden_from_publishing: false,
         extends: None,
         overrides: Default::default(),
+        design_token_type: None,
         code_syntax: Default::default(),
     };
     for (name, l, d) in COLORS {

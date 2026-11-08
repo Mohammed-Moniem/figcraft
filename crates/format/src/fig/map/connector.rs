@@ -2,7 +2,7 @@ use super::layer::{cap_name, own_text, svg_path, valid_size};
 use super::paint::{paint, stroke};
 use super::{Affine, Kv, Mapper, NO_STYLE, Obj, Point, Value, View, generated_record, guid, json, matrix, network, num, rows};
 use figcraft_doc::geom::kurbo::{BezPath, PathEl, Rect, Shape};
-use figcraft_doc::{RouteEnd, Routing, Side, route_points};
+use figcraft_doc::{ConnectorPath, RouteEnd, Routing, Side, attached_sides, route_along, route_points};
 
 /// How a connector imports: from its saved snapshot (`terminal`: as one vector, no room for its
 /// label), or drawn from its ends, as a frame with its line and `label` when it has one.
@@ -65,7 +65,7 @@ impl<'a> Mapper<'a> {
             _ => Routing::Straight,
         };
         let parent = v.get("parentIndex").and_then(|p| p.get("guid")).and_then(guid);
-        let end = |k: &str| -> Option<RouteEnd> {
+        let end = |k: &str, saved: bool| -> Option<RouteEnd> {
             let e = v.get(k)?;
             let end = match e.get("endpointNodeID").and_then(guid).filter(|g| g != NO_STYLE) {
                 Some(id) => {
@@ -76,11 +76,30 @@ impl<'a> Mapper<'a> {
                     }
                     let (w, h) = n.get("size").map_or((0.0, 0.0), |s| (num(s, "x").unwrap_or(0.0), num(s, "y").unwrap_or(0.0)));
                     let at = e.get("relativePosition").and_then(|r| Some((num(r, "x")?, num(r, "y")?)));
-                    let t = n.get("transform").and_then(matrix).unwrap_or_default();
+                    let transform = n.get("transform").and_then(matrix);
+                    if saved && n.get("transform").is_some() && transform.is_none() {
+                        // An absent matrix means identity; an invalid supplied one is unknown
+                        // source geometry and cannot truthfully preserve a saved path.
+                        return None;
+                    }
+                    let t = transform.unwrap_or_default();
+                    if saved {
+                        // Magnets name node-local sides. Only positive axis-aligned endpoint
+                        // transforms keep those outward normals in the saved parent space;
+                        // otherwise regenerate truthfully instead of accepting a tangent run.
+                        let [a, b, c, d, _, _] = t.as_coeffs();
+                        if b != 0.0 || c != 0.0 || a <= 0.0 || d <= 0.0 || !a.is_finite() || !d.is_finite() {
+                            return None;
+                        }
+                    }
                     match routing {
                         Routing::Straight => {
                             let (rx, ry) = at.unwrap_or((0.5, 0.5));
                             RouteEnd::Point(t * Point::new(w * rx, h * ry))
+                        }
+                        _ if saved && at.is_some() => {
+                            let (rx, ry) = at?;
+                            RouteEnd::On(t.transform_rect_bbox(Rect::new(0.0, 0.0, w, h)), side(e, at), t * Point::new(w * rx, h * ry))
                         }
                         _ => RouteEnd::Box(t.transform_rect_bbox(Rect::new(0.0, 0.0, w, h)), side(e, at)),
                     }
@@ -89,16 +108,32 @@ impl<'a> Mapper<'a> {
             };
             let finite = |p: Point| p.x.is_finite() && p.y.is_finite();
             let ok = match end {
-                RouteEnd::Point(p) | RouteEnd::On(_, _, p) => finite(p),
+                RouteEnd::Point(p) => finite(p),
+                RouteEnd::On(b, _, p) => finite(p) && finite(b.origin()) && finite(Point::new(b.x1, b.y1)),
                 RouteEnd::Box(b, _) => finite(b.origin()) && finite(Point::new(b.x1, b.y1)),
             };
             ok.then_some(end)
         };
-        let Some(pts) = end("connectorStart").zip(end("connectorEnd")).and_then(|(a, b)| route_points(a, b, routing)) else {
+        let Some((from, to)) = end("connectorStart", false).zip(end("connectorEnd", false)) else {
             self.warn("connectors whose ends can't be placed are empty");
             return None;
         };
-        if routing != Routing::Straight {
+        let saved = (routing != Routing::Straight)
+            .then(|| {
+                let (from, to) = end("connectorStart", true).zip(end("connectorEnd", true))?;
+                match routing {
+                    Routing::Elbow => saved_elbow_path(v, from, to),
+                    Routing::Curved => saved_bezier_path(v, from, to, space),
+                    Routing::Straight => None,
+                }
+            })
+            .flatten();
+        let preserved = saved.is_some();
+        let Some(pts) = saved.or_else(|| route_points(from, to, routing)) else {
+            self.warn("connectors whose ends can't be placed are empty");
+            return None;
+        };
+        if routing != Routing::Straight && !preserved {
             self.warn("elbowed and curved connectors without a saved path follow FigCraft's own routing");
         }
         // A curved route is one curve: its ends and the two control points between them.
@@ -405,6 +440,109 @@ pub(super) fn connector_has_saved_label(v: &View<'_>) -> bool {
             .and_then(|d| d.get("characters"))
             .and_then(Kv::str)
             .is_some_and(|s| !s.trim().is_empty())
+}
+
+/// Saved metadata describes internal runs in parent space, rather than a connector-local
+/// transform. Cap it before allocating and use the same native path walker as reshaped elbows.
+fn saved_elbow_path(v: &View<'_>, from: RouteEnd, to: RouteEnd) -> Option<Vec<Point>> {
+    // At most64 segments, including the first and last, as for a hand-reshaped native path.
+    const MAX_INTERNAL_RUNS: usize = 62;
+    let controls = v.get("connectorControlPoints")?.list();
+    if controls.is_empty() || controls.len() > MAX_INTERNAL_RUNS {
+        return None;
+    }
+    // Saved paths become static artwork. A new native automatic gap must not move their
+    // endpoints or reject short outward runs; absent an explicit point, keep the resolved border.
+    let (start_side, end_side) = attached_sides(from, to);
+    let border = |end, side| match (end, side) {
+        (RouteEnd::Box(b, _), Some(s)) => RouteEnd::On(b, s, s.point(b)),
+        _ => end,
+    };
+    let (from, to) = (border(from, start_side), border(to, end_side));
+    let endpoints = route_points(from, to, Routing::Straight)?;
+    let (first, last) = (*endpoints.first()?, *endpoints.last()?);
+    let middle = first.midpoint(last);
+    let mut positions = Vec::with_capacity(controls.len());
+    let mut previous = None;
+    let mut first_across = false;
+    for (i, control) in controls.iter().enumerate() {
+        let axis = control.get("axis")?;
+        let across = match (num(axis, "x")?, num(axis, "y")?) {
+            (1.0, 0.0) => true,
+            (0.0, 1.0) => false,
+            _ => return None,
+        };
+        if previous == Some(across) {
+            return None;
+        }
+        previous = Some(across);
+        if i == 0 {
+            first_across = !across;
+        }
+        let p = control.get("position")?;
+        let (x, y) = (num(p, "x")?, num(p, "y")?);
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        positions.push(if across { y - middle.y } else { x - middle.x });
+    }
+    let path = ConnectorPath::Runs { across: first_across, at: positions };
+    let points = route_along(from, to, Routing::Elbow, Some(&path))?;
+    let second = *points.get(1)?;
+    let before_last = *points.get(points.len().checked_sub(2)?)?;
+    let leaves = |side: Side, end: Point, next: Point| {
+        let direction = next - end;
+        let distance = direction.dot(side.normal());
+        direction.x.is_finite() && direction.y.is_finite() && distance.is_finite() && distance > 0.0
+    };
+    let (start_side, end_side) = attached_sides(from, to);
+    if !start_side.is_none_or(|s| leaves(s, first, second)) || !end_side.is_none_or(|s| leaves(s, last, before_last)) {
+        return None;
+    }
+    Some(points)
+}
+
+/// Two ordered cubic handles in parent space. Axis is shared wire metadata whose Bezier
+/// meaning is undocumented; validate a supplied vector without imposing elbow direction rules.
+fn saved_bezier_path(v: &View<'_>, from: RouteEnd, to: RouteEnd, space: Affine) -> Option<Vec<Point>> {
+    let [first, second] = v.get("connectorBezierControlPoints")?.list() else { return None };
+    let position = |control: &Kv<'_>| {
+        if let Some(axis) = control.get("axis") {
+            let (x, y) = (num(axis, "x")?, num(axis, "y")?);
+            if !x.is_finite() || !y.is_finite() {
+                return None;
+            }
+        }
+        let p = control.get("position")?;
+        Some(Point::new(num(p, "x")?, num(p, "y")?))
+    };
+    let (c0, c1) = (position(first)?, position(second)?);
+    // Static imported artwork keeps original border points, not native automatic end gaps.
+    let (start_side, end_side) = attached_sides(from, to);
+    let border = |end, side| match (end, side) {
+        (RouteEnd::Box(b, _), Some(s)) => RouteEnd::On(b, s, s.point(b)),
+        _ => end,
+    };
+    let endpoints = route_points(border(from, start_side), border(to, end_side), Routing::Straight)?;
+    let (p0, p1) = (*endpoints.first()?, *endpoints.last()?);
+    // Match the REST handoff's coordinate, tangent, size and matrix limits. A saved path
+    // outside those bounds must regenerate truthfully, rather than silently clamp or disappear.
+    let coord = |x: f64| x.is_finite() && x.abs() <= 1e7;
+    if ![p0.x, p0.y, p1.x, p1.y, c0.x, c0.y, c1.x, c1.y, c0.x - p0.x, c0.y - p0.y, c1.x - p1.x, c1.y - p1.y].into_iter().all(coord) {
+        return None;
+    }
+    let mut path = BezPath::new();
+    path.move_to(p0);
+    path.curve_to(c0, c1, p1);
+    let b = path.bounding_box();
+    let [a, b0, c, d, x, y] = (space * Affine::translate(b.origin().to_vec2())).as_coeffs();
+    if ![b.x0, b.y0, b.x1, b.y1, x, y].into_iter().all(coord)
+        || ![b.width(), b.height()].into_iter().all(|n| n.is_finite() && (0.0..=1e6).contains(&n))
+        || ![a, b0, c, d].into_iter().all(|n| n.is_finite() && n.abs() <= 1e6)
+    {
+        return None;
+    }
+    Some(vec![p0, c0, c1, p1])
 }
 
 /// The side of its layer a connector end leaves from: the `magnet` the file names, else the edge

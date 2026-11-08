@@ -80,12 +80,161 @@ fn templates_use_the_features_they_show() {
     assert!(grid.ids().any(|id| grid.node(id).is_some_and(|n| n.layout.as_ref().is_some_and(|l| l.mode == figcraft_doc::LayoutMode::Grid))));
     assert!(count(&grid, |k| matches!(k, NodeKind::Vector { .. })) >= 8, "charts drawn from vectors");
     let icons = built("icon-set");
-    assert_eq!(components(&icons), 24);
+    assert_eq!(components(&icons), 64);
     assert_eq!(instances(&icons), 4);
     assert!(components(&built("wireframe-kit")) >= 9);
     assert_eq!(built("social-posts").node(built("social-posts").first_page().unwrap()).unwrap().children.len(), 5);
     assert_eq!(built("slides").node(built("slides").first_page().unwrap()).unwrap().children.len(), 5);
     assert_eq!(built("landing-page").node(built("landing-page").first_page().unwrap()).unwrap().children.len(), 2, "desktop and phone");
+}
+
+fn starter_icon_components(doc: &Document) -> Vec<figcraft_doc::NodeId> {
+    doc.ids().filter(|id| doc.node(*id).is_some_and(|n| matches!(n.kind, NodeKind::Component { .. }))).collect()
+}
+
+#[test]
+fn starter_icons_are_editable_styled_components_and_save_reopen_losslessly() {
+    use figcraft_doc::{StrokeCap, StrokeJoin};
+    use std::collections::BTreeSet;
+
+    let doc = built("icon-set");
+    assert!(doc.validate().is_empty(), "{:?}", doc.validate());
+    let components = starter_icon_components(&doc);
+    assert_eq!(components.len(), 64);
+    let names: BTreeSet<_> = components.iter().map(|id| doc.node(*id).unwrap().name.as_str()).collect();
+    assert_eq!(names.len(), 64);
+    for name in ["Icon/Home", "Icon/Folder", "Icon/Cloud", "Icon/Shopping cart", "Icon/Credit card"] {
+        assert!(names.contains(name), "{name}");
+    }
+    let style = &doc.styles.iter().find(|style| style.name == "Icon/Stroke").unwrap().id;
+    for id in components {
+        let component = doc.node(id).unwrap();
+        assert_eq!((component.width, component.height), (24.0, 24.0), "{}", component.name);
+        assert!(component.fills.is_empty() && !component.clip);
+        assert_eq!(component.children.len(), 1);
+        let glyph = doc.node(component.children[0]).unwrap();
+        assert!(matches!(&glyph.kind, NodeKind::Vector { network } if !network.segments.is_empty()));
+        assert!(glyph.fills.is_empty());
+        assert_eq!(glyph.strokes.len(), 1);
+        assert_eq!(glyph.styles.stroke.as_ref(), Some(style), "{}", component.name);
+        assert_eq!(
+            (glyph.stroke.weight, glyph.stroke.cap_start, glyph.stroke.cap_end, glyph.stroke.join),
+            (2.0, StrokeCap::Round, StrokeCap::Round, StrokeJoin::Round)
+        );
+        let bounds = doc.world_bounds(id).unwrap();
+        let parent = doc.world_bounds(component.parent.unwrap()).unwrap();
+        assert!(
+            bounds.x0 >= parent.x0 && bounds.x1 <= parent.x1 && bounds.y0 >= parent.y0 && bounds.y1 <= parent.y1,
+            "{}: fits its wrapped cell",
+            component.name
+        );
+    }
+    assert_eq!(count(&doc, |kind| matches!(kind, NodeKind::Instance { .. })), 4);
+    let bytes = figcraft_format::save_bytes(&doc, None).unwrap();
+    let (back, notes) = figcraft_format::load_bytes(&bytes).unwrap();
+    assert!(notes.is_empty(), "{notes:?}");
+    assert_eq!(json_of(&back), json_of(&doc));
+    assert_eq!(json_of(&built("icon-set")), json_of(&doc), "deterministic inventory and layout");
+}
+
+#[test]
+fn starter_icons_export_all_new_geometry_to_svg_and_fig() {
+    use std::collections::BTreeMap;
+
+    let doc = built("icon-set");
+    let components = starter_icon_components(&doc);
+    assert_eq!(components.len(), 64);
+    for &id in &components {
+        let name = &doc.node(id).unwrap().name;
+        let svg = figcraft_svg::export_svg(&doc, &[id], &Default::default()).unwrap();
+        assert!(svg.contains("<path"), "{name}: an editable SVG path");
+        assert!(!svg.contains("<image"), "{name}: no raster replacement");
+        let mut imported = Document::new(name);
+        let page = imported.first_page().unwrap();
+        let result = figcraft_svg::import_svg_with_notes(&mut imported, svg.as_bytes(), page, 0.0, 0.0, name).unwrap();
+        assert!(result.notes.is_empty(), "{name}: {:?}", result.notes);
+        assert!(imported.validate().is_empty(), "{name}");
+        assert!(
+            imported.subtree(result.frame).into_iter().any(|id| {
+                let node = imported.node(id).unwrap();
+                match &node.kind {
+                    NodeKind::Vector { network } => !network.segments.is_empty(),
+                    // The importer recognises simple outlines such as Stop as editable
+                    // primitives. They preserve geometry without requiring a vector node.
+                    NodeKind::Rectangle | NodeKind::Ellipse { .. } | NodeKind::Line => node.width > 0.0 || node.height > 0.0,
+                    _ => false,
+                }
+            }),
+            "{name}: SVG reopens as editable geometry"
+        );
+    }
+
+    let (bytes, _warnings) = crate::cmd::file::fig_bytes(&doc).unwrap();
+    let (back, _notes) = figcraft_format::fig::import(&bytes, "Starter icons").unwrap();
+    assert!(back.validate().is_empty());
+    let imported: BTreeMap<_, _> = starter_icon_components(&back).into_iter().map(|id| (back.node(id).unwrap().name.as_str(), id)).collect();
+    assert_eq!(imported.len(), 64);
+    for id in components {
+        let original = doc.node(id).unwrap();
+        let component = back.node(imported[original.name.as_str()]).unwrap();
+        assert_eq!((component.width, component.height), (24.0, 24.0), "{}", original.name);
+        let source_glyph = doc.node(original.children[0]).unwrap();
+        let NodeKind::Vector { network: before } = &source_glyph.kind else { panic!("original glyph") };
+        let glyph = back.node(component.children[0]).unwrap();
+        let NodeKind::Vector { network: after } = &glyph.kind else { panic!("{}: .fig kept editable geometry", original.name) };
+        assert_eq!(after.segments.len(), before.segments.len(), "{}", original.name);
+        assert_eq!(after.vertices.len(), before.vertices.len(), "{}", original.name);
+        for (a, b) in before.vertices.iter().zip(&after.vertices) {
+            assert!((a.x - b.x).abs() < 0.001 && (a.y - b.y).abs() < 0.001, "{}: {a:?} != {b:?}", original.name);
+        }
+        for (a, b) in before.segments.iter().zip(&after.segments) {
+            assert_eq!((a.a, a.b), (b.a, b.b), "{}: segment endpoints", original.name);
+            for (expected, actual) in [(a.ta, b.ta), (a.tb, b.tb)] {
+                assert!(
+                    (expected.0 - actual.0).abs() < 0.001 && (expected.1 - actual.1).abs() < 0.001,
+                    "{}: cubic handle {expected:?} != {actual:?}",
+                    original.name
+                );
+            }
+        }
+        for (expected, actual) in source_glyph.transform.as_coeffs().into_iter().zip(glyph.transform.as_coeffs()) {
+            assert!((expected - actual).abs() < 0.001, "{}: glyph transform", original.name);
+        }
+        assert!((source_glyph.width - glyph.width).abs() < 0.001 && (source_glyph.height - glyph.height).abs() < 0.001);
+        assert_eq!(
+            (source_glyph.stroke.cap_start, source_glyph.stroke.cap_end, source_glyph.stroke.join),
+            (glyph.stroke.cap_start, glyph.stroke.cap_end, glyph.stroke.join),
+            "{}: round stroke geometry",
+            original.name
+        );
+        assert_eq!(glyph.stroke.weight, 2.0, "{}", original.name);
+    }
+}
+
+#[test]
+fn starter_icons_render_distinct_outlines_and_the_complete_library() {
+    use std::collections::BTreeSet;
+
+    let doc = built("icon-set");
+    let mut images = BTreeSet::new();
+    for id in starter_icon_components(&doc) {
+        let icon = doc.node(id).unwrap();
+        let pix = figcraft_render::render_node(&doc, id, 4.0).unwrap();
+        let rgba = figcraft_render::to_rgba8(&pix);
+        let painted = rgba.chunks_exact(4).filter(|p| p[3] > 0).count();
+        assert!(painted > 16 && painted < rgba.len() / 4, "{}: a visible outline with transparent space", icon.name);
+        assert!(images.insert((pix.width(), pix.height(), rgba)), "{}: a repeated raster", icon.name);
+    }
+    assert_eq!(images.len(), 64);
+    let library = doc.ids().find(|id| doc.node(*id).is_some_and(|n| n.name == "Library")).unwrap();
+    let pix = figcraft_render::render_node(&doc, library, 1.0).unwrap();
+    assert!(pix.width() >= 600 && pix.height() > 800, "the full wrapped library and size preview");
+    let png = figcraft_render::encode_png(&pix).unwrap();
+    assert!(png.len() > 1000);
+    // Optional evidence output for visual review; the regression has no filesystem dependency.
+    if let Some(dir) = std::env::var_os("FIGCRAFT_ICON_EVIDENCE_DIR") {
+        std::fs::write(std::path::Path::new(&dir).join("starter-icons.png"), png).unwrap();
+    }
 }
 
 #[test]

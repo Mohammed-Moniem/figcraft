@@ -13,6 +13,112 @@ use figcraft_doc::NodeId;
 
 const PLATFORMS: [Platform; 2] = [Platform::Mac, Platform::Other];
 
+#[test]
+fn custom_shortcuts_persist_per_platform_without_changing_defaults() {
+    let mut s = Session::new();
+    let old: crate::Prefs = serde_json::from_value(json!({"nudge_small": 3})).unwrap();
+    assert_eq!(old.nudge_small, 3.0);
+    assert_eq!(serde_json::to_value(&old).unwrap()["shortcuts"], json!({}));
+    ex(&mut s, "pref.shortcut", json!({"id": "file.revert", "platform": "mac", "keys": ["Alt+F8"]}));
+    let saved = serde_json::to_value(&s.prefs).unwrap();
+    assert_eq!(saved["shortcuts"]["mac"]["file.revert"], json!(["Alt+F8"]));
+    let restored: crate::Prefs = serde_json::from_value(saved.clone()).unwrap();
+    assert_eq!(serde_json::to_value(restored).unwrap(), saved);
+    assert!(s.prefs_unsaved);
+    assert_eq!(primary("file.save", Platform::Mac), Some("Cmd+S"));
+    assert!(primary("file.revert", Platform::Mac).is_none());
+}
+
+#[test]
+fn custom_shortcut_conflicts_require_explicit_replacement_and_resets_are_safe() {
+    let mut s = Session::new();
+    let before = s.prefs.clone();
+    let conflict = ex(&mut s, "pref.shortcut", json!({"id": "file.revert", "platform": "other", "keys": ["Ctrl+S"]}));
+    assert_eq!(conflict["conflicts"], json!(["file.save"]));
+    assert_eq!(s.prefs, before, "asking about a conflict cannot overwrite its owner");
+    ex(&mut s, "pref.shortcut", json!({"id": "file.revert", "platform": "other", "keys": ["Ctrl+S"], "replace": true}));
+    let v = serde_json::to_value(&s.prefs).unwrap();
+    assert_eq!(v["shortcuts"]["other"]["file.save"], json!([]));
+    assert_eq!(v["shortcuts"]["other"]["file.revert"], json!(["Ctrl+S"]));
+    let conflict = ex(&mut s, "pref.resetShortcut", json!({"id": "file.save", "platform": "other"}));
+    assert_eq!(conflict["conflicts"], json!(["file.revert"]));
+    ex(&mut s, "pref.resetShortcut", json!({"platform": "other"}));
+    assert_eq!(serde_json::to_value(&s.prefs).unwrap()["shortcuts"], json!({}));
+}
+
+#[test]
+fn custom_shortcuts_reject_unknown_or_reserved_input_atomically() {
+    let mut s = Session::new();
+    for p in [
+        json!({"id": "no.such.command", "keys": ["F8"]}),
+        json!({"id": "file.revert", "keys": ["Bogus"]}),
+        json!({"id": "file.revert", "keys": ["Escape"]}),
+        json!({"id": "file.revert", "keys": ["Cmd+C"]}),
+        json!({"id": "file.revert", "keys": ["Space"]}),
+        json!({"id": "file.revert", "keys": ["ArrowLeft"]}),
+    ] {
+        assert!(s.execute("pref.shortcut", &p).is_err(), "{p}");
+        assert_eq!(s.prefs, crate::Prefs::default());
+    }
+}
+
+#[test]
+fn custom_shortcuts_resolve_context_platform_aliases_and_preserve_alternates() {
+    let mut s = Session::new();
+    ex(&mut s, "pref.shortcut", json!({"id": "file.revert", "platform": "mac", "keys": ["Cmd+K"], "replace": true}));
+    assert_eq!(s.prefs.shortcuts.keys("app.actions", Platform::Mac), ["Cmd+/"]);
+    assert_eq!(s.prefs.shortcuts.lookup(Platform::Mac, Context::Canvas, "K", Mods { cmd: true, ..Default::default() }).unwrap().id, "file.revert");
+    assert_eq!(
+        s.prefs.shortcuts.lookup(Platform::Mac, Context::Text, "K", Mods { cmd: true, ..Default::default() }).unwrap().id,
+        "text.link",
+        "the separate text-context owner survives a Canvas-only replacement"
+    );
+    assert_eq!(s.prefs.shortcuts.primary("app.actions", Platform::Other), Some("Cmd+K"));
+    ex(&mut s, "pref.shortcut", json!({"id": "file.revert", "platform": "other", "keys": ["Ctrl+Shift+F8"]}));
+    assert_eq!(
+        s.prefs.shortcuts.lookup(Platform::Other, Context::Canvas, "F8", Mods { cmd: true, shift: true, ..Default::default() }).unwrap().id,
+        "file.revert"
+    );
+    assert!(s.prefs.shortcuts.lookup(Platform::Mac, Context::Canvas, "F8", Mods { ctrl: true, shift: true, ..Default::default() }).is_none());
+    ex(&mut s, "pref.resetShortcut", json!({"id": "app.actions", "platform": "mac", "replace": true}));
+    assert_eq!(s.prefs.shortcuts.primary("app.actions", Platform::Mac), Some("Cmd+K"));
+    assert!(s.prefs.shortcuts.primary("file.revert", Platform::Mac).is_none());
+    assert_eq!(s.prefs.shortcuts.primary("file.revert", Platform::Other), Some("Ctrl+Shift+F8"));
+}
+
+#[test]
+fn custom_shortcuts_bad_saved_data_preserves_other_preferences() {
+    let prefs: crate::Prefs = serde_json::from_value(
+        json!({"nudge_small": 7, "shortcuts": {"mac": {"file.revert": ["Escape"], "tool.rectangle": ["Alt+F8"], "bad.id": ["F9"]}}}),
+    )
+    .unwrap();
+    assert_eq!(prefs.nudge_small, 7.0);
+    assert_eq!(prefs.shortcuts.primary("tool.rectangle", Platform::Mac), Some("Alt+F8"));
+    assert!(prefs.shortcuts.primary("file.revert", Platform::Mac).is_none());
+    let prefs: crate::Prefs = serde_json::from_value(json!({"theme": "dark", "shortcuts": "broken"})).unwrap();
+    assert_eq!(prefs.theme, "dark");
+    assert_eq!(prefs.shortcuts, Default::default());
+}
+
+#[test]
+fn custom_shortcuts_reserved_default_owner_can_reset_and_replacements_respect_budget() {
+    let mut s = Session::new();
+    ex(&mut s, "pref.shortcut", json!({"id": "proto.preview", "platform": "mac", "keys": ["Alt+F9"]}));
+    ex(&mut s, "pref.resetShortcut", json!({"id": "proto.preview", "platform": "mac"}));
+    assert_eq!(s.prefs.shortcuts.primary("proto.preview", Platform::Mac), Some("Shift+Space"));
+    ex(&mut s, "pref.shortcut", json!({"id": "proto.preview", "platform": "mac", "keys": ["Shift+Space"]}));
+    assert_eq!(serde_json::from_value::<crate::Prefs>(serde_json::to_value(&s.prefs).unwrap()).unwrap(), s.prefs);
+    let mut map = serde_json::Map::new();
+    for command in crate::all_commands().iter().filter(|c| !["file.revert", "file.save", "file.open", "select.none"].contains(&c.id)).take(511) {
+        map.insert(command.id.to_string(), json!([]));
+    }
+    assert_eq!(map.len(), 511, "enough real registered commands exercise the saved override budget");
+    s.prefs = serde_json::from_value(json!({"shortcuts": {"mac": map}})).unwrap();
+    let before = s.prefs.clone();
+    assert!(s.execute("pref.shortcut", &json!({"id": "file.revert", "platform": "mac", "keys": ["Cmd+S", "Cmd+O"], "replace": true})).is_err());
+    assert_eq!(s.prefs, before, "displaced owners count toward the budget before any mutation");
+}
+
 fn ex(s: &mut Session, cmd: &str, p: Value) -> Value {
     s.execute(cmd, &p).unwrap_or_else(|e| panic!("{cmd}: {e}"))
 }

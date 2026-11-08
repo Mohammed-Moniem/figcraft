@@ -356,6 +356,8 @@ pub struct CaptureState {
     /// another's captures.
     pub(crate) geometry: std::collections::HashMap<egui::ViewportId, (CaptureSpec, u64)>,
     pub(crate) epoch: u64,
+    /// Next bounded readback-progress paint for each viewport with an issued capture.
+    progress_paint_at: std::collections::HashMap<egui::ViewportId, f64>,
 }
 
 /// How long a screenshot waits for the window to deliver it (the control server gives up then too).
@@ -365,6 +367,9 @@ pub(crate) const SHOT_TIMEOUT: f64 = 60.0;
 /// renderer have settled (hidden logic ticks do not count; a frame counts once, after presenting
 /// its final pass).
 const SHOT_SETTLE_PASSES: u8 = 3;
+
+/// Pending asynchronous readbacks need later render submissions, but never an unrestricted spin.
+const SHOT_PROGRESS_INTERVAL: f64 = 1.0 / 60.0;
 
 /// The suite's capture budget, counted over in-flight and completed-but-undrained images.
 pub(crate) const MAX_SHOTS: usize = 4;
@@ -497,19 +502,39 @@ fn viewport_paint(ctx: &Context, viewport: egui::ViewportId) {
     ctx.request_repaint_of(viewport);
 }
 
-/// Ask for the real UI passes needed by captures/input and schedule the next capture deadline.
-fn request_paint(app: &FigApp, ctx: &Context) {
-    for r in &app.capture.shots {
-        if !app.windows.exists(r.window) {
+/// Keep asynchronous readbacks moving after issuance. Some backends service map callbacks only
+/// when another real frame submits/polls GPU work. A logic-only wake is not that frame. Captures
+/// own this bounded progress until delivery; normal input or an unrelated client is not required.
+fn request_capture_paints(app: &mut FigApp, ctx: &Context) {
+    let now = app.clock.now();
+    let mut pending = Vec::new();
+    for request in &app.capture.shots {
+        if !app.windows.exists(request.window) || request.state.is_cancelled() || now >= request.deadline {
             continue;
         }
-        // A capture that is still settling needs the real UI pass its geometry comes from; one
-        // whose pixels arrived while the window was hidden needs the pass that drains the slot.
-        // The capture command's own paint was drained when it produced the image.
-        if !r.issued || r.slot.as_ref().is_some_and(|s| s.has_result()) {
-            viewport_paint(ctx, r.viewport);
+        if !request.issued || request.slot.as_ref().is_some_and(|slot| slot.has_result()) {
+            // Settling and draining delivered pixels retain their immediate real-paint path.
+            viewport_paint(ctx, request.viewport);
+        } else if !pending.contains(&request.viewport) {
+            pending.push(request.viewport);
         }
     }
+    // No retained scheduling after completion/cancellation/expiry/close, and at most one entry
+    // per live pending viewport (the existing screenshot admission budget bounds that count).
+    app.capture.progress_paint_at.retain(|viewport, _| pending.contains(viewport));
+    for viewport in pending {
+        let next = app.capture.progress_paint_at.entry(viewport).or_insert(now);
+        if now >= *next {
+            viewport_paint(ctx, viewport);
+            *next = now + SHOT_PROGRESS_INTERVAL;
+        }
+        ctx.request_repaint_after_for(std::time::Duration::from_secs_f64((*next - now).max(0.0)), viewport);
+    }
+}
+
+/// Ask for the real UI passes needed by captures/input and schedule the next capture deadline.
+fn request_paint(app: &mut FigApp, ctx: &Context) {
+    request_capture_paints(app, ctx);
     for r in &app.control_queue {
         if r.method == "ui.input" {
             let target = r.params.get("window").and_then(Value::as_u64).unwrap_or(app.windows.focused);
@@ -1031,10 +1056,13 @@ fn ui_key(app: &mut FigApp, ctx: &Context, p: &Value) -> Result<Value, String> {
     let key = p.get("key").and_then(Value::as_str).ok_or("`key` required")?;
     let m = figcraft_engine::keymap::Mods { shift: b(p, "shift"), alt: b(p, "alt"), cmd: b(p, "cmd"), ctrl: b(p, "ctrl") };
     let platform = crate::shortcuts::platform();
-    use figcraft_engine::keymap::{Context, lookup, normalize};
+    use figcraft_engine::keymap::{Context, normalize};
+    if crate::shortcuts_panel::recording_in(ctx, crate::windows::viewport(app.windows.current)) {
+        return Err("Finish or cancel shortcut recording first".into());
+    }
     // Text editing keys go to the editor (after the shortcuts live while editing).
     if app.session.ds().map(|d| d.text_edit.is_some()).unwrap_or(false) {
-        if let Some(bd) = lookup(platform, Context::Text, key, m).filter(|_| m.cmd || m.alt || m.ctrl) {
+        if let Some(bd) = app.session.prefs.shortcuts.lookup(platform, Context::Text, key, m).filter(|_| m.cmd || m.alt || m.ctrl) {
             crate::menus::invoke(app, bd.id);
             return Ok(json!({"command": bd.id}));
         }
@@ -1051,7 +1079,7 @@ fn ui_key(app: &mut FigApp, ctx: &Context, p: &Value) -> Result<Value, String> {
         let r = crate::comments::step(app, ctx, if matches!(key, "ArrowUp" | "Up") { -1 } else { 1 });
         return Ok(json!({"comment": r.and_then(|v| v.get("id").cloned())}));
     }
-    if let Some(bd) = lookup(platform, Context::Canvas, key, m) {
+    if let Some(bd) = app.session.prefs.shortcuts.lookup(platform, Context::Canvas, key, m) {
         crate::shortcuts::run_binding(app, bd.id);
         return Ok(json!({"command": bd.id}));
     }
@@ -1341,11 +1369,18 @@ fn ui_set_comments(app: &mut FigApp, ctx: &Context, p: &Value) -> Result<(), Str
 fn ui_set_panels(app: &mut FigApp, ctx: &Context, p: &Value) -> Result<(), String> {
     // Colour picker on the selection's paint `{fills?, index?}`; null closes it.
     if let Some(v) = p.get("colorPicker") {
-        app.ui.picker = v.is_object().then(|| crate::colorpicker::PickerTarget::Paint {
-            fills: v.get("fills").and_then(Value::as_bool).unwrap_or(true),
-            index: v.get("index").and_then(Value::as_u64).unwrap_or(0).min(1000) as usize,
-            ids: app.session.selection(),
-        });
+        if v.is_object() {
+            app.open_picker(
+                crate::colorpicker::PickerTarget::Paint {
+                    fills: v.get("fills").and_then(Value::as_bool).unwrap_or(true),
+                    index: v.get("index").and_then(Value::as_u64).unwrap_or(0).min(1000) as usize,
+                    ids: app.session.selection(),
+                },
+                None,
+            );
+        } else {
+            crate::colorpicker::close_if_open(app);
+        }
     }
     // The Variables editor: true / a collection (id or name) / {library, collection?} (an
     // enabled library's, by id or name) opens it, false closes it.
@@ -1571,7 +1606,7 @@ pub fn handle(app: &mut FigApp, ctx: &Context, method: &str, p: &Value) -> Resul
         "engine.commands" => Ok(Value::Array(
             figcraft_engine::all_commands()
                 .iter()
-                .map(|c| json!({"id": c.id, "label": c.label, "params": c.params, "menu": c.menu(), "shortcut": c.shortcut(), "undoable": c.history}))
+                .map(|c| json!({"id": c.id, "label": c.label, "params": c.params, "menu": c.menu(), "shortcut": crate::shortcuts::shortcut_for(app, c.id), "undoable": c.history}))
                 .collect(),
         )),
         "document.inspect" => {
@@ -1740,4 +1775,51 @@ fn input_in_flight(app: &FigApp, ctx: &Context) -> bool {
 
 pub fn document_events_capability() -> Value {
     json!({"version":1,"method":"events.poll","topics":["document"],"retained":figcraft_engine::events::MAX_EVENTS,"changedIds":256,"resyncOn":["reset","dropped"],"scope":"committed-document"})
+}
+
+#[cfg(test)]
+mod document_owner_control_tests {
+    use super::*;
+    use crate::layers_drag_tests::Ui;
+
+    fn copied_paint_documents() -> (Ui, usize, usize) {
+        let mut session = figcraft_engine::Session::new();
+        session.execute("node.create", &json!({"type":"rectangle","width":40,"height":40,"props":{"fills":["#FF0000"]}})).unwrap();
+        let a = session.active;
+        session.execute("file.duplicate", &json!({})).unwrap();
+        let b = session.active;
+        session.execute("select.set", &json!({"ids":[2]})).unwrap();
+        session.execute("doc.switch", &json!({"index":a})).unwrap();
+        (Ui::new(session), a, b)
+    }
+
+    #[test]
+    fn control_opened_paint_picker_is_owned_before_its_first_drawing_pass() {
+        let (mut u, a, b) = copied_paint_documents();
+        ui_set_panels(&mut u.app, &u.ctx, &json!({"colorPicker":{}})).unwrap();
+        assert_eq!(u.app.ui.picker_context.as_ref().map(|(_, uid, _, _)| *uid), Some(u.app.session.docs[a].uid));
+        let before = u.app.session.docs[b].clone();
+        u.app.session.execute("doc.switch", &json!({"index":b})).unwrap();
+        u.frame(vec![]);
+        assert!(u.app.ui.picker.is_none(), "the real drawing pass closes A's picker instead of retargeting B");
+        let after = &u.app.session.docs[b];
+        assert!(std::sync::Arc::ptr_eq(&before.doc, &after.doc));
+        assert_eq!(before.history.undo.len(), after.history.undo.len());
+        assert!(after.interaction.is_none());
+    }
+
+    #[test]
+    fn control_closing_a_picker_finishes_its_own_live_interaction() {
+        let (mut u, a, b) = copied_paint_documents();
+        ui_set_panels(&mut u.app, &u.ctx, &json!({"colorPicker":{}})).unwrap();
+        u.app.session.begin_interaction("Color").unwrap();
+        u.app.session.execute("node.set", &json!({"id":2,"props":{"fills":["#00FF00"]}})).unwrap();
+        let before_b = u.app.session.docs[b].clone();
+        ui_set_panels(&mut u.app, &u.ctx, &json!({"colorPicker":null})).unwrap();
+        assert!(u.app.session.docs[a].interaction.is_none(), "closing commits the old owner's color gesture");
+        let after = &u.app.session.docs[b];
+        assert!(after.interaction.is_none());
+        assert!(std::sync::Arc::ptr_eq(&before_b.doc, &after.doc));
+        assert_eq!(before_b.history.undo.len(), after.history.undo.len());
+    }
 }

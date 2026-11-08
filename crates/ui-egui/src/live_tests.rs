@@ -75,14 +75,19 @@ impl Harness {
 
     /// One frame; the shapes it painted and the repaint delay it asked for.
     pub(crate) fn frame(&mut self, events: Vec<Event>) -> (Vec<Shape>, Duration) {
+        let out = self.frame_output(events);
+        let delay = out.viewport_output.get(&ViewportId::ROOT).map_or(Duration::MAX, |v| v.repaint_delay);
+        (flat(&out.shapes), delay)
+    }
+
+    pub(crate) fn frame_output(&mut self, events: Vec<Event>) -> egui::FullOutput {
         self.time += 1.0 / 60.0;
         let input =
             RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0))), time: Some(self.time), events, ..Default::default() };
         let app = &mut self.app;
         let mut out = self.ctx.run_ui(input, |ui| app.ui(ui));
         out.textures_delta.clear();
-        let delay = out.viewport_output.get(&ViewportId::ROOT).map_or(Duration::MAX, |v| v.repaint_delay);
-        (flat(&out.shapes), delay)
+        out
     }
 
     /// Let `secs` of UI time pass before the next frame.

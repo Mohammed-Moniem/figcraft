@@ -19,6 +19,10 @@ pub(super) fn overlays(app: &FigApp, painter: &egui::Painter, t: &Tokens) -> Vec
     let sel = ds.selection.clone();
     let zoom = ds.view.zoom;
     let view = ds.view.clone();
+    // Fade after retrieving cached selection geometry, leaving its colors reusable at any opacity.
+    let selection_opacity = (app.session.prefs.selection_outline_opacity() / 100.0) as f32;
+    let mut selection_painter = painter.clone();
+    selection_painter.multiply_opacity(selection_opacity);
     // Pixel grid at high zoom.
     if view.pixel_grid_shown() {
         pixel_grid(app, painter);
@@ -64,7 +68,7 @@ pub(super) fn overlays(app: &FigApp, painter: &egui::Painter, t: &Tokens) -> Vec
         figcraft_engine::booleans::outlined_operands(&unmoved, &sel, editing)
     });
     for id in operands.iter().filter(|o| view.selection_outlines && !sel.contains(o)) {
-        draw_outline(app, painter, &doc, *id, stroke(outline_colour(&doc, *id, accent(painter)).gamma_multiply(0.6), 1.0));
+        draw_outline(app, &selection_painter, &doc, *id, stroke(outline_colour(&doc, *id, accent(painter)).gamma_multiply(0.6), 1.0));
     }
     // Mask outlines (a mask doesn't draw itself), frame outlines and slices, as the View menu shows.
     if view.mask_outlines || view.frame_outlines || view.show_slices {
@@ -123,8 +127,8 @@ pub(super) fn overlays(app: &FigApp, painter: &egui::Painter, t: &Tokens) -> Vec
     }
     // Selection.
     let editing = ds.text_edit.clone();
-    if view.selection_outlines && !sel.is_empty() && editing.is_none() && ds.vector_edit.is_none() {
-        size_label = selection_overlay(app, painter, ds, &doc, &sel, zoom);
+    if view.selection_outlines && selection_opacity > 0.0 && !sel.is_empty() && editing.is_none() && ds.vector_edit.is_none() {
+        size_label = selection_overlay(app, &selection_painter, ds, &doc, &sel, zoom);
     }
     if app.session.tool.tool == ToolId::ShapeBuilder
         && let Some(arr) = figcraft_engine::shapebuilder::current(&app.session)
@@ -175,17 +179,14 @@ fn pixel_grid(app: &FigApp, painter: &egui::Painter) {
     let p0 = app.to_page(r.min);
     let p1 = app.to_page(r.max);
     let col = Color32::from_black_alpha(18);
-    let mut x = p0.x.floor();
-    while x <= p1.x {
+    let size = app.session.ds().map(|d| d.view.pixel_grid_step()).unwrap_or(1.0);
+    for x in figcraft_engine::pixel_grid::positions(p0.x, p1.x, size) {
         let s = app.to_screen(x, 0.0).x;
         painter.line_segment([pos2(s, r.min.y), pos2(s, r.max.y)], stroke(col, 1.0));
-        x += 1.0;
     }
-    let mut y = p0.y.floor();
-    while y <= p1.y {
+    for y in figcraft_engine::pixel_grid::positions(p0.y, p1.y, size) {
         let s = app.to_screen(0.0, y).y;
         painter.line_segment([pos2(r.min.x, s), pos2(r.max.x, s)], stroke(col, 1.0));
-        y += 1.0;
     }
 }
 
@@ -432,7 +433,10 @@ fn pen_overlay(app: &FigApp, painter: &egui::Painter, zoom: f64) {
         let pts: Vec<Pos2> = ov.pen.iter().map(|[x, y]| app.to_screen(*x, *y)).collect();
         if app.session.tool.tool == ToolId::Pencil {
             // The stroke it will make, in its colour and weight (at least a point when zoomed out).
-            let (color, weight) = figcraft_engine::tools::PENCIL_STROKE;
+            let (color, weight) = match (app.session.doc(), app.session.page(), ov.pen.first()) {
+                (Ok(doc), Ok(page), Some([x, y])) => figcraft_engine::tools::pencil_stroke(doc, page, Point::new(*x, *y)),
+                _ => figcraft_engine::tools::PENCIL_STROKE,
+            };
             painter.add(Shape::line(pts, stroke(doc_c32(painter.ctx(), color), ((weight * zoom) as f32).max(1.0))));
         } else {
             for [x0, y0, x1, y1] in &ov.pen_handles {

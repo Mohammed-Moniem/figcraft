@@ -929,8 +929,12 @@ fn name_row(app: &mut FigApp, ui: &mut Ui, t: &Tokens, id: egui::Id) {
 /// browser has no quitting to keep it at).
 pub fn name_field(app: &mut FigApp, ui: &mut Ui, id: egui::Id, width: f32) {
     let shown = figcraft_engine::live::display_name(&app.session.prefs);
-    if let Some(name) = widgets::text_field(ui, id, &shown, width, tr("Your name")) {
-        app.run("pref.userName", json!({"name": name}));
+    if let Some(name) = widgets::text_field(ui, id, &shown, width, tr("Your name"))
+        && app.run("pref.userName", json!({"name": name})).is_some()
+    {
+        // This immediate full snapshot fulfils the command's queued preference save.
+        // Plugin/live pending work keeps its own flags for the normal logic tick.
+        app.session.prefs_unsaved = false;
         app.services.save_prefs(&app.session.prefs);
     }
 }

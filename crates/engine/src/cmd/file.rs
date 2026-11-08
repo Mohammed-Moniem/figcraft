@@ -62,7 +62,8 @@ fn new_file(s: &mut Session, p: &Value, kind: FileKind) -> Result<Value> {
             *b = background;
         }
     }
-    s.docs.push(DocState::new(doc, None));
+    let state = if kind == FileKind::Design && s.ui_dark.is_none() { DocState::for_new_design(doc) } else { DocState::new(doc, None) };
+    s.docs.push(state);
     s.active = s.docs.len() - 1;
     Ok(json!({"index": s.active, "kind": kind.id()}))
 }

@@ -101,6 +101,11 @@ pub fn read(dir: &Path) -> Loaded {
 
 /// Keep `projects` in `dir`: the old file becomes the backup, the new one takes its place whole.
 pub fn write(dir: &Path, projects: &Projects) -> Result<(), String> {
+    // Refuse the candidate before creating files or replacing a last-good backup.
+    let text = projects.to_json();
+    if text.len() > MAX_BYTES {
+        return Err("project metadata exceeds 4 MiB".into());
+    }
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     if !std::fs::symlink_metadata(dir).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink()) {
         return Err("project directory must be a real directory".into());
@@ -109,10 +114,6 @@ pub fn write(dir: &Path, projects: &Projects) -> Result<(), String> {
     if std::fs::symlink_metadata(&path).is_ok() {
         let old = read_text(&path).map_err(|e| e.to_string())?;
         atomic(&dir.join(BACKUP), old.as_bytes()).map_err(|e| e.to_string())?;
-    }
-    let text = projects.to_json();
-    if text.len() > MAX_BYTES {
-        return Err("project metadata exceeds 4 MiB".into());
     }
     atomic(&path, text.as_bytes()).map_err(|e| e.to_string())
 }

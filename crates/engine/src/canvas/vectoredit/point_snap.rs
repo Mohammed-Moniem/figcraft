@@ -96,9 +96,9 @@ fn add_vector(doc: &Document, id: NodeId, skip: &BTreeSet<usize>, t: &mut Target
 }
 
 /// The snapping that applies to a pointer event: (objects and points, the pixel grid).
-pub(crate) fn modes(s: &Session, ev: &PointerEvent) -> (bool, bool) {
+pub(crate) fn modes(s: &Session, ev: &PointerEvent) -> (bool, Option<f64>) {
     let (objects, pixel) = s.ds().map(|d| (d.view.snap_objects, d.view.snap_pixel)).unwrap_or((true, true));
-    (objects && !ev.cmd, pixel)
+    (objects && !ev.cmd, pixel.then(|| s.ds().map(|d| d.view.pixel_grid_step()).unwrap_or(1.0)))
 }
 
 /// The correction that snaps page points `pts` (already moved by the pointer) together, and the
@@ -110,18 +110,18 @@ pub(crate) fn snap(
     pts: &[Point],
     grab: Option<Point>,
     zoom: f64,
-    (objects, pixel): (bool, bool),
+    (objects, pixel): (bool, Option<f64>),
     lock: Option<bool>,
 ) -> (Vec2, Vec<Guide>) {
     let pts = pts.get(..MAX_MOVING).unwrap_or(pts);
     let (dx, dy, _) = if objects { t.snap_points(pts, SNAP_PX / zoom.max(1e-6)) } else { (None, None, Vec::new()) };
     let mut d = Vec2::new(dx.unwrap_or(0.0), dy.unwrap_or(0.0));
-    if pixel && let Some(g) = grab.filter(|g| g.x.is_finite() && g.y.is_finite()) {
+    if let (Some(size), Some(g)) = (pixel, grab.filter(|g| g.x.is_finite() && g.y.is_finite())) {
         if dx.is_none() {
-            d.x = g.x.round() - g.x;
+            d.x = crate::pixel_grid::round(g.x, size) - g.x;
         }
         if dy.is_none() {
-            d.y = g.y.round() - g.y;
+            d.y = crate::pixel_grid::round(g.y, size) - g.y;
         }
     }
     match lock {
@@ -155,7 +155,7 @@ impl Session {
     /// plus `extra` points: the pen path's own), with the guides to show.
     pub(crate) fn snap_pen(&mut self, ev: &PointerEvent, edited: Option<NodeId>, extra: &[Point]) -> Result<(Point, Vec<Guide>)> {
         let modes = modes(self, ev);
-        if modes == (false, false) {
+        if modes == (false, None) {
             return Ok((ev.p(), Vec::new()));
         }
         let (doc, page) = {

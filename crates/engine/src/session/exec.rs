@@ -107,10 +107,10 @@ impl Session {
         let spec = find_command(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
         crate::cmd::refuse_unknown_params(id, params)?;
         board::refuse_on_board(self, id)?;
-        if matches!(id, "doc.list" | "file.printPdf") {
-            // Heartbeats inspect open files between a client's revision read and guarded edit.
-            // Listing is a pure query: do not sync branches, end previews, clean selection,
-            // journal history or bump a live revision for a list or offline PDF preparation.
+        if matches!(id, "doc.list" | "file.printPdf" | "design.audit" | "design.rules" | "design.assert") {
+            // Reporting cannot invalidate the revision it reports. In particular, a live design
+            // audit would otherwise trigger itself again after every debounce interval.
+            // Pure queries neither end previews/gestures nor journal or normalize the document.
             return guard::run(id, || (spec.run)(self, params));
         }
         if id == "file.refresh" {

@@ -21,7 +21,7 @@ pub use clipboard::paste;
 use clipboard::{figcraft_svg_export, text_layers_text};
 use palette::palette;
 #[cfg(test)]
-pub(crate) use palette::{ActionRow, command_sections, palette_sections, recent_row, run_action};
+pub(crate) use palette::{ActionRow, command_sections, command_sections_for, palette_sections, recent_row, run_action};
 pub use palette::{PaletteTab, set_palette, toggle_palette};
 pub use select_layer::open_select_layer;
 use select_layer::{SELECT_LAYER, select_layer_ask_id, select_layer_menu};
@@ -165,7 +165,13 @@ pub fn invoke(app: &mut FigApp, id: &str) {
         "edit.findReplace" => app.ui.find = Some((String::new(), String::new())),
         // The Actions palette invokes commands without parameters. These values are edited in
         // Preferences; sending an empty object would either fail or silently reset a preference.
-        "pref.language" | "pref.userName" | "pref.publishServer" | "pref.nudge" => {
+        "pref.language"
+        | "pref.userName"
+        | "pref.publishServer"
+        | "pref.nudge"
+        | "pref.pixelGridSize"
+        | "pref.accentColor"
+        | "pref.selectionOutlineOpacity" => {
             app.run("app.preferences", json!({}));
         }
         // The file name in the left panel's header turns into its editor, the name selected.
@@ -217,7 +223,7 @@ pub fn invoke(app: &mut FigApp, id: &str) {
         }
         "edit.paste" => paste(app, None, None),
         "file.close" if app.session.ds().is_ok_and(|d| d.is_dirty() && d.branch_of.is_none()) => {
-            let save = pretty_shortcut(crate::shortcuts::shortcut("file.save").unwrap_or(""));
+            let save = pretty_shortcut(crate::shortcuts::shortcut_for(app, "file.save").unwrap_or(""));
             app.toast(trf(
                 "Unsaved changes: save first ({save}), or close the tab with {alt}-click to discard",
                 &[("save", &save), ("alt", &pretty_shortcut("Alt"))],
@@ -253,6 +259,20 @@ pub fn available(id: &str) -> bool {
     !id.is_empty() && (figcraft_engine::find_command(id).is_some() || UI_COMMANDS.contains(&id))
 }
 
+/// A checked main-menu option, including preference rows whose state lives outside the view.
+fn main_menu_checked(app: &FigApp, id: &str) -> Option<bool> {
+    let prefs = &app.session.prefs;
+    match id {
+        "pref.keepTool" => Some(prefs.keep_tool),
+        "pref.highlightHover" => Some(prefs.highlight_on_hover),
+        "pref.renameDuplicates" => Some(prefs.rename_duplicates),
+        "pref.showDimensions" => Some(prefs.show_dimensions),
+        "pref.numberKeysOpacity" => Some(prefs.number_keys_opacity),
+        "text.spelling" => Some(prefs.spell_check),
+        _ => figcraft_engine::cmd::view::checked(&app.session, id),
+    }
+}
+
 /// Draw one level of the main menu: `prefix` is the menu path ("File", "Edit/Copy as").
 fn menu_level(app: &mut FigApp, ui: &mut Ui, prefix: &str) -> bool {
     let t = Tokens::get(ui.ctx());
@@ -281,13 +301,10 @@ fn menu_level(app: &mut FigApp, ui: &mut Ui, prefix: &str) -> bool {
             }
             // One window in the browser.
             let enabled = available(m.id) && !(m.id == "window.new" && ui.ctx().embed_viewports());
-            let checked = if m.id == "text.spelling" {
-                app.session.prefs.spell_check
-            } else {
-                figcraft_engine::cmd::view::checked(&app.session, m.id).unwrap_or(false)
-            };
-            if item(ui, &i18n::menu_item(m.id, m.label), crate::shortcuts::shortcut(m.id).unwrap_or(""), enabled, checked, &t) && enabled {
-                clicked = Some(m.id);
+            let option = main_menu_checked(app, m.id);
+            let checked = option.unwrap_or(false);
+            if item(ui, &i18n::menu_item(m.id, m.label), crate::shortcuts::shortcut_for(app, m.id).unwrap_or(""), enabled, checked, &t) && enabled {
+                clicked = Some((m.id, option.is_some()));
             }
         } else if let Some(rest) = m.menu.strip_prefix(prefix).and_then(|r| r.strip_prefix('/')) {
             let sub = rest.split('/').next().unwrap_or(rest).to_string();
@@ -301,9 +318,9 @@ fn menu_level(app: &mut FigApp, ui: &mut Ui, prefix: &str) -> bool {
             }
         }
     }
-    if let Some(id) = clicked {
+    if let Some((id, option)) = clicked {
         invoke(app, id);
-        return true;
+        return !app.session.prefs.keep_menu_open || !option;
     }
     false
 }
@@ -313,9 +330,15 @@ fn menu_level(app: &mut FigApp, ui: &mut Ui, prefix: &str) -> bool {
 fn recent_menu(app: &mut FigApp, ui: &mut Ui, prefix: &str, key: &str, label: &str, t: &Tokens) -> bool {
     enum Picked {
         Provider,
+        Home,
         Device(serde_json::Value),
     }
     let picked = submenu(ui, &format!("{prefix}/{key}"), label, t, |ui| {
+        if let Some(key) = crate::shortcuts::shortcut_for(app, "file.openRecent")
+            && item(ui, tr("Show recent files"), key, true, false, t)
+        {
+            return Some(Picked::Home);
+        }
         if app.file_providers.recent_ui(ui) {
             return Some(Picked::Provider);
         }
@@ -338,6 +361,10 @@ fn recent_menu(app: &mut FigApp, ui: &mut Ui, prefix: &str, key: &str, label: &s
         picked.map(Picked::Device)
     });
     let Some(picked) = picked else { return false };
+    if matches!(picked, Picked::Home) {
+        invoke(app, "file.openRecent");
+        return true;
+    }
     let Picked::Device(params) = picked else { return true };
     // Through the user path, so an import report shows; `file.openRecent` also drops a file that is gone.
     if app.run_user("file.openRecent", params).is_some_and(|r| r.get("index").is_some()) {
@@ -409,14 +436,14 @@ pub fn popups(app: &mut FigApp, ctx: &egui::Context) {
                 // Quick actions search row.
                 let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
                 plain_row_hover(ui, &resp);
-                a11y::menu_item(&resp, tr("Actions…"), crate::shortcuts::shortcut("app.actions").unwrap_or(""), None);
+                a11y::menu_item(&resp, tr("Actions…"), crate::shortcuts::shortcut_for(app, "app.actions").unwrap_or(""), None);
                 ui.painter().rect_filled(r.shrink(2.0), CornerRadius::same(5), Color32::from_white_alpha(18));
                 icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 16.0, r.center().y), vec2(14.0, 14.0)), Icon::Search, t.menu_dim);
                 ui.painter().text(pos2(r.min.x + 32.0, r.center().y), Align2::LEFT_CENTER, tr("Actions…"), regular(12.0), t.menu_dim);
                 ui.painter().text(
                     pos2(r.max.x - 10.0, r.center().y),
                     Align2::RIGHT_CENTER,
-                    pretty_shortcut(crate::shortcuts::shortcut("app.actions").unwrap_or("")),
+                    pretty_shortcut(crate::shortcuts::shortcut_for(app, "app.actions").unwrap_or("")),
                     regular(12.0),
                     t.menu_dim,
                 );
@@ -438,8 +465,9 @@ pub fn popups(app: &mut FigApp, ctx: &egui::Context) {
                 }
             });
         });
-        let clicked_outside = ctx.input(|i| i.pointer.any_pressed()) && !over_menu(ctx) || ctx.input(|i| i.key_pressed(egui::Key::Escape));
-        if close || (clicked_outside && !area.response.hovered()) {
+        let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        let clicked_outside = ctx.input(|i| i.pointer.any_pressed()) && !over_menu(ctx) && !area.response.hovered();
+        if close || escape || clicked_outside {
             app.ui.main_menu = false;
             forget_tree(ctx, main_menu_id());
         }
@@ -447,8 +475,10 @@ pub fn popups(app: &mut FigApp, ctx: &egui::Context) {
     // Context menu (from the keyboard: at the focused layer row or the canvas selection, taking the
     // keyboard from the control with it).
     if std::mem::take(&mut app.ui.key_menu) {
+        crate::canvas::locked::clear_context(app);
         a11y::context_menu(app, ctx);
     }
+    crate::canvas::locked::validate_context(app);
     if let Some((pos, ids)) = app.ui.context_menu.clone() {
         if let Some(f) = ctx.memory(|m| m.focused()) {
             a11y::popup(&mut app.ui.nav, f, Id::unique("ctx_menu"));
@@ -456,6 +486,10 @@ pub fn popups(app: &mut FigApp, ctx: &egui::Context) {
         let mut close = false;
         let area = egui::Area::new(ctx_menu_id()).fixed_pos(pos).order(egui::Order::Foreground).constrain(true).show(ctx, |ui| {
             menu_frame(ui, &t, At { root: ctx_menu_id(), path: String::new() }, |ui| {
+                if let Some(unlocked) = crate::canvas::locked::menu(app, ui, &t) {
+                    close |= unlocked;
+                    return;
+                }
                 if spelling_entries(app, ui, pos, &t) {
                     close = true;
                 }
@@ -597,7 +631,7 @@ pub fn popups(app: &mut FigApp, ctx: &egui::Context) {
                         let picked = submenu(ui, COPY_AS, label, &t, |ui| {
                             let mut picked = None;
                             for (label, id) in copy_items {
-                                let sc = crate::shortcuts::shortcut(id).unwrap_or("");
+                                let sc = crate::shortcuts::shortcut_for(app, id).unwrap_or("");
                                 if item(ui, label, sc, available(id), false, &t) {
                                     picked = Some(id);
                                 }
@@ -610,7 +644,7 @@ pub fn popups(app: &mut FigApp, ctx: &egui::Context) {
                         }
                         continue;
                     }
-                    let sc = crate::shortcuts::shortcut(id).unwrap_or("");
+                    let sc = crate::shortcuts::shortcut_for(app, id).unwrap_or("");
                     if item(ui, label, sc, available(id), false, &t) {
                         if *id == "edit.paste" {
                             let p = app.to_page(pos);

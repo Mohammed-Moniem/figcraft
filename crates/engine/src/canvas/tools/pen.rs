@@ -1,4 +1,4 @@
-use super::handles::{PENCIL_STROKE, selected_end_at};
+use super::handles::{pencil_stroke, selected_end_at};
 use super::{
     Affine, Document, Gesture, Guide, Node, NodeId, NodeKind, PenPath, Point, PointerEvent, Result, Session, StrokeAlign, ToolId, Vec2,
     VectorNetwork, at_45_degrees, frame_at, json, pen_handles,
@@ -296,7 +296,7 @@ impl Session {
         let mut local = fitted.clone();
         local.apply_affine(pw.inverse());
         let _ = d;
-        let (color, weight) = PENCIL_STROKE;
+        let (color, weight) = pencil_stroke(self.doc()?, page, points.first().copied().unwrap_or_default());
         let mut props = json!({"fills": [], "strokes": [color.to_css_hex()], "strokeWeight": weight, "strokeCap": "round", "strokeJoin": "round", "strokeAlign": "center"});
         // Pen pressure becomes the stroke's width profile (brushes follow it too).
         if let Some(points) = pressure_profile(points, pressure) {

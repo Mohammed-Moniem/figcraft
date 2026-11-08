@@ -50,6 +50,7 @@ impl FigApp {
         self.ui.picker_popover = None;
         self.ui.picker_button_id = None;
         self.ui.picker = Some(target);
+        crate::colorpicker::bind_owner(self);
         self.ui.picker_button = button;
     }
 
@@ -151,7 +152,7 @@ impl FigApp {
         let resp = ui.interact(rect, id, egui::Sense::CLICK | egui::Sense::DRAG);
         if resp.hovered() || resp.dragged() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-            ui.painter().vline(x, rows, egui::Stroke::new(2.0, theme::ACCENT));
+            ui.painter().vline(x, rows, egui::Stroke::new(2.0, crate::theme::accent(ui.ctx())));
         }
         if resp.double_clicked() {
             return Some(PANEL_DEFAULT);

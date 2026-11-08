@@ -4,7 +4,7 @@ impl Session {
     /// A session with one new document.
     pub fn new() -> Self {
         let mut s = Self::empty();
-        s.docs.push(DocState::new(Document::new("Untitled"), None));
+        s.docs.push(DocState::for_new_design(Document::new("Untitled")));
         s.observe_document_changes();
         s
     }
@@ -52,10 +52,15 @@ impl Session {
     /// file nothing was done to yet (the one the app opened with, made before the theme was
     /// known) takes the theme's page colour; later changes of theme leave existing pages alone.
     pub fn set_ui_dark(&mut self, dark: bool) {
-        if self.ui_dark.replace(dark).is_some() || !dark {
+        if self.ui_dark.replace(dark).is_some() {
             return;
         }
         for ds in &mut self.docs {
+            // Consume even a light first theme: moving this initialized page to another
+            // interface cannot make it a new page again. Loaded/model/live inputs never opt in.
+            if !std::mem::take(&mut ds.initial_theme_pending) || !dark {
+                continue;
+            }
             let untouched = ds.path.is_none() && ds.history.undo.is_empty() && ds.history.redo.is_empty() && !ds.is_dirty() && ds.versions.is_empty();
             let pages = ds.doc.pages.clone();
             let blank = pages.iter().all(|p| {

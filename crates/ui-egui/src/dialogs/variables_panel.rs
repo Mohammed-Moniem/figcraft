@@ -11,6 +11,7 @@ use egui::{Align2, Context, CornerRadius, Id, Pos2, Rect, Sense, Stroke, StrokeK
 use figcraft_doc::{Collection, Document, Mode, PublishedLibrary, Variable, VariableType, VariableValue, Variables, scopes_for};
 use figcraft_engine::library;
 use serde_json::{Value, json};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::FigApp;
 use crate::a11y::Tip;
@@ -23,6 +24,7 @@ use crate::theme::{Tokens, regular, semibold};
 use crate::widgets::{self, FieldEdit, Lead};
 
 const SIDEBAR_W: f32 = 264.0;
+static NEXT_DRAFT_EPOCH: AtomicU64 = AtomicU64::new(1);
 /// How far the sidebar's edge drags, and the table's column edges.
 const SIDEBAR_MIN: f32 = 180.0;
 const SIDEBAR_MAX: f32 = 420.0;
@@ -86,6 +88,7 @@ impl Slot {
 pub(crate) struct CopiedVariable {
     name: String,
     kind: VariableType,
+    design_token_type: Option<figcraft_doc::DesignTokenType>,
     /// (mode name, value), in the mode order of the collection it came from.
     values: Vec<(String, VariableValue)>,
     /// The default mode's value: what a mode it has no value for gets.
@@ -99,7 +102,14 @@ impl CopiedVariable {
         let values: Vec<(String, VariableValue)> =
             coll.modes.iter().filter_map(|m| v.values.get(&m.id).map(|val| (m.name.clone(), val.clone()))).collect();
         let value = values.first().map(|(_, val)| val.clone()).unwrap_or_else(|| VariableValue::default_for(v.kind));
-        CopiedVariable { name: v.name.clone(), kind: v.kind, values, value, description: v.description.clone() }
+        CopiedVariable {
+            name: v.name.clone(),
+            kind: v.kind,
+            design_token_type: v.design_token_type,
+            values,
+            value,
+            description: v.description.clone(),
+        }
     }
 }
 
@@ -230,6 +240,10 @@ impl Geom {
 /// The open editor's state (`UiState::variables`; None = closed).
 #[derive(Clone)]
 pub struct Editor {
+    /// A native copy preserves variable ids; drafts must still belong to one live document.
+    owner: Option<u64>,
+    /// A return to the same file must not revive its abandoned widget buffers.
+    draft_epoch: u64,
     /// The floating panel or the full view; remembered between openings, like the collection.
     pub presentation: Presentation,
     /// The floating panel's top-left (screen points); None = centred. Its header moves it.
@@ -299,6 +313,8 @@ pub struct Editor {
 impl Default for Editor {
     fn default() -> Self {
         Editor {
+            owner: None,
+            draft_epoch: NEXT_DRAFT_EPOCH.fetch_add(1, Ordering::Relaxed),
             presentation: Presentation::Floating,
             pos: None,
             library: None,
@@ -331,6 +347,33 @@ impl Default for Editor {
 }
 
 impl Editor {
+    fn sync_owner(&mut self, app: &FigApp, ctx: &Context) {
+        let owner = app.session.ds().ok().map(|d| d.uid);
+        if self.owner == owner {
+            return;
+        }
+        if self.owner.is_some() {
+            // Keep the panel's geometry and the immutable clipboard payload across files. All
+            // live targets, pending requests and drafts belong to the document being left.
+            *self = Self {
+                presentation: self.presentation,
+                pos: self.pos,
+                size: self.size,
+                sidebar: self.sidebar,
+                sidebar_w: self.sidebar_w,
+                sidebar_split: self.sidebar_split,
+                name_w: self.name_w,
+                mode_w: self.mode_w,
+                copied: self.copied.take(),
+                ..Default::default()
+            };
+            if let Some(focused) = ctx.memory(|m| m.focused()) {
+                ctx.memory_mut(|m| m.surrender_focus(focused));
+            }
+        }
+        self.owner = owner;
+    }
+
     /// An editor showing `collection` (id or name; the first one when None or unknown).
     pub fn on(collection: Option<String>) -> Self {
         Editor { collection, ..Default::default() }
@@ -415,6 +458,10 @@ impl<'a> View<'a> {
 /// them: a row selected for the copy, something copied for the paste, and no field holding the
 /// keyboard. The copy and the paste run in [`table`], which has the shown rows in hand.
 pub fn keys(app: &mut FigApp, ctx: &Context) {
+    if let Some(mut st) = app.ui.variables.take() {
+        st.sync_owner(app, ctx);
+        app.ui.variables = Some(st);
+    }
     if app.ui.variables.is_none() || app.ui.present.is_some() || crate::a11y::field_focused(ctx) {
         return;
     }
@@ -489,6 +536,7 @@ pub fn keys(app: &mut FigApp, ctx: &Context) {
 /// view is drawn by [`full`], in the place the editor panels would have taken.
 pub fn show(app: &mut FigApp, ctx: &Context) {
     let Some(mut st) = app.ui.variables.take() else { return };
+    st.sync_owner(app, ctx);
     if st.presentation == Presentation::Full {
         app.ui.variables = Some(st);
         return;
@@ -510,6 +558,7 @@ pub fn show(app: &mut FigApp, ctx: &Context) {
 /// canvas (the rail stays).
 pub fn full(app: &mut FigApp, ctx: &Context, panel: Rect) {
     let Some(mut st) = app.ui.variables.take() else { return };
+    st.sync_owner(app, ctx);
     if st.presentation != Presentation::Full {
         app.ui.variables = Some(st);
         return;
@@ -532,7 +581,9 @@ fn draw(app: &mut FigApp, ctx: &Context, st: &mut Editor, g: Geom) -> bool {
             ui.set_width(g.size().x);
             ui.set_min_height(g.size().y);
             ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-            editor(app, ui, st, g, &mut open);
+            // Keep the area geometry stable, but retire row responses, menus and auto-id
+            // widgets when this editor starts showing a different live document.
+            ui.push_id(("vars_editor", st.owner, st.draft_epoch), |ui| editor(app, ui, st, g, &mut open));
         });
     });
     open
@@ -710,9 +761,12 @@ fn header(app: &mut FigApp, ui: &mut Ui, st: &mut Editor, g: Geom, open: &mut bo
         let mut bar = ui.new_child(UiBuilder::new().max_rect(bar).layout(egui::Layout::right_to_left(egui::Align::Center)));
         let export = widgets::button(&mut bar, tr("Export…"), false, true);
         crate::right::menu_popup(&export).show(|ui| {
-            for (label, format) in
-                [(tr("Variables JSON…"), "json"), (tr("CSS custom properties…"), "css"), (tr("Dart constants for Flutter…"), "dart")]
-            {
+            for (label, format) in [
+                (tr("Variables JSON…"), "json"),
+                (tr("DTCG design tokens…"), "dtcg"),
+                (tr("CSS custom properties…"), "css"),
+                (tr("Dart constants for Flutter…"), "dart"),
+            ] {
                 if menu_item(ui, label, "") {
                     export_dialog(app, format);
                     ui.close();
@@ -765,7 +819,7 @@ fn search_box(ui: &mut Ui, st: &mut Editor, field: Rect) {
     let filter = Rect::from_min_max(pos2(field.max.x - FILTER_W, field.min.y), field.max);
     let body = Rect::from_min_max(field.min, pos2(field.max.x - FILTER_W, field.max.y));
     ui.painter().rect_filled(body, CornerRadius { nw: 5, sw: 5, ne: 0, se: 0 }, t.field);
-    let f = ui.interact(filter, Id::unique("vars_filter"), Sense::click());
+    let f = ui.interact(filter, Id::unique(("vars_filter", st.owner, st.draft_epoch)), Sense::click());
     ui.painter().rect_filled(filter, CornerRadius { nw: 0, sw: 0, ne: 5, se: 5 }, if f.hovered() { t.hover } else { t.field });
     let hidden = !st.hidden_kinds.is_empty();
     let glyph = Rect::from_center_size(filter.center(), vec2(13.0, 13.0));
@@ -814,7 +868,8 @@ fn search_box(ui: &mut Ui, st: &mut Editor, field: Rect) {
 /// Export this file's collections through a save dialog, or as a download where the platform has
 /// no save dialogs (the browser).
 pub(crate) fn export_dialog(app: &mut FigApp, format: &str) {
-    let name = app.session.doc().map(|d| format!("{}.variables.{format}", d.name)).unwrap_or_else(|_| format!("variables.{format}"));
+    let suffix = if format == "dtcg" { "tokens.json".to_owned() } else { format!("variables.{format}") };
+    let name = app.session.doc().map(|d| format!("{}.{suffix}", d.name)).unwrap_or_else(|_| suffix.clone());
     if app.services.downloads() {
         let Some(r) = app.run("variable.export", json!({"format": format})) else { return };
         let text = r["text"].as_str().unwrap_or_default();
@@ -826,7 +881,7 @@ pub(crate) fn export_dialog(app: &mut FigApp, format: &str) {
         return;
     }
     let format = format.to_owned();
-    let ext = format.clone();
+    let ext = if format == "dtcg" { "json".to_owned() } else { format.clone() };
     app.pick_save(tr("Export variables"), &name, &[&ext], move |app, p| {
         if app.run("variable.export", json!({"format": format, "path": p.to_string_lossy()})).is_some() {
             let file = p.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
@@ -837,8 +892,15 @@ pub(crate) fn export_dialog(app: &mut FigApp, format: &str) {
 
 /// Import a variables JSON picked in an open dialog.
 fn import_dialog(app: &mut FigApp) {
-    app.pick_open(tr("Import variables"), &["json"], |app, p| {
-        let Some(r) = app.run("variable.import", json!({"variables": p.to_string_lossy()})) else { return };
+    app.pick_file(tr("Import variables"), &["json"], true, |app, file| {
+        let variables = match import_input(&file) {
+            Ok(input) => input,
+            Err(why) => {
+                app.show_error(why);
+                return;
+            }
+        };
+        let Some(r) = app.run("variable.import", json!({"variables": variables})) else { return };
         let (added, updated) = (r["variables"].as_u64().unwrap_or(0), r["updated"].as_u64().unwrap_or(0));
         let skipped = r["warnings"].as_array().map_or(0, Vec::len);
         let mut msg = trn("Imported {n} new variables, updated {updated}", added as usize, &[("updated", &updated)]);
@@ -847,6 +909,27 @@ fn import_dialog(app: &mut FigApp) {
         }
         app.toast(msg);
     });
+}
+
+/// Path-based native pickers and byte-based browser pickers share the same engine command.
+fn import_input(file: &Value) -> Result<String, String> {
+    use base64::Engine as _;
+    if let Some(path) = file["path"].as_str() {
+        return Ok(path.to_owned());
+    }
+    let name = file["name"].as_str().unwrap_or("variables.json");
+    let unreadable = || crate::services::unreadable(name);
+    let encoded = file["data"].as_str().ok_or_else(unreadable)?;
+    const MAX: usize = 256 * 1024 * 1024;
+    // Refuse the encoded size before allocating its decoded copy; check rounding after decode.
+    if encoded.len() > MAX.div_ceil(3) * 4 {
+        return Err(tr("Variables files must be at most 256 MiB.").into());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).map_err(|_| unreadable())?;
+    if bytes.len() > MAX {
+        return Err(tr("Variables files must be at most 256 MiB.").into());
+    }
+    String::from_utf8(bytes).map_err(|_| unreadable())
 }
 
 /// Extend library `lib`'s collection `c` and show the new collection.
@@ -863,8 +946,8 @@ fn extend(app: &mut FigApp, lib: Option<&str>, c: &str, st: &mut Editor) {
     }
 }
 
-fn rename_id(target: &Rename) -> Id {
-    Id::unique(("var_rename", target))
+fn rename_id(owner: Option<u64>, epoch: u64, target: &Rename) -> Id {
+    Id::unique(("var_rename", owner, epoch, target))
 }
 
 /// Start renaming `target`. The field isn't drawn yet (a new collection, mode or variable shows next
@@ -879,7 +962,7 @@ fn start_rename(st: &mut Editor, target: Rename) {
 /// the editor closes.
 fn rename_field(ui: &mut Ui, st: &mut Editor, target: &Rename, value: &str, rect: Rect, font: egui::FontId) -> Option<String> {
     let start = std::mem::take(&mut st.rename_start);
-    let (out, open) = widgets::rename_field(ui, rename_id(target), value, rect, font, start);
+    let (out, open) = widgets::rename_field(ui, rename_id(st.owner, st.draft_epoch, target), value, rect, font, start);
     if !open {
         st.rename = None;
     }
@@ -907,7 +990,7 @@ fn sidebar(
     ui.painter().text(pos2(hr.min.x + 16.0, hr.center().y), Align2::LEFT_CENTER, tr("Collections"), semibold(11.0), t.text_secondary);
     if widgets::icon_button_at(
         ui,
-        Id::unique("vars_add_coll"),
+        Id::unique(("vars_add_coll", st.owner, st.draft_epoch)),
         Rect::from_center_size(pos2(hr.max.x - 20.0, hr.center().y), vec2(24.0, 24.0)),
         Icon::Plus,
         tr("Create collection"),
@@ -977,7 +1060,7 @@ fn sidebar(
 /// step; dropping past the last one puts it at the end. Library collections stay where they are.
 fn collections_list(app: &mut FigApp, ui: &mut Ui, st: &mut Editor, views: &[View]) {
     let mut local_ids: Vec<String> = Vec::new();
-    let mut coll_drag = ListDrag::in_order(ui, "vars_collections");
+    let mut coll_drag = ListDrag::in_order(ui, ("vars_collections", st.owner, st.draft_epoch));
     for v in views {
         if let Some((_, name)) = v.library
             && !v.collections.is_empty()
@@ -1125,7 +1208,7 @@ fn group_rows(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st:
         }
     });
     let mut ids: Vec<String> = Vec::new();
-    let mut drag = ListDrag::in_order(ui, format!("vars_groups/{}", coll.id));
+    let mut drag = ListDrag::in_order(ui, ("vars_groups", st.owner, st.draft_epoch, &coll.id));
     let rows = std::iter::once(None).chain(list.iter().map(Some));
     for g in rows {
         let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click_and_drag());
@@ -1421,6 +1504,9 @@ fn paste(app: &mut FigApp, view: &View, coll: &Collection, st: &mut Editor, list
     if !clip.description.is_empty() {
         create["description"] = json!(clip.description);
     }
+    if let Some(hint) = clip.design_token_type {
+        create["designTokenType"] = json!(hint);
+    }
     // Under the selected row is before the row after it; nothing selected (or a row the table doesn't
     // show) puts it after the collection's last variable, at the bottom of the whole list.
     let at = st.selected.as_deref().and_then(|id| list.iter().position(|v| v.id == id));
@@ -1679,7 +1765,7 @@ fn header_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st:
             wide.painter().with_clip_rect(cell).text(name_pos, Align2::LEFT_CENTER, &m.name, regular(11.0), t.text_secondary);
             continue;
         }
-        let resp = wide.interact(cell, Id::unique(("vars_mode", &m.id)), Sense::click_and_drag());
+        let resp = wide.interact(cell, Id::unique(("vars_mode", st.owner, st.draft_epoch, &m.id)), Sense::click_and_drag());
         if st.mode_drag.as_deref() == Some(m.id.as_str()) {
             // The column being carried: held up out of the row it is leaving.
             wide.painter().rect_filled(cell, CornerRadius::same(4), t.field);
@@ -1766,7 +1852,7 @@ fn header_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st:
     if editable
         && widgets::icon_button_at(
             ui,
-            Id::unique("vars_add_mode"),
+            Id::unique(("vars_add_mode", st.owner, st.draft_epoch)),
             Rect::from_center_size(add.center(), vec2(40.0, 40.0)),
             Icon::Plus,
             tr("Add mode"),
@@ -1804,8 +1890,17 @@ fn header_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st:
         // means laying out every value of the column, so it is worked out under the pointer only.
         let edge = Rect::from_min_max(pos2(cell.max.x - 3.0, r.min.y), pos2(cell.max.x + 3.0, r.max.y));
         let auto = ui.rect_contains_pointer(edge).then(|| auto_mode_width(ui, view, coll, m));
-        if column_edge(ui, Id::unique(("vars_mode_edge", &m.id)), cell.max.x, cell.min.x, r, &mut w, MODE_MIN, MODE_MAX, auto)
-            && (w - cols.width_of(i)).abs() > 0.01
+        if column_edge(
+            ui,
+            Id::unique(("vars_mode_edge", st.owner, st.draft_epoch, &m.id)),
+            cell.max.x,
+            cell.min.x,
+            r,
+            &mut w,
+            MODE_MIN,
+            MODE_MAX,
+            auto,
+        ) && (w - cols.width_of(i)).abs() > 0.01
         {
             st.set_mode_width(&m.id, w);
         }
@@ -1881,7 +1976,7 @@ fn var_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, v: &Va
             continue;
         }
         let cell = Rect::from_min_max(pos2(cell.min.x + 4.0, r.center().y - 12.0), pos2(cell.max.x - 8.0, r.center().y + 12.0));
-        value_cell(app, &mut wide, view, v, coll, &m.id, cell);
+        value_cell(app, &mut wide, view, v, coll, (&m.id, st.draft_epoch), cell);
     }
     // The column grid, matching the header: a line after the name column, one after each mode column
     // (clipped to the modes strip), and one before the add column.
@@ -1897,7 +1992,7 @@ fn var_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, v: &Va
         // same as "Edit variable" in its context menu).
         if widgets::icon_button_at(
             ui,
-            Id::unique(("vars_row_edit", &v.id)),
+            Id::unique(("vars_row_edit", st.owner, st.draft_epoch, &v.id)),
             Rect::from_center_size(add_r.center(), vec2(40.0, 40.0)),
             Icon::Adjust,
             tr("Edit variable"),
@@ -1998,11 +2093,12 @@ fn set(app: &mut FigApp, v: &Variable, mode: &str, value: Value) {
 
 /// One value cell: an editor for the value, or the aliased variable's chip; the variable button
 /// on the right makes it an alias. A library's values only show.
-fn value_cell(app: &mut FigApp, ui: &mut Ui, view: &View, v: &Variable, coll: &Collection, mode: &str, rect: Rect) {
+fn value_cell(app: &mut FigApp, ui: &mut Ui, view: &View, v: &Variable, coll: &Collection, (mode, epoch): (&str, u64), rect: Rect) {
     let t = Tokens::get(ui.ctx());
     let Some(val) = v.values.get(mode) else { return };
     let editable = view.editable();
-    let id = Id::unique(("var_cell", &v.id, mode));
+    let owner = app.session.ds().ok().map(|d| d.uid);
+    let id = Id::unique(("var_cell", owner, epoch, &v.id, mode));
     // The value editor leaves room for the alias button (and in extended collections an
     // override's reset button, so the column stays even).
     let overridden = v.overrides.contains(mode);
@@ -2359,12 +2455,14 @@ fn details(app: &mut FigApp, ctx: &Context, vars: &Variables, st: &mut Editor) {
         .show(ctx, |ui| {
             ui.set_width(260.0);
             widgets::label(ui, tr("Name"), t.text_secondary);
-            if let Some(n) = widgets::text_field(ui, Id::unique(("var_detail_name", &v.id)), &v.name, 260.0, "") {
+            if let Some(n) = widgets::text_field(ui, Id::unique(("var_detail_name", st.owner, st.draft_epoch, &v.id)), &v.name, 260.0, "") {
                 app.run("variable.update", json!({"variable": v.id, "name": n}));
             }
             ui.add_space(6.0);
             widgets::label(ui, tr("Description"), t.text_secondary);
-            if let Some(d) = widgets::text_field(ui, Id::unique(("var_detail_desc", &v.id)), &v.description, 260.0, tr("What it's for")) {
+            if let Some(d) =
+                widgets::text_field(ui, Id::unique(("var_detail_desc", st.owner, st.draft_epoch, &v.id)), &v.description, 260.0, tr("What it's for"))
+            {
                 app.run("variable.update", json!({"variable": v.id, "description": d}));
             }
             ui.add_space(6.0);
@@ -2379,7 +2477,9 @@ fn details(app: &mut FigApp, ctx: &Context, vars: &Variables, st: &mut Editor) {
                     let (lr, _) = ui.allocate_exact_size(vec2(60.0, 24.0), Sense::hover());
                     ui.painter().text(lr.left_center(), Align2::LEFT_CENTER, tr(label), regular(11.0), t.text);
                     let cur = v.code_syntax.get(key).map_or("", String::as_str);
-                    if let Some(n) = widgets::text_field_named(ui, Id::unique(("var_detail_code", key, &v.id)), cur, 192.0, tr(label)) {
+                    if let Some(n) =
+                        widgets::text_field_named(ui, Id::unique(("var_detail_code", st.owner, st.draft_epoch, key, &v.id)), cur, 192.0, tr(label))
+                    {
                         app.run("variable.update", json!({"variable": v.id, "codeSyntax": {key: n}}));
                     }
                 });

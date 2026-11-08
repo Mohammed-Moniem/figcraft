@@ -106,6 +106,11 @@ pub trait Services {
     /// Keep the preferences now (the installed plugins or their settings changed), as the app
     /// does when it quits.
     fn save_prefs(&mut self, _prefs: &figcraft_engine::Prefs) {}
+    /// Consume a failed preferences save once. No raw storage error or private payload crosses
+    /// into the UI; existing services that have their own reporting keep the default.
+    fn take_prefs_save_failure(&mut self) -> bool {
+        false
+    }
     /// The OS or browser language as a tag ("es-ES"), for the "system" language preference.
     fn system_language(&self) -> Option<String> {
         None
@@ -206,6 +211,20 @@ pub fn browser_stopped(unsaved: usize, kept: usize) -> String {
         i18n::tr("Reload the page to get back the unsaved files the browser had room for.")
     };
     format!("{} {next}", i18n::tr("FigCraft stopped because of an internal error."))
+}
+
+/// Fixed, payload-free status for selective browser preference storage. Browser exception text
+/// can include the attempted value, so it must never be shown or logged instead.
+pub fn browser_preferences_error(reading: bool) -> String {
+    if reading {
+        i18n::tr("Couldn't read the saved preferences in this browser.").into()
+    } else {
+        i18n::tr("Couldn't keep your preferences in this browser. Changes may be lost after reload.").into()
+    }
+}
+
+pub fn local_preferences_error() -> String {
+    i18n::tr("Couldn't save the local preferences. Changes may be lost after restart.").into()
 }
 
 /// The largest file read in the browser: wasm has at most 4 GiB of memory, and a file's contents

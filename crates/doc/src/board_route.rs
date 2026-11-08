@@ -25,11 +25,15 @@ impl RouteEnd {
     }
 }
 
+/// Automatic connector endpoints sit this many page units beyond their box's border. Manual
+/// points keep their exact coordinates; this is a centerline setback, not a stroke-width limit.
+pub const END_GAP: f64 = 4.0;
+
 /// How far an elbow connector going around the objects it joins keeps from them.
 const ROOM: f64 = 24.0;
 
-/// The points a connector runs through from `from` to `to`: from the middle of the side of each
-/// box facing the other end (or the side it names), straight, in right angles, or (curved) its two
+/// The points a connector runs through from `from` to `to`: just outside the middle of the side of
+/// each box facing the other end (or the side it names), straight, in right angles, or (curved) its two
 /// ends with the curve's two control points between them. `None` when a point isn't finite.
 pub fn route_points(from: RouteEnd, to: RouteEnd, routing: Routing) -> Option<Vec<Point>> {
     let (p0, s0) = attach(from, to.centre());
@@ -162,14 +166,14 @@ fn tidy(pts: Vec<Point>) -> Vec<Point> {
     out
 }
 
-/// Where end `e` attaches (its point, or the middle of its box's side facing `other`) and that
+/// Where end `e` attaches (its exact point, or outside its box's side facing `other`) and that
 /// side (`None`: a free point).
 fn attach(e: RouteEnd, other: Point) -> (Point, Option<Side>) {
     match e {
         RouteEnd::Point(p) => (p, None),
         RouteEnd::Box(b, side) => {
             let side = named_or_facing(b, side, other);
-            (side.point(b), Some(side))
+            (side.point(b) + side.normal() * END_GAP, Some(side))
         }
         RouteEnd::On(b, side, p) => (p, Some(named_or_facing(b, side, other))),
     }

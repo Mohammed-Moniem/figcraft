@@ -171,6 +171,10 @@ pub(crate) fn fmt_num(v: f64) -> String {
     if (r - r.round()).abs() < 1e-9 { format!("{}", r.round() as i64) } else { format!("{r}") }
 }
 
+fn fmt_num_exact(value: f64) -> String {
+    if value.is_finite() { value.to_string() } else { String::new() }
+}
+
 /// What a number field's variable button did.
 pub enum BindEvent {
     /// Open the variable picker below this point.
@@ -183,6 +187,14 @@ pub enum BindEvent {
 /// after the number. Typing supports simple math (`10+5`, `*2`).
 pub fn number_field(ui: &mut Ui, id: Id, lead: Lead, value: Option<f64>, suffix: &str, width: f32, step: f64) -> Option<FieldEdit> {
     number_field_mixed(ui, id, lead, value, suffix, width, step)?.settled()
+}
+
+/// A number field for fractional settings that must keep their full finite value when
+/// displayed or reopened for editing. Existing fields retain their two-decimal presentation.
+pub fn number_field_exact(ui: &mut Ui, id: Id, lead: Lead, value: Option<f64>, suffix: &str, width: f32, step: f64) -> Option<FieldEdit> {
+    number_field_impl(ui, id, lead, value, suffix, width, step, None, Empty::Text(tr("Mixed")), NumberOptions { exact: true, ..Default::default() })
+        .0?
+        .settled()
 }
 
 /// [`number_field`] over several layers: without a single value (`value` None, "Mixed") a relative
@@ -248,7 +260,7 @@ pub fn number_field_bindable_menu(
     dim: bool,
     menu: Option<Option<&str>>,
 ) -> (Option<Edit>, Option<BindEvent>, Option<egui::Response>) {
-    number_field_impl(ui, id, lead, value, suffix, width, step, binding, empty, NumberOptions { dim, menu })
+    number_field_impl(ui, id, lead, value, suffix, width, step, binding, empty, NumberOptions { dim, menu, ..Default::default() })
 }
 
 /// A save admitted for another document cannot make this reused field commit its cached draft.
@@ -277,7 +289,79 @@ fn cancel_retargeted_field_save(ui: &mut Ui, id: Id) {
 #[derive(Default)]
 struct NumberOptions<'a> {
     dim: bool,
+    exact: bool,
     menu: Option<Option<&'a str>>,
+}
+
+impl NumberOptions<'_> {
+    fn formatter(&self) -> fn(f64) -> String {
+        if self.exact { fmt_num_exact } else { fmt_num }
+    }
+}
+
+fn refresh_wheel_editor(ui: &Ui, id: Id, editing: &mut Option<String>, value: Option<f64>, format_value: fn(f64) -> String) {
+    // Wheel edits and exact settings' arrow steps pass through the caller's clamp/unit mapping.
+    // Refresh from that accepted value, so reversing at a limit moves away immediately.
+    if ui.data_mut(|d| d.remove_temp::<bool>(id.with("wheel_refresh"))).unwrap_or(false)
+        && let (Some(text), Some(v)) = (editing.as_mut(), value)
+    {
+        *text = format_value(v);
+        ui.data_mut(|d| d.insert_temp(id.with("kept"), text.clone()));
+        // Select the accepted text before TextEdit processes this batch. Its length can change
+        // at a digit boundary, and typing immediately after the wheel must replace all of it.
+        if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id.with("te")) {
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(text.chars().count()))));
+            state.store(ui.ctx(), id.with("te"));
+        }
+    }
+}
+
+// A newly focused editor may still have egui arrow navigation queued.
+// The focused exact field owns its step, including the first input after a click.
+fn keep_exact_arrow_focus(ui: &Ui, exact: bool) {
+    if exact {
+        ui.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
+    }
+}
+
+fn queue_exact_arrow_refresh(ui: &Ui, id: Id, exact: bool) {
+    if exact {
+        // A caller can clamp a setting; reread its accepted value before the next edit.
+        ui.data_mut(|d| d.insert_temp(id.with("wheel_refresh"), true));
+    }
+}
+
+struct WheelField<'a> {
+    id: Id,
+    rect: Rect,
+    focused: bool,
+    value: Option<f64>,
+    editing: Option<&'a str>,
+    key_step: f64,
+    key_big: f64,
+}
+
+/// The wheel uses typing's Set/relative path, including callers' limits and unit mapping.
+fn wheel_field_edit(ui: &Ui, field: WheelField<'_>, typed: impl Fn(&str) -> Option<Edit>) -> Option<Edit> {
+    let WheelField { id, rect, focused, value, editing, key_step, key_big } = field;
+    let (steps, modifiers, continuing) = crate::number_wheel::steps(ui, id, rect, focused)?;
+    let step = match (modifiers.shift, modifiers.alt) {
+        (true, false) => key_big,
+        (false, true) => key_step * 0.1,
+        _ => key_step,
+    };
+    let by = steps * step;
+    let draft =
+        editing.filter(|text| ui.data(|d| d.get_temp::<String>(id.with("kept"))).as_deref() != Some(*text)).and_then(|text| match typed(text) {
+            Some(Edit::All(FieldEdit::Set(v))) => Some(v),
+            _ => None,
+        });
+    let base = if continuing { value } else { draft.or(value) };
+    let edit = base.map_or(Edit::Each(Rel::Add(by)), |v| Edit::All(FieldEdit::Set(stepped(v, 1.0, by))));
+    ui.data_mut(|d| d.insert_temp(id.with("wheel_refresh"), true));
+    Some(edit)
 }
 
 fn number_field_impl(
@@ -292,7 +376,8 @@ fn number_field_impl(
     empty: Empty<'_>,
     options: NumberOptions<'_>,
 ) -> (Option<Edit>, Option<BindEvent>, Option<egui::Response>) {
-    let NumberOptions { dim, menu } = options;
+    let format_value = options.formatter();
+    let NumberOptions { dim, menu, exact } = options;
     cancel_retargeted_field_save(ui, id);
     let t = Tokens::get(ui.ctx());
     let (rect, _) = ui.allocate_exact_size(vec2(width, FIELD_H), Sense::hover());
@@ -309,6 +394,7 @@ fn number_field_impl(
     let edit_rect = Rect::from_min_max(pos2(rect.min.x + lead_w, rect.min.y), rect.max);
     let editing_id = id.with("editing");
     let mut editing: Option<String> = ui.data(|d| d.get_temp(editing_id));
+    refresh_wheel_editor(ui, id, &mut editing, value, format_value);
     let field_resp = ui.interact(edit_rect, id.with("field"), Sense::click());
     a11y::number(&field_resp, lead.name(), value, suffix, empty.text());
     a11y::ring_around(ui, rect, &field_resp);
@@ -317,7 +403,7 @@ fn number_field_impl(
     let hovered = field_resp.hovered() || lead_resp.hovered() || editing.is_some();
     ui.painter().rect_filled(rect, CornerRadius::same(5), t.field);
     if editing.is_some() {
-        ui.painter().rect_stroke(rect, CornerRadius::same(5), Stroke::new(1.0, crate::theme::ACCENT), StrokeKind::Inside);
+        ui.painter().rect_stroke(rect, CornerRadius::same(5), Stroke::new(1.0, crate::theme::accent(ui.ctx())), StrokeKind::Inside);
     } else if hovered {
         ui.painter().rect_stroke(rect, CornerRadius::same(5), Stroke::new(1.0, t.field_hover_border), StrokeKind::Inside);
     }
@@ -375,6 +461,20 @@ fn number_field_impl(
             (Typed::Rel(r), None) => Some(Edit::Each(r)),
         }
     };
+    out = wheel_field_edit(
+        ui,
+        WheelField {
+            id,
+            rect,
+            focused: on_field || ui.memory(|m| m.has_focus(id.with("te"))),
+            value,
+            editing: editing.as_deref(),
+            key_step,
+            key_big,
+        },
+        typed,
+    )
+    .or(out);
     // With the keyboard on the field (Tab) and nothing typed yet, the arrows step it as it is.
     if editing.is_none()
         && on_field
@@ -389,10 +489,10 @@ fn number_field_impl(
     // value the arrows last stepped it to.
     let kept_id = id.with("kept");
     if started {
-        editing = Some(if typed_now { String::new() } else { value.map(fmt_num).unwrap_or_default() });
+        editing = Some(if typed_now { String::new() } else { value.map(format_value).unwrap_or_default() });
         ui.data_mut(|d| {
             d.insert_temp(editing_id, editing.clone().unwrap_or_default());
-            d.insert_temp(kept_id, value.map(fmt_num).unwrap_or_default());
+            d.insert_temp(kept_id, value.map(format_value).unwrap_or_default());
             d.insert_temp(id.with("selectall"), !typed_now);
         });
         ui.memory_mut(|m| m.request_focus(id.with("te")));
@@ -428,16 +528,18 @@ fn number_field_impl(
             if ui.memory(|m| m.has_focus(r.id))
                 && let Some(by) = arrow_step(ui)
             {
+                keep_exact_arrow_focus(ui, exact);
                 // From what is typed (arithmetic too); no single value: each layer's own steps.
                 match typed(&text) {
                     Some(Edit::All(FieldEdit::Set(v))) => {
                         let nv = stepped(v, 1.0, by);
-                        text = fmt_num(nv);
+                        text = format_value(nv);
                         // The stepped value stays selected: typing replaces it.
                         ui.data_mut(|d| {
                             d.insert_temp(kept_id, text.clone());
                             d.insert_temp(id.with("selectall"), true);
                         });
+                        queue_exact_arrow_refresh(ui, id, exact);
                         out = Some(set(nv));
                     }
                     _ if value.is_none() => out = Some(Edit::Each(Rel::Add(by))),
@@ -464,7 +566,7 @@ fn number_field_impl(
         }
         None => {
             let s = match value {
-                Some(v) => format!("{}{}", fmt_num(v), suffix),
+                Some(v) => format!("{}{}", format_value(v), suffix),
                 None => empty.text().to_string(),
             };
             let col = dim_col.unwrap_or(if value.is_some() { t.text } else { t.text_secondary });
@@ -650,7 +752,7 @@ fn text_field_in(ui: &mut Ui, id: Id, value: &str, rect: Rect, placeholder: &str
     a11y::text(&resp, name, &shown);
     ui.painter().rect_filled(rect, CornerRadius::same(5), t.field);
     if editing.is_some() {
-        ui.painter().rect_stroke(rect, CornerRadius::same(5), Stroke::new(1.0, crate::theme::ACCENT), StrokeKind::Inside);
+        ui.painter().rect_stroke(rect, CornerRadius::same(5), Stroke::new(1.0, crate::theme::accent(ui.ctx())), StrokeKind::Inside);
     } else if resp.hovered() {
         ui.painter().rect_stroke(rect, CornerRadius::same(5), Stroke::new(1.0, t.field_hover_border), StrokeKind::Inside);
     }
@@ -719,7 +821,7 @@ pub(crate) fn search_box(ui: &mut Ui, field: Rect, id: Id, text: &mut String, hi
     icons::paint(ui.painter(), Rect::from_center_size(pos2(field.min.x + 12.0, field.center().y), vec2(12.0, 12.0)), Icon::Search, t.icon_secondary);
     let r = field_editor(ui, Rect::from_min_max(pos2(field.min.x + 16.0, field.min.y), field.max), id, text, hint, false);
     if r.has_focus() {
-        ui.painter().rect_stroke(field, CornerRadius::same(5), Stroke::new(1.0, crate::theme::ACCENT), egui::StrokeKind::Inside);
+        ui.painter().rect_stroke(field, CornerRadius::same(5), Stroke::new(1.0, crate::theme::accent(ui.ctx())), egui::StrokeKind::Inside);
     }
     r
 }
@@ -733,7 +835,7 @@ pub fn text_input(ui: &mut Ui, id: Id, text: &mut String, width: f32, hint: &str
     ui.painter().rect_filled(rect, CornerRadius::same(5), t.field);
     let r = field_editor(ui, rect, id, text, hint, false);
     if r.has_focus() {
-        ui.painter().rect_stroke(rect, CornerRadius::same(5), Stroke::new(1.0, crate::theme::ACCENT), StrokeKind::Inside);
+        ui.painter().rect_stroke(rect, CornerRadius::same(5), Stroke::new(1.0, crate::theme::accent(ui.ctx())), StrokeKind::Inside);
     } else if ui.rect_contains_pointer(rect) {
         ui.painter().rect_stroke(rect, CornerRadius::same(5), Stroke::new(1.0, t.field_hover_border), StrokeKind::Inside);
     }
@@ -1091,7 +1193,7 @@ pub fn canvas_banner<R>(ctx: &egui::Context, id: Id, canvas: Rect, add: impl FnO
 
 /// Where a dragged row will land: an accent line across `x0..x1` at `y`.
 pub fn insertion_line(painter: &egui::Painter, x0: f32, x1: f32, y: f32) {
-    painter.line_segment([pos2(x0, y), pos2(x1, y)], Stroke::new(2.0, crate::theme::ACCENT));
+    painter.line_segment([pos2(x0, y), pos2(x1, y)], Stroke::new(2.0, crate::theme::accent(painter.ctx())));
 }
 
 /// What a drag carries, following the pointer at `at`: `galley` in a small outlined box above
@@ -1102,7 +1204,7 @@ pub fn drag_ghost(ctx: &egui::Context, at: egui::Pos2, galley: std::sync::Arc<eg
     let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::unique("drag_ghost")));
     let r = Rect::from_min_size(at + vec2(14.0, 10.0), galley.size() + vec2(16.0, 8.0));
     painter.rect_filled(r, CornerRadius::same(5), t.panel);
-    painter.rect_stroke(r, CornerRadius::same(5), Stroke::new(1.0, crate::theme::ACCENT), StrokeKind::Inside);
+    painter.rect_stroke(r, CornerRadius::same(5), Stroke::new(1.0, crate::theme::accent(ctx)), StrokeKind::Inside);
     painter.galley(r.min + vec2(8.0, 4.0), galley, t.text);
 }
 
@@ -1176,7 +1278,7 @@ pub fn slider(
         let x = x_of(v);
         p.rect_filled(Rect::from_min_max(track.min, pos2(x, track.max.y)), CornerRadius::same(2), t.accent);
         p.circle_filled(pos2(x, track.center().y), 6.0, Color32::WHITE);
-        let ring = if resp.hovered() || resp.dragged() { crate::theme::ACCENT } else { t.border_strong };
+        let ring = if resp.hovered() || resp.dragged() { crate::theme::accent(ui.ctx()) } else { t.border_strong };
         p.circle_stroke(pos2(x, track.center().y), 6.0, Stroke::new(1.0, ring));
     }
     if resp.double_clicked() {
@@ -1283,7 +1385,7 @@ pub fn radio(ui: &mut Ui, on: bool, label: &str) -> bool {
         ui.painter().circle_filled(c, 7.0, t.accent);
         ui.painter().circle_filled(c, 2.5, t.accent_on);
     } else {
-        ui.painter().circle_stroke(c, 6.5, Stroke::new(1.0, if resp.hovered() { crate::theme::ACCENT } else { t.border_strong }));
+        ui.painter().circle_stroke(c, 6.5, Stroke::new(1.0, if resp.hovered() { crate::theme::accent(ui.ctx()) } else { t.border_strong }));
     }
     let align = if rtl { Align2::RIGHT_CENTER } else { Align2::LEFT_CENTER };
     ui.painter().text(pos2(flip_x(rtl, rect, rect.min.x + 22.0), rect.center().y), align, label, regular(11.0), t.text);
@@ -1339,7 +1441,7 @@ pub fn text_field_inline(ui: &mut Ui, id: Id, value: &str, rect: Rect, font: egu
     match buf {
         Some(mut text) => {
             ui.painter().rect_filled(rect.expand(2.0), CornerRadius::same(4), t.panel);
-            ui.painter().rect_stroke(rect.expand(2.0), CornerRadius::same(4), Stroke::new(1.0, crate::theme::ACCENT), StrokeKind::Inside);
+            ui.painter().rect_stroke(rect.expand(2.0), CornerRadius::same(4), Stroke::new(1.0, crate::theme::accent(ui.ctx())), StrokeKind::Inside);
             let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
             let r = crate::bidi::single_line(&mut child, te_id, &mut text, font, rect.width());
             a11y::own_focus(&r);

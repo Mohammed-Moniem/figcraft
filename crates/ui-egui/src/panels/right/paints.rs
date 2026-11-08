@@ -15,7 +15,7 @@ pub(super) fn appearance(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[N
         ui,
         tr("Appearance"),
         &[
-            (if visible { Icon::Eye } else { Icon::EyeOff }, crate::shortcuts::tip(tr("Show/Hide"), "object.toggleVisible")),
+            (if visible { Icon::Eye } else { Icon::EyeOff }, &crate::shortcuts::tip_for(app, tr("Show/Hide"), "object.toggleVisible")),
             (Icon::Variable, tr("Apply variable to visibility")),
             (Icon::Blend, tr("Blend mode")),
         ],
@@ -48,7 +48,7 @@ pub(super) fn appearance(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[N
             });
         });
     }
-    let op_of = |n: &Node| (f64::from(n.opacity) * 100.0).round();
+    let op_of = |n: &Node| f64::from(n.opacity) * 100.0;
     let op = common(doc, sel, op_of);
     let radius_ok = crate::selection_cache::every(doc, sel, |n| n.kind.has_corner_radius());
     // Only rectangles and frames round each corner on its own.
@@ -533,15 +533,7 @@ fn paint_row(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], i: usize, p: &Paint,
         let op_r = Rect::from_min_max(pos2(r.max.x - 48.0, r.min.y), r.max);
         ui.painter().line_segment([pos2(op_r.min.x, r.min.y + 4.0), pos2(op_r.min.x, r.max.y - 4.0)], Stroke::new(1.0, t.panel));
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(op_r));
-        let e = widgets::number_field(
-            &mut child,
-            Id::unique(("pop", fills, i)),
-            Lead::None,
-            Some((f64::from(p.opacity) * 100.0).round()),
-            "%",
-            48.0,
-            1.0,
-        );
+        let e = widgets::number_field(&mut child, Id::unique(("pop", fills, i)), Lead::None, Some(f64::from(p.opacity) * 100.0), "%", 48.0, 1.0);
         match e {
             Some(FieldEdit::Set(v)) => {
                 app.run(cmd, json!({"ids": ids, "index": i, "opacity": (v / 100.0).clamp(0.0, 1.0)}));

@@ -65,25 +65,19 @@ impl Roles {
                 roles.entry(v.id.clone()).or_insert(r);
             }
         }
-        // Until a pass adds nothing: each pass adds a role or stops, so this ends within one pass
-        // per variable, however long a chain is.
-        loop {
-            let mut changed = false;
-            for v in vars {
-                let Some(r) = roles.get(&v.id).copied() else { continue };
-                for value in v.values.values() {
-                    if let VariableValue::Alias(target) = value
-                        && !roles.contains_key(target)
-                    {
-                        roles.insert(target.clone(), r);
-                        changed = true;
-                    }
-                }
-            }
-            if !changed {
-                break;
+        inherit_alias_roles(vars, &mut roles);
+        // Provenance is a fallback only: actual layer bindings and explicit scopes win.
+        for v in vars.iter().filter(|v| v.kind == VariableType::Number) {
+            let role = match v.design_token_type {
+                Some(figcraft_doc::DesignTokenType::Number | figcraft_doc::DesignTokenType::FontWeight) => Some(NumberRole::Unitless),
+                Some(figcraft_doc::DesignTokenType::Dimension) => Some(NumberRole::Length),
+                _ => None,
+            };
+            if let Some(role) = role {
+                roles.entry(v.id.clone()).or_insert(role);
             }
         }
+        inherit_alias_roles(vars, &mut roles);
         Roles(roles)
     }
 
@@ -95,5 +89,26 @@ impl Roles {
     /// A number variable's CSS value: pixels for lengths, bare for opacity and font weight.
     pub fn number_css(&self, v: &Variable, x: f64) -> String {
         if self.role(v) == NumberRole::Unitless { num(x) } else { format!("{}px", num(x)) }
+    }
+}
+
+/// Propagate known reader roles along aliases without overriding a target's own role.
+fn inherit_alias_roles(vars: &[Variable], roles: &mut HashMap<VariableId, NumberRole>) {
+    loop {
+        let mut changed = false;
+        for v in vars {
+            let Some(r) = roles.get(&v.id).copied() else { continue };
+            for value in v.values.values() {
+                if let VariableValue::Alias(target) = value
+                    && !roles.contains_key(target)
+                {
+                    roles.insert(target.clone(), r);
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
     }
 }

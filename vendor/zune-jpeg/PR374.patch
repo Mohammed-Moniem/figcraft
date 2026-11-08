@@ -1,0 +1,79 @@
+diff --git a/src/mcu.rs b/src/mcu.rs
+index 98e6ca1..7d207c0 100644
+--- a/src/mcu.rs
++++ b/src/mcu.rs
+@@ -331,6 +331,6 @@ impl<T: ZByteReaderTrait> JpegDecoder<T> {
+ 
+         // Size of our output image(width*height)
+         let is_hv = usize::from(self.is_interleaved);
+-        let upsampler_scratch_size = is_hv * self.components[0].width_stride;
++        let upsampler_scratch_size = is_hv * self.components.iter().map(|x| x.width_stride).max().unwrap_or(0) * 8;
+         let width = usize::from(self.info.width);
+         let padded_width = calculate_padded_width(width, self.info.sample_ratio);
+diff --git a/src/mcu_prog.rs b/src/mcu_prog.rs
+index 6f4e1f6..b0eb420 100644
+--- a/src/mcu_prog.rs
++++ b/src/mcu_prog.rs
+@@ -502,6 +502,13 @@ impl<T: ZByteReaderTrait> JpegDecoder<T> {
+ 
+         // Size of our output image(width*height)
+         let is_hv = usize::from(self.is_interleaved);
+-        let upsampler_scratch_size = is_hv * self.components[0].width_stride;
++        let upsampler_scratch_size = is_hv
++            * self
++                .components
++                .iter()
++                .map(|x| x.width_stride)
++                .max()
++                .unwrap_or(0)
++            * 8;
+         let width = usize::from(self.info.width);
+         let padded_width = calculate_padded_width(width, self.info.sample_ratio);
+diff --git a/src/misc.rs b/src/misc.rs
+index 19391ba..3a73475 100644
+--- a/src/misc.rs
++++ b/src/misc.rs
+@@ -210,24 +210,28 @@ pub(crate) fn setup_component_params<T: ZByteReaderTrait>(
+         img.input_colorspace = ColorSpace::RGB;
+     }
+ 
++    // h_max contains the maximum horizontal component
++    // v_max contains the maximum vertical component
+     for component in &mut img.components {
+-        // compute interleaved image info
+-        // h_max contains the maximum horizontal component
+         img.h_max = max(img.h_max, component.horizontal_sample);
+-        // v_max contains the maximum vertical component
+         img.v_max = max(img.v_max, component.vertical_sample);
+-        img.mcu_width = img.h_max * 8;
+-        img.mcu_height = img.v_max * 8;
+-        // Number of MCU's per width
+-        img.mcu_x = usize::from(img.info.width).div_ceil(img.mcu_width);
+-        // Number of MCU's per height
+-        img.mcu_y = usize::from(img.info.height).div_ceil(img.mcu_height);
+-
+-        if img.h_max != 1 || img.v_max != 1 {
+-            // interleaved images have horizontal and vertical sampling factors
+-            // not equal to 1.
+-            img.is_interleaved = true;
+-        }
++    }
++
++    if img.h_max != 1 || img.v_max != 1 {
++        // interleaved images have horizontal and vertical sampling factors
++        // not equal to 1.
++        img.is_interleaved = true;
++    }
++
++    img.mcu_width = img.h_max * 8;
++    img.mcu_height = img.v_max * 8;
++
++    // Number of MCU's per width
++    img.mcu_x = usize::from(img.info.width).div_ceil(img.mcu_width);
++    // Number of MCU's per height
++    img.mcu_y = usize::from(img.info.height).div_ceil(img.mcu_height);
++
++    for component in &mut img.components {
+         // Extract quantization tables from the arrays into components
+         let qt_table = *img.qt_tables[component.quantization_table_number as usize]
+             .as_ref()

@@ -164,7 +164,7 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!(
             "variable.create",
             "Create variable",
-            "{collection, name, type: color|number|string|boolean, value (default mode) | values {modeName: value}, description?}  a value may also be {alias: variable} (same type); a colour value may also be {alpha: {variable, opacity 0..1}} (that variable's colour with its alpha replaced by the opacity) or {mix: {from, to, t}} (operands {variable: variable} or {literal: colour}; t is 0..1, 0 gives from and 1 to; blended per channel over the stored values, in the document's colour profile, including alpha; converting the profile keeps a mix's ends exact and moves its colours in between slightly), each alone in its object",
+            "{collection, name, type: color|number|string|boolean, value (default mode) | values {modeName: value}, description?, designTokenType? (color|dimension|number|fontFamily|fontWeight; compatible with type; provenance only, no usage restriction)}  a value may also be {alias: variable} (same type); a colour value may also be {alpha: {variable, opacity 0..1}} (that variable's colour with its alpha replaced by the opacity) or {mix: {from, to, t}} (operands {variable: variable} or {literal: colour}; t is 0..1, 0 gives from and 1 to; blended per channel over the stored values, in the document's colour profile, including alpha; converting the profile keeps a mix's ends exact and moves its colours in between slightly), each alone in its object",
             true,
             var_create
         ),
@@ -929,6 +929,16 @@ fn var_create(s: &mut Session, p: &Value) -> Result<Value> {
         "boolean" | "bool" => VariableType::Boolean,
         _ => return Err(bad(cmd, "type: color|number|string|boolean")),
     };
+    let design_token_type = match p.get("designTokenType") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            value
+                .as_str()
+                .and_then(figcraft_doc::DesignTokenType::parse)
+                .filter(|hint| hint.variable_type() == kind)
+                .ok_or_else(|| bad(cmd, "designTokenType must be color|dimension|number|fontFamily|fontWeight and compatible with type"))?,
+        ),
+    };
     let doc = s.doc_mut()?;
     let coll = doc.variables.collection(&c).cloned().ok_or_else(|| bad(cmd, "no such collection"))?;
     let mut values = BTreeMap::new();
@@ -977,6 +987,7 @@ fn var_create(s: &mut Session, p: &Value) -> Result<Value> {
         hidden_from_publishing: false,
         extends: None,
         overrides: Default::default(),
+        design_token_type,
         code_syntax: Default::default(),
     });
     Ok(json!({"id": id}))

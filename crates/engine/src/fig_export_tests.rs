@@ -51,16 +51,30 @@ fn issue_2045_export_and_save_as_fig_use_the_page_shown_by_the_viewer() {
 
 #[test]
 fn issue_2045_an_explicit_opening_page_wins_over_the_viewer_for_fig_export() {
-    let mut session = Session::new();
-    let opening = session.page().unwrap();
-    session.execute("page.setOpening", &json!({"id": opening})).unwrap();
-    session.execute("page.add", &json!({"name": "Working page"})).unwrap();
-    assert_ne!(session.page().unwrap(), opening);
-    let out = session.execute("file.export", &json!({"format": "fig"})).unwrap();
-    let bytes = base64::engine::general_purpose::STANDARD.decode(out["data"].as_str().unwrap()).unwrap();
-    let (reopened, _) = crate::cmd::file::load_bytes(&bytes, "opening.fig").unwrap();
-    assert_eq!(reopened.node(reopened.current_page.unwrap()).unwrap().name, "Page 1");
-    assert_eq!(session.doc().unwrap().opening_page, Some(opening));
+    for save_as in [false, true] {
+        let mut session = Session::new();
+        session.execute("page.add", &json!({"name": "Chosen opening"})).unwrap();
+        let opening = session.page().unwrap();
+        session.execute("page.setOpening", &json!({"id": opening})).unwrap();
+        session.execute("page.add", &json!({"name": "Working page"})).unwrap();
+        assert_ne!(session.page().unwrap(), opening);
+        assert_ne!(session.doc().unwrap().pages[0], opening, "the opening choice is not the creation-order default");
+        let document = session.ds().unwrap().doc.clone();
+        let bytes = if save_as {
+            let path = temp("issue-2045-chosen-opening.fig");
+            session.execute("file.saveAs", &json!({"path": path.to_string_lossy()})).unwrap();
+            let bytes = std::fs::read(&path).unwrap();
+            std::fs::remove_file(path).unwrap();
+            bytes
+        } else {
+            let out = session.execute("file.export", &json!({"format": "fig"})).unwrap();
+            base64::engine::general_purpose::STANDARD.decode(out["data"].as_str().unwrap()).unwrap()
+        };
+        let (reopened, _) = crate::cmd::file::load_bytes(&bytes, "opening.fig").unwrap();
+        assert_eq!(reopened.node(reopened.current_page.unwrap()).unwrap().name, "Chosen opening", "saveAs={save_as}");
+        assert_eq!(session.doc().unwrap().opening_page, Some(opening));
+        assert!(std::sync::Arc::ptr_eq(&document, &session.ds().unwrap().doc), "export preserves the authored document");
+    }
 }
 
 /// The layers depth-first: kind, name, position, size, text and fill count, and whether an

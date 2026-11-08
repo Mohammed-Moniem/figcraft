@@ -157,7 +157,9 @@ impl FigApp {
         self.ui.dark = dark;
         // New files take the theme's page colour (existing pages keep theirs).
         self.session.set_ui_dark(dark);
-        theme::apply_with(ctx, if dark { theme::Tokens::dark() } else { theme::Tokens::light() }, self.reduce_motion());
+        let [r, g, b] = self.session.prefs.accent_rgb();
+        let tokens = if dark { theme::Tokens::dark() } else { theme::Tokens::light() }.with_accent(egui::Color32::from_rgb(r, g, b));
+        theme::apply_with(ctx, tokens, self.reduce_motion());
         if self.worker.is_none() {
             self.worker = Some(render_worker::Worker::new(ctx.clone()));
         }
@@ -203,6 +205,7 @@ impl FigApp {
         let (files, prefs) = (self.session.docs.len(), self.session.prefs.clone());
         self.session.observe_document_changes();
         self.frame(ui);
+        crate::number_wheel::end_frame(&ctx);
         self.session.observe_document_changes();
         windows::settle(self, &ctx, files);
         if self.session.prefs != prefs {
@@ -220,12 +223,7 @@ impl FigApp {
         self.end_input_frame(&ctx);
         // Plugins installed, removed or set up are kept at once: a crash doesn't lose them.
         // So are the owner tokens of files put online, and preferences a command keeps at once.
-        if std::mem::take(&mut self.session.plugins.unsaved)
-            | std::mem::take(&mut self.session.live.unsaved)
-            | std::mem::take(&mut self.session.prefs_unsaved)
-        {
-            self.services.save_prefs(&self.session.prefs);
-        }
+        self.keep_preferences(&ctx);
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.ui.frame_ms = t0.elapsed().as_secs_f64() * 1000.0;
@@ -236,6 +234,10 @@ impl FigApp {
     /// One frame of the window drawing now.
     pub(crate) fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        variable_ui::sync_owner(self, &ctx);
+        crate::number_wheel::sync(self, &ctx);
+        // The recorder owns this batch before fields, IME, clipboard, navigation or the canvas.
+        crate::shortcuts_panel::capture_input(self, &ctx);
         // Bind this input batch before controls or pointer input can replace its composing
         // target/caret. Outgoing IME receipts run after mutation and cannot authorize it.
         let ime_input = shortcuts::ImeInputBaseline::capture(self);
@@ -255,6 +257,7 @@ impl FigApp {
         // Control requests run first so their results reflect this frame.
         crate::control::drain(self, &ctx);
         windows::requests(self, &ctx);
+        variable_ui::sync_owner(self, &ctx);
         selection_spacing::sync(self, &ctx);
         // Before any widget: the navigation keys (F6, Tab, arrows, Escape) move the keyboard.
         a11y::begin(self, &ctx, ui.scope_id());
@@ -270,6 +273,8 @@ impl FigApp {
         self.end_pen_outside_design();
         tabs::relink_presents(self);
         tabs::tab_bar(self, ui);
+        variable_ui::sync_owner(self, &ctx);
+        crate::number_wheel::sync(self, &ctx);
         motion::sync_owner(self);
         // Control/window work and this pass's physical tab click may have replaced the owner.
         // A shared field ID in that replacement must never consume the old commit marker.
@@ -286,6 +291,7 @@ impl FigApp {
             // What went wrong while presenting (a widget's plugin failing) shows over it.
             self.toast_ui(&ctx);
             windows::requests(self, &ctx);
+            variable_ui::sync_owner(self, &ctx);
             shortcuts::clear_field_save_marker(&ctx);
             self.observe_ime(&ctx, false);
             return;
@@ -309,6 +315,7 @@ impl FigApp {
             }
             self.toast_ui(&ctx);
             windows::requests(self, &ctx);
+            variable_ui::sync_owner(self, &ctx);
             shortcuts::clear_field_save_marker(&ctx);
             self.observe_ime(&ctx, false);
             return;
@@ -486,6 +493,7 @@ impl FigApp {
         a11y::end(self, &ctx);
         self.field_focus = a11y::field_focused(&ctx);
         windows::requests(self, &ctx);
+        variable_ui::sync_owner(self, &ctx);
         // Your pointer, selection and view to the others in each live session (when they
         // changed), from the window with its file.
         let windows = &self.windows;

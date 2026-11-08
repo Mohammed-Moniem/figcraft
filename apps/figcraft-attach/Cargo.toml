@@ -1,0 +1,18 @@
+[package]
+name = "figcraft-attach"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Small authenticated MCP relay for a running FigCraft app"
+
+[lints]
+workspace = true
+
+[dependencies]
+figcraft-mcp = { workspace = true, default-features = false }
+# Reuse locked clap with its builder API; no derive or color output needed.
+clap = { version = "=4.6.7", default-features = false, features = ["std", "help", "usage", "error-context"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }

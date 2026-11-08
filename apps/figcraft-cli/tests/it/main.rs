@@ -5,6 +5,8 @@ mod cli;
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod export_depth;
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod fill_export_height;
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod fonts;
 mod generated_docs;
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

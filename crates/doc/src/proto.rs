@@ -33,6 +33,18 @@ pub enum Trigger {
     KeyPress {
         key: String,
     },
+    /// One down edge, or once the main key/button has remained held for `ms` milliseconds.
+    KeyDown {
+        key: String,
+        #[serde(default)]
+        ms: u32,
+    },
+    /// One release edge, only after the main key/button was held for at least `ms` milliseconds.
+    KeyUp {
+        key: String,
+        #[serde(default)]
+        ms: u32,
+    },
 }
 
 impl Trigger {
@@ -50,6 +62,8 @@ impl Trigger {
             // A controller button names itself ("Gamepad A").
             Trigger::KeyPress { key } if is_gamepad_button(key) => key.clone(),
             Trigger::KeyPress { key } => format!("Key/Gamepad {key}"),
+            Trigger::KeyDown { key, ms } => format!("Key down {key} ({ms}ms minimum)"),
+            Trigger::KeyUp { key, ms } => format!("Key up {key} ({ms}ms minimum)"),
         }
     }
 
@@ -57,11 +71,39 @@ impl Trigger {
     /// exactly the modifiers `mods`: its key is a combination such as `Shift+K`. A controller
     /// button is a key named from [`GAMEPAD_BUTTONS`], pressed without modifiers.
     pub fn fires_on_key(&self, key: &str, mods: KeyMods) -> bool {
-        let Trigger::KeyPress { key: want } = self else { return false };
+        matches!(self, Trigger::KeyPress { .. }) && self.matches_key(key, mods)
+    }
+
+    /// The keyboard combination or controller button named by any key trigger.
+    pub fn key(&self) -> Option<&str> {
+        match self {
+            Trigger::KeyPress { key } | Trigger::KeyDown { key, .. } | Trigger::KeyUp { key, .. } => Some(key),
+            _ => None,
+        }
+    }
+
+    /// New timed triggers use the same exact-modifier/alias contract as legacy KeyPress.
+    pub fn matches_key(&self, key: &str, mods: KeyMods) -> bool {
+        let Some(want) = self.key() else { return false };
+        // Commands validate new bindings; hostile native files must not start unbounded matching.
+        if !matches!(self, Trigger::KeyPress { .. }) && want.len() > MAX_KEY_BYTES {
+            return false;
+        }
         let (m, k) = KeyMods::split(want);
         m == mods && (k.eq_ignore_ascii_case(key) || key_alias(k) == Some(key))
     }
+
+    /// Bound timings read directly from a native file before a presenter schedules work.
+    pub fn minimum_hold_ms(&self) -> u32 {
+        match self {
+            Trigger::KeyDown { ms, .. } | Trigger::KeyUp { ms, .. } => (*ms).min(MAX_DELAY_MS),
+            _ => 0,
+        }
+    }
 }
+
+/// Longest new key binding (one named key with modifiers, or one standard controller button).
+pub const MAX_KEY_BYTES: usize = 256;
 
 /// The modifier keys of a key combination.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -165,7 +207,7 @@ pub fn is_gamepad_button(key: &str) -> bool {
 /// Whether any layer of `doc` has a key/gamepad trigger on a controller button (the player then
 /// polls controllers).
 pub fn uses_gamepad(doc: &crate::Document) -> bool {
-    doc.nodes().any(|n| n.interactions.iter().any(|it| matches!(&it.trigger, Trigger::KeyPress { key } if is_gamepad_button(key))))
+    doc.nodes().any(|n| n.interactions.iter().any(|it| it.trigger.key().is_some_and(is_gamepad_button)))
 }
 
 /// Alternative spellings people type for keys, as the keys' names.

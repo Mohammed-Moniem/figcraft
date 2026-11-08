@@ -32,6 +32,7 @@ pub mod motion;
 pub mod native_menu;
 #[cfg(test)]
 mod native_menu_tests;
+mod number_wheel;
 pub mod pending_open;
 pub mod popover;
 pub mod present;
@@ -79,6 +80,8 @@ mod canvas_fixes_tests;
 mod canvas_hover_tests;
 #[cfg(test)]
 mod canvas_image_rect_tests;
+#[cfg(test)]
+mod canvas_unlock_tests;
 #[cfg(test)]
 mod clipboard_fence_tests;
 #[cfg(test)]
@@ -153,6 +156,8 @@ mod ime_tests;
 mod import_report_tests;
 #[cfg(test)]
 mod inspect_fields_tests;
+#[cfg(test)]
+mod joined_files_ui_tests;
 #[cfg(test)]
 mod layer_preview_tests;
 #[cfg(test)]
@@ -240,6 +245,8 @@ mod plugins_browse_tests;
 mod popover_tests;
 #[cfg(test)]
 mod popup_width_tests;
+#[cfg(test)]
+mod preferences_test_support;
 #[cfg(test)]
 mod present_links_tests;
 #[cfg(test)]
@@ -404,7 +411,7 @@ pub use clock::{AUTO_SAVE_SECS, AUTOSAVE_SECS, FrameClock, ToastClock};
 pub(crate) use open::{drop_overlay, dropped_bytes, is_document, opens};
 pub use services::{
     ContentsFuture, DialogFuture, DocumentSave, MAX_CLIPBOARD_PNG_BYTES, NoServices, ReadFuture, SaveDelivery, Services, browser_can_read,
-    browser_stopped, egui_copy_png, egui_copy_text, unreadable,
+    browser_preferences_error, browser_stopped, egui_copy_png, egui_copy_text, local_preferences_error, unreadable,
 };
 use services::{DialogDone, PickFuture, Picked, RepaintWaker};
 pub use state::{
@@ -935,3 +942,17 @@ mod typography_scrub_tests;
 
 #[cfg(test)]
 mod canvas_touch_tests;
+
+#[cfg(test)]
+mod number_wheel_tests;
+
+#[cfg(test)]
+mod menu_keep_open_tests;
+#[cfg(test)]
+mod selection_opacity_tests;
+
+#[cfg(test)]
+mod ui_accent_tests;
+
+#[cfg(test)]
+mod pixel_grid_ui_tests;

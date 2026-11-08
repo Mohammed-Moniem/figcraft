@@ -29,20 +29,28 @@ impl Session {
         let tool = self.tool.tool;
         let mut p = ev.p();
         let mut guides = Vec::new();
+        let mut held = [false; 2];
         if self.ds().map(|d| d.view.snap_objects).unwrap_or(true) && !ev.cmd && !ev.ctrl {
-            let (dx, dy, g) = targets.snap_point(p.x, p.y, SNAP_PX / ev.zoom.max(1e-6));
+            let (dx, dy, g, axes) = targets.snap_point_held(p.x, p.y, SNAP_PX / ev.zoom.max(1e-6));
+            held = targets.held_page_axes(axes);
             p.x += dx;
             p.y += dy;
             guides = g;
         }
         let pixel = self.ds().map(|d| d.view.snap_pixel).unwrap_or(true);
+        let size = self.ds().map(|d| d.view.pixel_grid_step()).unwrap_or(1.0);
         let mut created = id;
         let page = self.page()?;
         self.preview(|doc, sel| {
             let (mut a, mut b) = (start, p);
             if pixel {
-                a = Point::new(a.x.round(), a.y.round());
-                b = Point::new(b.x.round(), b.y.round());
+                a = Point::new(crate::pixel_grid::round(a.x, size), crate::pixel_grid::round(a.y, size));
+                if !held[0] {
+                    b.x = crate::pixel_grid::round(b.x, size);
+                }
+                if !held[1] {
+                    b.y = crate::pixel_grid::round(b.y, size);
+                }
             }
             let pw = doc.world_transform(parent);
             let (kind, base) = match tool {

@@ -9,6 +9,92 @@ use serde_json::json;
 use crate::present_tests::Ui as Player;
 use crate::widget_ui_tests::{NOTE, fill, key, part, session, state};
 
+fn input_player(multiline: bool) -> (Player, NodeId) {
+    let mut s = crate::widget_ui_tests::session_with_input(multiline, 12);
+    let a = NodeId(s.execute("frame.create", &json!({"width":300,"height":300})).unwrap()["id"].as_u64().unwrap());
+    let w = NodeId(s.execute("widget.insert", &json!({"plugin":NOTE,"x":40,"y":40})).unwrap()["id"].as_u64().unwrap());
+    s.execute("node.reparent", &json!({"ids":[w],"parent":a})).unwrap();
+    let mut u = Player::new(s);
+    u.run("proto.present", json!({"start":a}));
+    u.frames(3, Vec::new);
+    (u, w)
+}
+
+fn press_part(u: &mut Player, w: NodeId, name: &str) {
+    let p = u.app.ui.present.as_ref().unwrap();
+    let doc = p.doc.as_ref().unwrap();
+    let (_, place, _) = p.shown.unwrap();
+    let at = place.rect(doc.world_bounds(part(doc, w, name)).unwrap()).center();
+    u.frame(vec![Event::PointerMoved(at)]);
+    u.button(at, true);
+    u.button(at, false);
+    u.frames(3, Vec::new);
+}
+
+fn command_key(u: &mut Player, key: Key) {
+    let modifiers = egui::Modifiers::COMMAND;
+    u.frame(vec![
+        Event::ModifiersChanged(modifiers),
+        Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers },
+        Event::Key { key, physical_key: None, pressed: false, repeat: false, modifiers },
+    ]);
+    u.frame(vec![Event::ModifiersChanged(egui::Modifiers::NONE)]);
+}
+
+#[test]
+fn presented_widget_escape_cancels_drafts_and_empty_multiline_commits_stay_on_player_copy() {
+    for multiline in [false, true] {
+        let (mut u, w) = input_player(multiline);
+        let authored = u.app.session.doc().unwrap().clone();
+        let undo = u.app.session.undo_depth();
+        press_part(&mut u, w, "Title");
+        assert!(u.app.ui.present.as_ref().unwrap().widget_input.is_some());
+        command_key(&mut u, Key::A);
+        u.frame(vec![Event::Text("pending".into())]);
+        u.frame(key(Key::Escape));
+        u.frames(2, Vec::new);
+        let p = u.app.ui.present.as_ref().expect("Escape cancels the field before closing the player");
+        assert!(p.widget_input.is_none());
+        assert_eq!(state(p.design.as_ref().unwrap(), w), r#"{"n":1}"#, "Escape does not call the plugin");
+        press_part(&mut u, w, "Title");
+        command_key(&mut u, Key::A);
+        u.frame(key(Key::Backspace));
+        if multiline {
+            u.frame(key(Key::Enter));
+            assert!(u.app.ui.present.as_ref().unwrap().widget_input.is_some(), "plain Enter keeps a multiline field open");
+            command_key(&mut u, Key::A);
+            u.frame(key(Key::Backspace));
+            command_key(&mut u, Key::Enter);
+        } else {
+            u.frame(key(Key::Enter));
+        }
+        u.frames(3, Vec::new);
+        let p = u.app.ui.present.as_ref().unwrap();
+        assert!(p.widget_input.is_none());
+        assert_eq!(state(p.design.as_ref().unwrap(), w), r#"{"n":4}"#, "the explicit empty commit calls the plugin");
+        assert_eq!(u.app.session.doc().unwrap(), &authored);
+        assert_eq!(u.app.session.undo_depth(), undo);
+    }
+}
+
+#[test]
+fn closing_a_presenter_discards_its_pending_widget_timer_without_touching_authored_file() {
+    let (mut u, w) = input_player(false);
+    let authored = u.app.session.doc().unwrap().clone();
+    let undo = u.app.session.undo_depth();
+    press_part(&mut u, w, "Go");
+    assert_eq!(state(u.app.ui.present.as_ref().unwrap().design.as_ref().unwrap(), w), r#"{"n":2}"#);
+    assert_eq!(u.app.ui.present.as_ref().unwrap().widget_timers.len(), 1);
+    let id = u.app.ui.present_active.expect("the real presenter tab owns this player");
+    crate::tabs::close_present(&mut u.app, id);
+    u.time += 61.0;
+    u.frames(3, Vec::new);
+    assert!(u.app.ui.present.is_none());
+    assert_eq!(u.app.session.doc().unwrap(), &authored);
+    assert_eq!(u.app.session.undo_depth(), undo);
+    assert!(figcraft_engine::widgets::next_timer(&u.app.session).is_none());
+}
+
 #[test]
 fn a_presented_widget_takes_hover_typing_and_timers_on_its_own_copy() {
     let mut s = session();

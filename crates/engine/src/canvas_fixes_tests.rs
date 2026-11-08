@@ -9,6 +9,45 @@ use crate::params::id_of;
 use crate::tools::{PointerEvent, PointerKind};
 use figcraft_doc::NodeId;
 
+fn pencil_1741_draw(s: &mut Session, x: f64, y: f64) -> NodeId {
+    s.execute("tool.set", &json!({"tool": "pencil"})).unwrap();
+    no_snapping(s);
+    s.pointer(&ev(PointerKind::Down, x, y, false)).unwrap();
+    for i in 1..=6 {
+        s.pointer(&ev(PointerKind::Move, x + f64::from(i) * 8.0, y + f64::from(i % 2) * 5.0, false)).unwrap();
+    }
+    s.pointer(&ev(PointerKind::Up, x + 48.0, y, false)).unwrap();
+    *s.selection().first().expect("a completed pencil stroke is selected")
+}
+
+#[test]
+fn pencil_1741_is_white_on_a_dark_page_and_black_on_a_light_page() {
+    for (background, expected) in [("#101010", figcraft_color::Color::WHITE), ("#FFFFFF", figcraft_color::Color::BLACK)] {
+        let mut s = Session::new();
+        s.execute("page.setBackground", &json!({"color": background})).unwrap();
+        let id = pencil_1741_draw(&mut s, 20.0, 20.0);
+        let node = s.doc().unwrap().node(id).unwrap();
+        assert_eq!(node.strokes.first().and_then(|p| p.solid_color()), Some(expected), "page {background}");
+        assert_eq!(node.stroke.weight, 2.0);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert!(s.doc().unwrap().node(id).is_none(), "one completed stroke is one undo step");
+    }
+}
+
+#[test]
+fn pencil_1741_uses_the_containing_frame_instead_of_the_page_color() {
+    for (page, frame, expected) in [("#FFFFFF", "#101010", figcraft_color::Color::WHITE), ("#101010", "#FFFFFF", figcraft_color::Color::BLACK)] {
+        let mut s = Session::new();
+        s.execute("page.setBackground", &json!({"color": page})).unwrap();
+        let parent = ex(&mut s, "frame.create", json!({"x": 0, "y": 0, "width": 180, "height": 100}));
+        s.execute("node.set", &json!({"id": parent, "props": {"fill": frame}})).unwrap();
+        let id = pencil_1741_draw(&mut s, 20.0, 20.0);
+        let node = s.doc().unwrap().node(id).unwrap();
+        assert_eq!(node.parent, Some(parent));
+        assert_eq!(node.strokes.first().and_then(|p| p.solid_color()), Some(expected), "frame {frame} on page {page}");
+    }
+}
+
 fn ex(s: &mut Session, cmd: &str, p: Value) -> NodeId {
     id_of(&s.execute(cmd, &p).unwrap_or_else(|e| panic!("{cmd}: {e}"))["id"]).unwrap_or(NodeId(0))
 }

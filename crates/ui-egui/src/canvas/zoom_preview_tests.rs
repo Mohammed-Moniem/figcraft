@@ -678,13 +678,45 @@ fn the_browser_draws_a_full_render_band_by_band() {
     let s = slow_scene(&[view(300.0)], 3.0 * PREVIEW_AFTER_MS);
     let ds = s.ds().unwrap();
     let at = |x| job(&ds.doc, ds.page, ds.uid, view(x));
+    for _ in 0..32 {
+        let fonts = figcraft_text::layout_generation();
+        let mut r = Renders::default();
+        let (d, n) = stepped(&mut r, &at(300.0));
+        let d = d.expect("drawn");
+        assert!(n > 2 && !r.stepping(), "several calls, then done ({n})");
+        assert!(close_pixels(&d, &render_now(&at(300.0)).unwrap()));
+        // Other tests can load fonts meanwhile, which correctly invalidates the kept image.
+        // Re-prime only on an observed epoch change; a stable-epoch pan must still patch at once.
+        if figcraft_text::layout_generation() != fonts {
+            continue;
+        }
+        let panned = r.refine_for(&at(320.0), 0.0);
+        if figcraft_text::layout_generation() != fonts {
+            continue;
+        }
+        assert!(matches!(panned, Refined::Done(Some(d)) if d.work != Work::Full));
+        return;
+    }
+    panic!("no stable font epoch across the bounded band-render and pan check");
+}
+
+#[test]
+fn the_browser_redraws_all_bands_after_the_font_epoch_changes() {
+    let view = |x| view_at((x, 200.0), 1.0, 600, 600);
+    let s = slow_scene(&[view(300.0)], 3.0 * PREVIEW_AFTER_MS);
+    let ds = s.ds().unwrap();
+    let at = |x| job(&ds.doc, ds.page, ds.uid, view(x));
     let mut r = Renders::default();
-    let (d, n) = stepped(&mut r, &at(300.0));
-    let d = d.expect("drawn");
-    assert!(n > 2 && !r.stepping(), "several calls, then done ({n})");
-    assert!(close_pixels(&d, &render_now(&at(300.0)).unwrap()));
-    // Kept: a pan now patches it at once.
-    assert!(matches!(r.refine_for(&at(320.0), 0.0), Refined::Done(Some(d)) if d.work != Work::Full));
+    let (first, bands) = stepped(&mut r, &at(300.0));
+    assert!(first.is_some() && bands > 2 && !r.stepping());
+    let fonts = figcraft_text::layout_generation();
+    figcraft_text::clear_layout_cache();
+    assert!(figcraft_text::layout_generation() > fonts);
+    assert!(matches!(r.refine_for(&at(320.0), 0.0), Refined::More), "stale font pixels must not be patched or reused");
+    let (redrawn, bands) = stepped(&mut r, &at(320.0));
+    let redrawn = redrawn.expect("redrawn after the font cache changed");
+    assert!(bands > 1 && redrawn.work == Work::Full && !r.stepping());
+    assert!(close_pixels(&redrawn, &render_now(&at(320.0)).unwrap()));
 }
 
 #[test]

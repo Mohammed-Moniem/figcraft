@@ -1,5 +1,5 @@
 //! Where MCP tool calls end up: a control-channel method call, answered either by an in-process
-//! engine session ([`crate::Headless`]) or by a running FigCraft app ([`Attached`]).
+//! engine session (with the headless feature) or by a running FigCraft app ([`Attached`]).
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -79,6 +79,16 @@ pub fn decode_data(v: &Value) -> Result<Vec<u8>, String> {
 /// The longest reply line we read from the app (512 MiB). The app's window captures alone reach
 /// 256 MiB as base64 (192 MiB PNGs); anything longer is refused without reading the rest.
 const MAX_REPLY: usize = 512 * 1024 * 1024;
+
+/// Resolve the private credential path with the same precedence in every native relay.
+pub fn control_token_path(addr: &str, explicit: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
+    explicit.map(std::path::Path::to_path_buf).or_else(|| std::env::var_os("FIGCRAFT_CONTROL_TOKEN_FILE").map(std::path::PathBuf::from)).or_else(
+        || {
+            let port = addr.rsplit(':').next()?;
+            std::env::var_os("FIGCRAFT_LOCAL_DATA_DIR").map(|dir| std::path::PathBuf::from(dir).join(format!("control-{port}.token")))
+        },
+    )
+}
 
 /// A running FigCraft app, reached through its loopback control port (`figcraft --control PORT`).
 pub struct Attached {

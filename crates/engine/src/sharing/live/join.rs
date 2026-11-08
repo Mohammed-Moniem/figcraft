@@ -30,7 +30,8 @@ pub(crate) fn start_join(
     let (id, ()) = s.live.start(cmd, |l, id| l.join_resuming(id, link, &name, resume).map_err(|e| bad(cmd, e)))?;
     let server = share.as_ref().map(|s| s.server.clone()).unwrap_or_default();
     // The session's file opens in a tab of its own; until then the join shows on this one.
-    s.live.open(Live { id, status: Status::Connecting, tab, server, published, share, ..Live::default() });
+    let joining_link = (link.len() <= 2048).then(|| link.to_owned());
+    s.live.open(Live { id, status: Status::Connecting, tab, server, published, share, joining_link, ..Live::default() });
     Ok(id)
 }
 

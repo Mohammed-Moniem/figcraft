@@ -19,6 +19,9 @@
 //! `{timeoutMs, deadlineEpochMs}`; `openFile` takes them third too, `inspect`/`commands` first,
 //! and `screenshot` second. The default wait is 30 seconds, at most ten minutes. Queued work is
 //! cancelled under its admission gate; already-started work is uncertain and never retried.
+//! A surviving same-origin embedding page (or opener) settles waits when this document ends.
+//! Local deadlines remain live if an opener is lost; document destruction needs a surviving owner.
+//! Page restore admits only new requests; old identities and cancelled work are never replayed.
 //! `capabilities` describes the exact bounds. Direct `openFile` keeps the 64 MiB native limit;
 //! encoded requests are bounded to 96 MiB, 32 pending calls and 128 MiB pending bytes in total.
 
@@ -33,6 +36,121 @@ use wasm_bindgen::prelude::*;
 use crate::request_lifecycle::{self, Completion, Failure, MAX_OPEN_BYTES, MAX_REQUEST_BYTES, Requests};
 use crate::saved_files::SavedFiles;
 
+// Inline imports remain in the normal one-level wasm-bindgen snippets allowlist.
+#[wasm_bindgen(inline_js = r#"
+// Private WASM import. Native callbacks belong to their scheduler's realm; no eval is used.
+export function createRequestOwner(poll, ended, resumed) {
+    const win = window, doc = win.document, links = [];
+    const parentOwner = (start, track) => {
+        let current = start;
+        for (;;) {
+            try {
+                const parent = current.parent;
+                if (parent === current || parent.location.origin !== win.location.origin) break;
+                const frame = current.frameElement;
+                if (!frame) break;
+                void parent.document;
+                if (track) links.push({frame, doc: current.document});
+                current = parent;
+            } catch { break; }
+        }
+        return current;
+    };
+    let owner = parentOwner(win, true);
+    if (owner === win) {
+        try {
+            const opener = win.opener;
+            if (opener && !opener.closed && opener.location.origin === win.location.origin) {
+                void opener.document;
+                owner = parentOwner(opener, false);
+            }
+        } catch { /* A cross-origin or unavailable opener is not an owner. */ }
+    }
+    const sameDocument = (realm, expected) => {
+        try { return !realm.closed && realm.document === expected; } catch { return false; }
+    };
+    let ownerDoc;
+    try { ownerDoc = owner.document; } catch { owner = win; ownerDoc = doc; }
+    const bridge = (realm, callback) => realm.Function.prototype.call.bind(callback, undefined);
+    let ownerTimer = null, localTimer = null, observer = null, closed = false, disposed = false;
+    const owned = () => {
+        try { return !win.closed && win.document === doc && links.every(link => link.frame.isConnected && link.frame.contentDocument === link.doc); }
+        catch { return false; }
+    };
+    const stop = () => {
+        // WindowProxy methods may now target a replacement document with colliding numeric IDs.
+        if (ownerTimer !== null) { if (sameDocument(owner, ownerDoc)) { try { owner.clearInterval(ownerTimer); } catch {} } ownerTimer = null; }
+        if (localTimer !== null) { if (sameDocument(win, doc)) { try { win.clearInterval(localTimer); } catch {} } localTimer = null; }
+        if (observer) { try { observer.disconnect(); } catch {} observer = null; }
+    };
+    const end = () => {
+        if (closed || disposed) return;
+        closed = true;
+        stop();
+        // Directly settle Rust's JS callbacks; this schedules no job in the ended document.
+        ended();
+    };
+    const tick = () => { if (!owned()) end(); else poll(); };
+    const localTick = bridge(win, tick);
+    let check = null, ownerTick = null;
+    try {
+        check = bridge(owner, () => { if (!owned()) end(); });
+        ownerTick = bridge(owner, tick);
+    } catch { owner = win; ownerDoc = doc; }
+    const hidden = bridge(win, end);
+    const shown = bridge(win, event => {
+        if (!disposed && event.persisted && owned()) { closed = false; resumed(); }
+    });
+    const dispose = () => {
+        if (disposed) return;
+        disposed = true;
+        stop();
+        try { win.removeEventListener('pagehide', hidden); } catch {}
+        try { win.removeEventListener('pageshow', shown); } catch {}
+    };
+    try {
+        win.addEventListener('pagehide', hidden);
+        win.addEventListener('pageshow', shown);
+    } catch (error) { dispose(); throw error; }
+    return {
+        start() {
+            if (closed || disposed) return false;
+            if (!owned()) { end(); return false; }
+            if (ownerTimer !== null || localTimer !== null) return true;
+            try {
+                // The child-native fallback remains live if a popup's opener closes or navigates.
+                localTimer = win.setInterval(localTick, 25);
+                if (owner !== win && sameDocument(owner, ownerDoc)) {
+                    try {
+                        observer = new owner.MutationObserver(check);
+                        observer.observe(ownerDoc, {childList: true, subtree: true});
+                        ownerTimer = owner.setInterval(ownerTick, 25);
+                    } catch { // Keep local deadlines available when the survivor was already lost.
+                        if (observer) { try { observer.disconnect(); } catch {} observer = null; }
+                    }
+                }
+            } catch (error) { stop(); throw error; }
+            return true;
+        },
+        stop,
+        dispose,
+    };
+}
+export function startRequestOwner(owner) { return owner.start(); }
+export function stopRequestOwner(owner) { owner.stop(); }
+export function disposeRequestOwner(owner) { owner.dispose(); }
+"#)]
+extern "C" {
+    #[wasm_bindgen(catch, js_name = createRequestOwner)]
+    fn create_request_owner(poll: &js_sys::Function, ended: &js_sys::Function, resumed: &js_sys::Function) -> Result<JsValue, JsValue>;
+    #[wasm_bindgen(catch, js_name = startRequestOwner)]
+    fn start_request_owner(owner: &JsValue) -> Result<bool, JsValue>;
+    #[wasm_bindgen(catch, js_name = stopRequestOwner)]
+    fn stop_request_owner(owner: &JsValue) -> Result<(), JsValue>;
+    #[wasm_bindgen(catch, js_name = disposeRequestOwner)]
+    fn dispose_request_owner(owner: &JsValue) -> Result<(), JsValue>;
+}
+
 struct Callbacks {
     resolve: js_sys::Function,
     reject: js_sys::Function,
@@ -40,10 +158,8 @@ struct Callbacks {
 
 thread_local! {
     static REQUESTS: RefCell<Requests<Callbacks>> = RefCell::new(Requests::default());
-    // One reusable callback and at most one interval, active only while requests wait. Completing
-    // a request does not leave a timeout closure behind until its original deadline.
-    static TIMER_CALLBACK: RefCell<Option<Closure<dyn FnMut()>>> = const { RefCell::new(None) };
-    static TIMER_ID: Cell<Option<i32>> = const { Cell::new(None) };
+    // At most one survivor timer and one local fallback, only while calls wait.
+    static REQUEST_OWNER: RefCell<Option<JsValue>> = const { RefCell::new(None) };
     static CTX: RefCell<Option<egui::Context>> = const { RefCell::new(None) };
     static CAPTURE: Cell<bool> = const { Cell::new(false) };
     static SAVED: RefCell<SavedFiles> = RefCell::new(SavedFiles::default());
@@ -104,33 +220,55 @@ fn failure_js(failure: Failure) -> JsValue {
 
 fn stop_idle_timer() {
     if !REQUESTS.with(|requests| requests.borrow().has_pending()) {
-        TIMER_ID.with(|timer| {
-            if let (Some(id), Some(window)) = (timer.take(), web_sys::window()) {
-                window.clear_interval_with_handle(id);
+        REQUEST_OWNER.with(|slot| {
+            if let Some(owner) = slot.borrow().as_ref() {
+                let _ = stop_request_owner(owner);
             }
         });
     }
 }
 
 fn ensure_timer() -> Result<(), Failure> {
-    if TIMER_ID.with(Cell::get).is_some() {
-        return Ok(());
-    }
-    let window = web_sys::window().ok_or_else(|| Failure::admission("CONTROL_TRANSPORT_UNAVAILABLE", "The browser window is unavailable."))?;
-    TIMER_CALLBACK.with(|slot| {
-        let mut callback = slot.borrow_mut();
-        if callback.is_none() {
-            *callback = Some(Closure::wrap(Box::new(poll_replies) as Box<dyn FnMut()>));
+    REQUEST_OWNER.with(|slot| {
+        let owner = slot.borrow();
+        let owner = owner.as_ref().ok_or_else(|| Failure::admission("CONTROL_TRANSPORT_UNAVAILABLE", "The page request owner is unavailable."))?;
+        match start_request_owner(owner) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(Failure::owner_closed()),
+            Err(_) => Err(Failure::admission("CONTROL_TRANSPORT_UNAVAILABLE", "The browser could not schedule the owned request deadline.")),
         }
-        let Some(callback) = callback.as_ref() else {
-            return Err(Failure::admission("CONTROL_TRANSPORT_UNAVAILABLE", "The request timer is unavailable."));
-        };
-        let id = window
-            .set_interval_with_callback_and_timeout_and_arguments_0(callback.as_ref().unchecked_ref(), 25)
-            .map_err(|_| Failure::admission("CONTROL_TRANSPORT_UNAVAILABLE", "The browser could not schedule the request deadline."))?;
-        TIMER_ID.with(|timer| timer.set(Some(id)));
-        Ok(())
     })
+}
+
+fn owner_ended() {
+    let completed = REQUESTS.with(|requests| requests.borrow_mut().close());
+    // This is a direct synchronous JS rejection, not a child-realm Rust future/microtask.
+    settle(completed);
+}
+
+fn owner_resumed() {
+    REQUESTS.with(|requests| requests.borrow_mut().reopen());
+    CTX.with(|ctx| {
+        if let Some(ctx) = ctx.borrow().as_ref() {
+            ctx.request_repaint();
+        }
+    });
+}
+
+fn dispose_owner() {
+    let owner = REQUEST_OWNER.with(|slot| slot.borrow_mut().take());
+    if let Some(owner) = owner {
+        let _ = dispose_request_owner(&owner);
+    }
+}
+
+fn install_owner() -> Result<(), JsValue> {
+    let poll = Closure::<dyn FnMut()>::new(poll_replies).into_js_value();
+    let ended = Closure::<dyn FnMut()>::new(owner_ended).into_js_value();
+    let resumed = Closure::<dyn FnMut()>::new(owner_resumed).into_js_value();
+    let owner = create_request_owner(poll.unchecked_ref(), ended.unchecked_ref(), resumed.unchecked_ref())?;
+    REQUEST_OWNER.with(|slot| *slot.borrow_mut() = Some(owner));
+    Ok(())
 }
 
 /// Settle answered or expired requests, from both animation frames and the bounded wait timer.
@@ -155,6 +293,9 @@ fn settle(completed: Vec<Completion<Callbacks>>) {
 }
 
 fn request(method: &str, params: Value, options: Value) -> js_sys::Promise {
+    if let Err(error) = REQUESTS.with(|requests| requests.borrow().ensure_open()) {
+        return js_sys::Promise::reject(&failure_js(error));
+    }
     if let Err(error) = ensure_timer() {
         return js_sys::Promise::reject(&failure_js(error));
     }
@@ -282,6 +423,17 @@ pub fn install() -> Result<(), JsValue> {
         .into_js_value(),
     )?;
     let w = web_sys::window().ok_or("no window")?;
-    js_sys::Reflect::set(&w, &"figcraft".into(), &obj)?;
-    Ok(())
+    install_owner()?;
+    match js_sys::Reflect::set(&w, &"figcraft".into(), &obj) {
+        Ok(true) => Ok(()),
+        result => {
+            // A failing setter may have observed the object and even queued a call.
+            owner_ended();
+            dispose_owner();
+            match result {
+                Err(error) => Err(error),
+                Ok(_) => Err(js_sys::Error::new("The browser refused to publish the FigCraft API.").into()),
+            }
+        }
+    }
 }

@@ -1,5 +1,9 @@
 use super::{Document, Gesture, Node, NodeId, Overlay, Point, PointerEvent, PointerKind, Result, Session, ShapeHandle, ToolId, json, textedit};
 
+#[cfg(test)]
+#[path = "locked_tests.rs"]
+mod locked_tests;
+
 impl Session {
     /// Keys the current mode handles before menu shortcuts (vector edit mode's tools and point
     /// keys, Enter to finish the shape builder). Returns whether the key was used.
@@ -71,6 +75,15 @@ impl Session {
             Some(f) => figcraft_doc::geometry::hit_in(doc, f, p, tol, Some(&result)),
             None => doc.hit_test(page, p, tol, Some(&result)),
         }
+    }
+
+    /// The actual lock blocking the topmost visible layer under the pointer. Ordinary selection
+    /// still skips locked layers; this query lets the canvas offer the existing unlock command.
+    pub fn locked_at(&self, doc: &Document, page: NodeId, p: Point, tol: f64) -> Option<NodeId> {
+        let ds = self.ds().ok()?;
+        let result = crate::booleans::result_outline(doc, &ds.selection);
+        let outlines = ds.view.outlines.then_some(figcraft_doc::geometry::OutlineHits { hidden: false, bounds: ds.view.outline_bounds });
+        figcraft_doc::geometry::locked_owner_at(doc, ds.focused().unwrap_or(page), p, tol, Some(&result), outlines)
     }
 
     /// Enter with a shape or frame tool (`tool.place`): what a click with it makes, centred on `at`

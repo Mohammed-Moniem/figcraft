@@ -72,6 +72,28 @@ fn row_diffs(a: &Pixmap, b: &Pixmap) -> Vec<(f64, usize)> {
         .collect()
 }
 
+fn row_within_limits(a: &Pixmap, b: &Pixmap, config: (f64, u32), y: usize, (mean, off): (f64, usize)) -> bool {
+    if off * 20 > a.width() as usize {
+        return false;
+    }
+    if mean < 0.25 {
+        return true;
+    }
+    // Measured four-cubic ellipse-tip antialiasing: mean 0.309659, eight pixels over 2,
+    // max channel difference 35, all changed pixels at x97..122/y10 in this 440x240 view.
+    // Every other row/configuration retains the original limits. Even this row cannot
+    // conceal low-amplitude stripes, relocated differences, alpha changes or larger peaks.
+    if config != (1.0, 7) || (a.width(), a.height()) != (440, 240) || y != 10 || off == 0 || off > 8 || mean >= 0.35 {
+        return false;
+    }
+    let row = y * a.width() as usize * 4;
+    a.data()[row..row + a.width() as usize * 4].chunks_exact(4).zip(b.data()[row..row + b.width() as usize * 4].chunks_exact(4)).enumerate().all(
+        |(x, (p, q))| {
+            if (97..=122).contains(&x) { p[3] == q[3] && p.iter().zip(q).all(|(c, d)| c.abs_diff(*d) <= 35) } else { p == q }
+        },
+    )
+}
+
 #[test]
 fn bands_match_one_piece_rendering() {
     let (d, p) = scene(true, true);
@@ -83,17 +105,79 @@ fn bands_match_one_piece_rendering() {
             let banded = render_bands(&d, p, &v, &Options::default(), bands).unwrap();
             assert_eq!((banded.width(), banded.height()), (one.width(), one.height()));
             for (y, (mean, off)) in row_diffs(&one, &banded).into_iter().enumerate() {
-                // A four-cubic ellipse's horizontal tangent can change antialiasing at its top
-                // when clipped into bands: measured here as eight pixels, mean 0.3097 at 1x.
-                // Keep the original bound on every other row, including all band seams.
-                let ellipse_tip = scale == 1.0 && bands == 7 && y == 10 && off <= 8 && mean < 0.35;
-                if !((mean < 0.25 || ellipse_tip) && off * 20 <= v.width as usize) {
+                if !row_within_limits(&one, &banded, (scale, bands), y, (mean, off)) {
                     differences.push(format!("scale {scale}, {bands} bands: row {y} differs ({off} pixels, {mean:.4} on average)"));
                 }
             }
         }
     }
     assert!(differences.is_empty(), "{}", differences.join("\n"));
+}
+
+#[test]
+fn the_ellipse_tip_allowance_rejects_misplaced_differences_and_row_artifacts() {
+    fn neutral(width: u32, height: u32) -> Pixmap {
+        let mut p = Pixmap::new(width, height).unwrap();
+        p.fill(tiny_skia::Color::from_rgba8(128, 128, 128, 255));
+        p
+    }
+    fn add(p: &mut Pixmap, x: usize, y: usize, rgb: [u8; 3]) {
+        let at = (y * p.width() as usize + x) * 4;
+        for (channel, delta) in rgb.into_iter().enumerate() {
+            p.data_mut()[at + channel] += delta;
+        }
+    }
+    let a = neutral(440, 240);
+    let measured = [
+        (97, [15, 19, 12]),
+        (99, [13, 17, 13]),
+        (102, [0, 0, 1]),
+        (105, [35, 35, 35]),
+        (106, [25, 25, 25]),
+        (107, [0, 0, 1]),
+        (108, [0, 0, 1]),
+        (111, [0, 0, 1]),
+        (112, [1, 0, 1]),
+        (113, [26, 25, 25]),
+        (114, [35, 35, 35]),
+        (117, [1, 0, 1]),
+        (120, [13, 17, 13]),
+        (122, [13, 19, 12]),
+    ];
+    let mut tip = a.clone();
+    for (x, rgb) in measured {
+        add(&mut tip, x, 10, rgb);
+    }
+    let difference = row_diffs(&a, &tip)[10];
+    assert!((difference.0 - 0.309_659_090_909).abs() < 1e-10 && difference.1 == 8);
+    assert!(row_within_limits(&a, &tip, (1.0, 7), 10, difference));
+    assert!(!row_within_limits(&a, &tip, (1.0, 3), 10, difference));
+    assert!(!row_within_limits(&a, &tip, (2.0, 7), 10, difference));
+    let mut moved = a.clone();
+    for (x, rgb) in measured {
+        add(&mut moved, x + 128, 10, rgb);
+    }
+    assert_eq!(row_diffs(&a, &moved)[10], difference);
+    assert!(!row_within_limits(&a, &moved, (1.0, 7), 10, difference), "identical error moved away from the ellipse tip");
+    let mut peak = tip;
+    add(&mut peak, 105, 10, [1, 0, 0]);
+    assert!(!row_within_limits(&a, &peak, (1.0, 7), 10, row_diffs(&a, &peak)[10]), "unmeasured channel peak");
+    let mut faint_stripe = a.clone();
+    for x in 0..176 {
+        add(&mut faint_stripe, x, 10, [1, 1, 1]);
+    }
+    assert_eq!(row_diffs(&a, &faint_stripe)[10], (0.3, 0));
+    assert!(!row_within_limits(&a, &faint_stripe, (1.0, 7), 10, (0.3, 0)), "low-amplitude row stripe");
+    for amplitude in [24, 60] {
+        let a = neutral(880, 1);
+        let mut stripe = a.clone();
+        for x in 0..44 {
+            add(&mut stripe, x, 0, [amplitude; 3]);
+        }
+        let difference = row_diffs(&a, &stripe)[0];
+        assert_eq!(difference.1, 44);
+        assert!(!row_within_limits(&a, &stripe, (1.0, 7), 0, difference), "a real 44-pixel row artifact at amplitude {amplitude}");
+    }
 }
 
 #[test]

@@ -4,7 +4,7 @@
 //! guide lines (with spacing labels) for the canvas to draw in red. Vector points also snap to
 //! other points (see `vectoredit::snap`); landing on one shows a marker (a zero-length guide).
 
-use figcraft_doc::{Document, NodeId};
+use figcraft_doc::{BoardItem, Document, NodeId};
 use figcraft_geom::{Affine, Point, Rect, Vec2, transform_rect_bbox};
 use serde::Serialize;
 
@@ -57,6 +57,22 @@ pub struct Targets {
 /// A gap along a row: from, to, and where across it is drawn.
 type Gap = (f64, f64, f64);
 
+/// A connector and its label follow either attached layer, including a layer inside a moving
+/// section. Snapping the moving object to that dependent geometry would move it by its own gap.
+fn follows_moving(doc: &Document, id: NodeId, moving: &[NodeId]) -> bool {
+    let connector = match doc.node(id).and_then(|n| n.board.as_ref()) {
+        Some(BoardItem::Connector(c)) => Some(c),
+        Some(BoardItem::Label { connector }) => match doc.node(*connector).and_then(|n| n.board.as_ref()) {
+            Some(BoardItem::Connector(c)) => Some(c),
+            _ => None,
+        },
+        _ => None,
+    };
+    connector.is_some_and(|c| {
+        [c.from.node(), c.to.node()].into_iter().flatten().any(|end| moving.iter().any(|root| *root == end || doc.is_ancestor(*root, end)))
+    })
+}
+
 impl Targets {
     /// Gather snap lines from the siblings of `moving` (and the parent frame), page guides and
     /// layout grids, excluding the moving nodes and their descendants. Inside a rotated frame they
@@ -97,7 +113,7 @@ impl Targets {
         // Siblings and, at the top level, all top-level layers.
         if let Some(p) = doc.node(parent) {
             for c in &p.children {
-                if moving.contains(c) || !doc.node(*c).is_some_and(|n| n.visible) {
+                if moving.contains(c) || !doc.node(*c).is_some_and(|n| n.visible) || follows_moving(doc, *c, moving) {
                     continue;
                 }
                 if let Some(b) = bbox(*c) {
@@ -228,7 +244,13 @@ impl Targets {
     /// vector) and the guides to draw. Besides lines, the box snaps to equal spacing with the
     /// layers beside it (whichever is nearer on each axis), and equal gaps show labelled.
     pub fn snap_move(&self, d: Vec2, threshold: f64) -> (Vec2, Vec<Guide>) {
-        let Some(b) = self.moving else { return (Vec2::ZERO, Vec::new()) };
+        let (correction, guides, _) = self.snap_move_held(d, threshold);
+        (correction, guides)
+    }
+
+    /// As snap_move, also retaining axes with a target, including a zero correction.
+    pub fn snap_move_held(&self, d: Vec2, threshold: f64) -> (Vec2, Vec<Guide>, [bool; 2]) {
+        let Some(b) = self.moving else { return (Vec2::ZERO, Vec::new(), [false; 2]) };
         let r = b + self.to_space_vec(d);
         let (xs, ys) = rect_spans(r);
         let (mut dx, mut dy, _) = self.snap_spans(&xs, &ys, threshold);
@@ -244,7 +266,7 @@ impl Targets {
         let mut guides = self.guides_for(at);
         guides.extend(self.spacing_guides(at, true));
         guides.extend(self.spacing_guides(at, false));
-        (self.to_page_vec(c), self.to_page(guides))
+        (self.to_page_vec(c), self.to_page(guides), [dx.is_some(), dy.is_some()])
     }
 
     /// The ways `r` can be spaced equally in its row (`horizontal`) or column, worked out as a row
@@ -308,18 +330,47 @@ impl Targets {
     /// Page move `d` adjusted so that the moving layers' box keeps its origin on whole pixels of
     /// the snap space (a rotated frame's own, inside one).
     pub fn round_move(&self, d: Vec2) -> Vec2 {
+        self.round_move_on_grid(d, 1.0, [false; 2])
+    }
+
+    /// Quantize only free snap-space axes, so a fractional object target stays exact.
+    pub fn round_move_on_grid(&self, d: Vec2, size: f64, held: [bool; 2]) -> Vec2 {
         let Some(b) = self.moving else { return d };
         let l = self.to_space_vec(d);
-        self.to_page_vec(Vec2::new((b.x0 + l.x).round() - b.x0, (b.y0 + l.y).round() - b.y0))
+        self.to_page_vec(Vec2::new(
+            if held[0] { l.x } else { crate::pixel_grid::round(b.x0 + l.x, size) - b.x0 },
+            if held[1] { l.y } else { crate::pixel_grid::round(b.y0 + l.y, size) - b.y0 },
+        ))
+    }
+
+    /// Guides at the final move after a page-axis constraint has projected its correction.
+    pub fn move_guides(&self, d: Vec2) -> Vec<Guide> {
+        let Some(b) = self.moving else { return Vec::new() };
+        let at = b + self.to_space_vec(d);
+        let mut guides = self.guides_for(at);
+        guides.extend(self.spacing_guides(at, true));
+        guides.extend(self.spacing_guides(at, false));
+        self.to_page(guides)
+    }
+
+    /// A rotated snap axis affects both page axes; page-space rounding must hold both then.
+    pub fn held_page_axes(&self, held: [bool; 2]) -> [bool; 2] {
+        if guides::axis_aligned(self.space) { held } else { [held[0] || held[1]; 2] }
     }
 
     /// Snap a single page point (resize handles, drawing): the correction (a page vector) and
     /// the guides to draw.
     pub fn snap_point(&self, x: f64, y: f64, threshold: f64) -> (f64, f64, Vec<Guide>) {
+        let (dx, dy, guides, _) = self.snap_point_held(x, y, threshold);
+        (dx, dy, guides)
+    }
+
+    /// As snap_point, also retaining axes with a target, including a zero correction.
+    pub fn snap_point_held(&self, x: f64, y: f64, threshold: f64) -> (f64, f64, Vec<Guide>, [bool; 2]) {
         let q = self.space.inverse() * Point::new(x, y);
         let (dx, dy, guides) = self.snap_spans(&[(q.x, q.y, q.y)], &[(q.y, q.x, q.x)], threshold);
         let d = self.to_page_vec(Vec2::new(dx.unwrap_or(0.0), dy.unwrap_or(0.0)));
-        (d.x, d.y, self.to_page(guides))
+        (d.x, d.y, self.to_page(guides), [dx.is_some(), dy.is_some()])
     }
 
     /// Page vector `v` in snap space.

@@ -650,7 +650,9 @@ fn instance_ui(app: &mut FigApp, ui: &mut Ui, doc: &Document, n: &Node) {
                     ui.close();
                 }
             });
-            if !nested && icons::button(ui, Icon::Detach, 24.0, false, crate::shortcuts::tip(tr("Detach instance"), "component.detach")).clicked() {
+            if !nested
+                && icons::button(ui, Icon::Detach, 24.0, false, &crate::shortcuts::tip_for(app, tr("Detach instance"), "component.detach")).clicked()
+            {
                 app.run("component.detach", json!({"ids": [id]}));
             }
             if icons::button(ui, Icon::Reset, 24.0, false, tr("Reset all changes")).clicked() {

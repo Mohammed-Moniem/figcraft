@@ -436,6 +436,8 @@ impl Session {
         live.synced = synced;
         live.client = Some(client);
         live.deferred.clear();
+        live.joining_link = None;
+        self.joined_welcome(id);
     }
 
     /// Session `id` is over with a message: it couldn't be joined, the connection was lost for

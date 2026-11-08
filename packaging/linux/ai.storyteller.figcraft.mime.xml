@@ -14,4 +14,9 @@
     <sub-class-of type="application/zip"/>
     <glob pattern="*.sketch"/>
   </mime-type>
+  <mime-type type="application/x-figma">
+    <comment>Imported design document</comment>
+    <glob pattern="*.fig"/>
+    <glob pattern="*.jam"/>
+  </mime-type>
 </mime-info>

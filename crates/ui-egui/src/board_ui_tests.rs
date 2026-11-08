@@ -290,7 +290,7 @@ fn a_selected_connector_shows_its_ends_as_handles() {
     let b = u.app.session.execute("board.sticky", &json!({"x": 400, "y": 0})).unwrap()["id"].clone();
     u.app.session.execute("board.connector", &json!({"from": a, "to": b, "style": "straight"})).unwrap();
     let shapes = flat(&u.frame_output(vec![]).shapes);
-    let ends = [u.app.to_screen(200.0, 100.0), u.app.to_screen(400.0, 100.0)];
+    let ends = [u.app.to_screen(204.0, 100.0), u.app.to_screen(396.0, 100.0)];
     for end in ends {
         let ring = shapes.iter().any(|s| matches!(s, egui::Shape::Circle(c) if (c.center - end).length() < 0.5 && c.radius == 5.0));
         assert!(ring, "a handle at {end:?}");
@@ -348,6 +348,8 @@ fn preferences_set_the_board_grid_and_the_default_dots_keep_their_size() {
     u.app.session.ds_mut().unwrap().view.zoom = 1.0;
     u.app.ui.preferences = true;
     u.frame(vec![]);
+    let ctx = u.ctx.clone();
+    crate::preferences_test_support::show(&ctx, |events| u.frame_output(events), "Graph paper", egui::accesskit::Role::Button);
     let shapes = flat(&u.frame_output(vec![]).shapes);
     assert!(has_text(&shapes, "Board grid") && has_text(&shapes, "Spacing"));
     assert!(!has_text(&shapes, "Strong line every") && !has_text(&shapes, "Reset grid"), "dots, as usual");
@@ -355,7 +357,8 @@ fn preferences_set_the_board_grid_and_the_default_dots_keep_their_size() {
     assert_eq!(u.app.session.prefs.board_grid.style, figcraft_engine::board_grid::GridStyle::Graph);
     let shapes = flat(&u.frame_output(vec![]).shapes);
     assert!(has_text(&shapes, "Strong line every"), "graph paper's cells per strong line");
-    click(&mut u, text_center(&shapes, "Reset grid"));
+    let at = crate::preferences_test_support::show(&ctx, |events| u.frame_output(events), "Reset grid", egui::accesskit::Role::Button).center();
+    click(&mut u, at);
     assert_eq!(u.app.session.prefs.board_grid, Default::default());
     // No grid: nothing to set but the style.
     u.app.run("board.grid", json!({"style": "none"}));
@@ -417,7 +420,7 @@ fn cmd_while_moving_a_connector_end_places_it_on_the_object() {
         other => panic!("{other:?}"),
     };
     let drag = |u: &mut Ui, mods: Modifiers| {
-        let from = u.app.to_screen(400.0, 50.0);
+        let from = u.app.to_screen(396.0, 50.0);
         let to = u.app.to_screen(550.0, 25.0);
         u.frame_with(vec![Event::PointerMoved(from)], mods);
         let press = |pos, pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: mods };

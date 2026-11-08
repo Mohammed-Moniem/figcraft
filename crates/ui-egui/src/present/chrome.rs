@@ -242,10 +242,15 @@ const PAD_POLL_SECS: f64 = 1.0 / 30.0;
 /// the prototype has gamepad triggers and the window has the focus (systems and browsers report
 /// controllers to the focused window only; focus coming back draws a frame, which polls again).
 fn poll_pads(app: &mut FigApp, p: &mut Presenter, ctx: &egui::Context) {
-    if !p.uses_pads || !ctx.input(|i| i.focused) {
+    if !ctx.input(|i| i.focused) {
+        p.key_inputs.clear();
+        return;
+    }
+    if !p.uses_pads {
         return;
     }
     let held = app.services.gamepad_held();
+    p.key_inputs.poll_pads(held);
     let down = held & !p.pads_held;
     p.pads_held = held;
     // Each press once, in layout order.
@@ -271,6 +276,7 @@ fn finish(app: &mut FigApp, p: &mut Presenter) {
             // A press under way ends here: its release would otherwise reach the prototype
             // behind the notice, which takes no input while it shows.
             p.press = None;
+            p.key_inputs.clear();
         }
     }
     if let Some(e) = p.run_widgets(&app.session, p.clock) {

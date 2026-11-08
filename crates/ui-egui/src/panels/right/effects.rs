@@ -266,7 +266,7 @@ fn effect_settings(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], i: usize, e: &
                     row(ui, 32.0, |ui| fx_color(app, ui, ids, i, e, true, &edit_color));
                 }
                 NoiseMode::Multi => row(ui, 32.0, |ui| {
-                    let op = Some((f64::from(nz.opacity) * 100.0).round());
+                    let op = Some(f64::from(nz.opacity) * 100.0);
                     let ed = widgets::number_field(ui, Id::unique(("fx_no", i)), Lead::Text(tr("Opacity")), op, "%", half, 1.0);
                     edit(app, ed, &|v| with(&|n| n.opacity = (v / 100.0).clamp(0.0, 1.0) as f32));
                 }),

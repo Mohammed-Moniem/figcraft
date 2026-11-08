@@ -1,6 +1,8 @@
-//! Design tokens (UI3 light and dark) and fonts.
+//! Design tokens (UI3 light and dark), optional local-fork accents, and fonts.
 
 use std::sync::Arc;
+
+mod accent;
 
 use egui::{Color32, Context, FontData, FontDefinitions, FontFamily, FontId, Stroke, TextStyle, Visuals};
 
@@ -23,6 +25,10 @@ pub struct Tokens {
     pub pressed: Color32,
     pub field: Color32,
     pub field_hover_border: Color32,
+    /// The saved opaque accent before contrast adaptation.
+    pub accent_base: Color32,
+    /// Thin UI borders, derived for panel/field/canvas contrast.
+    pub accent_border: Color32,
     pub accent: Color32,
     pub accent_hover: Color32,
     pub accent_on: Color32,
@@ -54,13 +60,19 @@ pub const BRAND: Color32 = Color32::from_rgb(0x02, 0xDA, 0x96);
 pub const ACCENT: Color32 = Color32::from_rgb(0x00, 0x87, 0x5F);
 /// Ink on the bright green brand surface (white would not have enough contrast).
 pub const ACCENT_ON: Color32 = Color32::from_rgb(0x07, 0x35, 0x2A);
-/// Id of the canvas overlays' green for this frame ([`set_canvas_page`]).
+/// Id of the canvas overlays' accent for this frame ([`set_canvas_page`]).
 const CANVAS_ACCENT: &str = "figcraft-canvas-accent";
 
-/// Remember the page colour the canvas shows. Its overlays (outlines, handles, arrows) take
-/// whichever green contrasts more with it: the bright one on a dark page, the darker on a light one.
+/// Remember the visible page background. Custom overlay hues adapt to at least 3:1 against it;
+/// the existing green still selects its original bright/dark pair. Artwork beneath an outline
+/// can have a different color from the page background.
 pub fn set_canvas_page(ctx: &Context, page: Color32) {
-    let pick = if c(BRAND).contrast(c(page)) > c(ACCENT).contrast(c(page)) { BRAND } else { ACCENT };
+    let seed = Tokens::get(ctx).accent_base;
+    let pick = if seed == BRAND {
+        if c(BRAND).contrast(c(page)) > c(ACCENT).contrast(c(page)) { BRAND } else { ACCENT }
+    } else {
+        accent::readable(seed, &[page], 3.0)
+    };
     ctx.data_mut(|d| d.insert_temp(egui::Id::unique(CANVAS_ACCENT), pick));
 }
 
@@ -69,14 +81,30 @@ fn c(x: Color32) -> figcraft_color::Color {
     figcraft_color::Color::new(f32::from(x.r()) / 255.0, f32::from(x.g()) / 255.0, f32::from(x.b()) / 255.0, 1.0)
 }
 
-/// The green for overlays drawn on the page ([`set_canvas_page`]); [`ACCENT`] before a page shows.
+/// The adaptive overlay color on the page; the UI border accent before a page shows.
 pub fn canvas_accent(ctx: &Context) -> Color32 {
-    ctx.data(|d| d.get_temp(egui::Id::unique(CANVAS_ACCENT))).unwrap_or(ACCENT)
+    ctx.data(|d| d.get_temp(egui::Id::unique(CANVAS_ACCENT))).unwrap_or_else(|| accent(ctx))
 }
 
-/// A fill under white text: the darker green stands in for the bright one.
+/// Thin interactive UI borders. The legacy green stays exact; custom choices follow the theme.
+pub fn accent(ctx: &Context) -> Color32 {
+    Tokens::get(ctx).accent_border
+}
+
+/// An accent surface under white text (menus and comment controls).
+pub fn white_accent(ctx: &Context) -> Color32 {
+    Tokens::get(ctx).menu_hover
+}
+
+/// Ink on that surface; keep the existing green draft pin unchanged.
+pub fn white_accent_on(ctx: &Context) -> Color32 {
+    let t = Tokens::get(ctx);
+    if t.accent_base == BRAND { ACCENT_ON } else { accent::ink(t.menu_hover) }
+}
+
+/// A fill under white text: preserve the legacy green and adapt custom colors for readability.
 pub fn under_white(c: Color32) -> Color32 {
-    if c == BRAND { ACCENT } else { c }
+    if c == BRAND { ACCENT } else { accent::readable(c, &[Color32::WHITE], 4.5) }
 }
 
 /// An AI agent attached over MCP: its avatar and the outline of the layers it works on (none of
@@ -108,6 +136,8 @@ impl Tokens {
             pressed: Color32::from_rgb(0xE6, 0xE6, 0xE6),
             field: Color32::from_rgb(0xF5, 0xF5, 0xF5),
             field_hover_border: Color32::from_rgb(0xE6, 0xE6, 0xE6),
+            accent_base: BRAND,
+            accent_border: ACCENT,
             accent: BRAND,
             accent_hover: Color32::from_rgb(0x00, 0xAD, 0x78),
             accent_on: ACCENT_ON,
@@ -149,6 +179,8 @@ impl Tokens {
             pressed: Color32::from_rgb(0x44, 0x44, 0x44),
             field: Color32::from_rgb(0x38, 0x38, 0x38),
             field_hover_border: Color32::from_rgb(0x4D, 0x4D, 0x4D),
+            accent_base: BRAND,
+            accent_border: ACCENT,
             accent: BRAND,
             accent_hover: Color32::from_rgb(0x52, 0xE9, 0xB7),
             accent_on: ACCENT_ON,
@@ -228,7 +260,7 @@ fn visuals(t: Tokens) -> Visuals {
     v.menu_corner_radius = egui::CornerRadius::same(13);
     v.selection.bg_fill = t.accent.gamma_multiply(0.3);
     // Also the colour of selected text on that highlight (and a focused text box's outline): the
-    // theme's readable green, not the darker one that sinks into the dark theme's highlight.
+    // theme's readable accent, not the darker one that sinks into the dark theme's highlight.
     v.selection.stroke = Stroke::new(1.0, t.accent_text);
     v.hyperlink_color = t.accent_text;
     for w in [&mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open, &mut v.widgets.noninteractive] {
@@ -245,10 +277,10 @@ fn visuals(t: Tokens) -> Visuals {
     v.widgets.hovered.bg_stroke = Stroke::new(1.0, t.field_hover_border);
     v.widgets.active.bg_fill = t.pressed;
     v.widgets.active.weak_bg_fill = t.pressed;
-    v.widgets.active.bg_stroke = Stroke::new(1.0, ACCENT);
+    v.widgets.active.bg_stroke = Stroke::new(1.0, t.accent_border);
     v.popup_shadow = egui::Shadow { offset: [0, 4], blur: 16, spread: 0, color: t.shadow };
     v.window_shadow = egui::Shadow { offset: [0, 8], blur: 24, spread: 0, color: t.shadow };
-    v.text_cursor.stroke = Stroke::new(1.0, ACCENT);
+    v.text_cursor.stroke = Stroke::new(1.0, t.accent_border);
     v
 }
 
@@ -257,7 +289,7 @@ fn visuals(t: Tokens) -> Visuals {
 pub fn on_dark<R>(ui: &mut egui::Ui, f: impl FnOnce(&mut egui::Ui) -> R) -> R {
     let ctx = ui.ctx().clone();
     let saved = Tokens::get(&ctx);
-    let dark = Tokens::dark();
+    let dark = Tokens::dark().with_accent(saved.accent_base);
     ctx.data_mut(|d| d.insert_temp(tokens_id(), dark));
     let r = ui
         .scope(|ui| {

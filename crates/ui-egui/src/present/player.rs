@@ -7,8 +7,8 @@ use super::navigate::next_delay;
 use super::scroll::page_settings;
 use super::transition::lerp;
 use super::{
-    ACCENT, Align2, Arc, Color32, CornerRadius, Device, Icon, NodeKind, PresentScale, Presenter, Rect, Sense, Stroke, StrokeKind, Tip, Tokens, Ui,
-    icons, pos2, regular, semibold, tr, tr_noop, vec2,
+    Align2, Arc, Color32, CornerRadius, Device, Icon, NodeKind, PresentScale, Presenter, Rect, Sense, Stroke, StrokeKind, Tip, Tokens, Ui, icons,
+    pos2, regular, semibold, tr, tr_noop, vec2,
 };
 
 /// One frame of the player in `rect`: the top bar, then the prototype (on its device) below.
@@ -59,8 +59,10 @@ pub(super) fn player(p: &mut Presenter, ui: &mut Ui, rect: Rect, now: f64, chrom
     if let Some(l) = layout(p, area, chrome) {
         // The pane only takes the keyboard while the pointer is over it. While a link notice shows
         // the prototype takes neither keys nor the pointer (Escape there cancels the notice).
-        let keys = p.widget_input.is_none() && chrome.keys && p.link_notice.is_none() && (!chrome.pane || over);
-        input(p, &ctx, &l, InputMode { over_area: over && p.link_notice.is_none(), keys_on: keys, pane: chrome.pane, now });
+        let controls = p.widget_input.is_none() && chrome.keys && p.link_notice.is_none();
+        let keys = controls && (!chrome.pane || over);
+        // A controller keeps its existing pointer-independent scope in the floating preview.
+        input(p, &ctx, &l, InputMode { over_area: over && p.link_notice.is_none(), keys_on: keys, controller_on: controls, pane: chrome.pane, now });
     } else {
         p.pads.clear();
     }
@@ -93,6 +95,9 @@ pub(super) fn player(p: &mut Presenter, ui: &mut Ui, rect: Rect, now: f64, chrom
     if let Some(due) = p.waiting.iter().map(|w| w.due - now).reduce(f64::min) {
         crate::repaint_in(&ctx, due.clamp(0.0, 60.0));
     }
+    if let Some(due) = p.key_inputs.next_due(now) {
+        crate::repaint_in(&ctx, due.clamp(0.0, 60.0));
+    }
     if p.widget_input.is_none()
         && let Some(due) = p.widget_timers.iter().map(|t| t.1).reduce(f64::min)
     {
@@ -112,7 +117,7 @@ fn inspect_hover(p: &mut Presenter, painter: &egui::Painter, ctx: &egui::Context
     if let Some(id) = p.inspected.filter(|id| *id == root || l.disp.is_ancestor(root, *id))
         && let Some(b) = l.disp.world_bounds(id)
     {
-        painter.with_clip_rect(clip).rect_stroke(place.rect(b), CornerRadius::ZERO, Stroke::new(1.5, ACCENT), StrokeKind::Outside);
+        painter.with_clip_rect(clip).rect_stroke(place.rect(b), CornerRadius::ZERO, Stroke::new(1.5, crate::theme::accent(ctx)), StrokeKind::Outside);
     }
 }
 

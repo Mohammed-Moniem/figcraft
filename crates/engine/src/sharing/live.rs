@@ -92,6 +92,9 @@ pub struct Live {
     pub id: SessionId,
     pub status: Status,
     pub info: Option<SessionInfo>,
+    /// Exact private target while a join waits for its first document. It is bounded to the
+    /// invite budget, omitted from summaries, and dropped after sync or failure.
+    pub(crate) joining_link: Option<String>,
     /// Everyone else in the session, by client id.
     pub peers: BTreeMap<u32, Peer>,
     /// Their latest presence (only while they're in the session).
@@ -140,6 +143,10 @@ pub struct Live {
     /// The branches of the session's file made or last updated from main in this session: every
     /// layer of their base was in it (see [`crate::branches`]).
     branch_bases: BTreeSet<String>,
+    /// Forget applies to a join already on its way too. A later explicitly started session has
+    /// its own empty set. Bound it so a stalled join cannot accumulate unlimited history.
+    pub(crate) joined_forgets: BTreeSet<(String, String)>,
+    pub(crate) joined_forget_all: bool,
 }
 
 impl Live {
@@ -155,7 +162,13 @@ impl Live {
 
     /// Back to no session, still shown on its tab (a failure's reason stays there).
     fn reset(&mut self) {
-        *self = Live { id: self.id, tab: self.tab, ..Live::default() };
+        *self = Live {
+            id: self.id,
+            tab: self.tab,
+            joined_forgets: std::mem::take(&mut self.joined_forgets),
+            joined_forget_all: self.joined_forget_all,
+            ..Live::default()
+        };
     }
 
     /// The document sync client (once the welcome arrived): peers, pending batches, the user's

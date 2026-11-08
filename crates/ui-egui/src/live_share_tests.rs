@@ -526,9 +526,12 @@ fn the_join_dialog_is_the_same_field() {
 fn the_server_preference_resets_and_turns_online_sharing_off() {
     let (mut h, script) = harness();
     h.app.ui.preferences = true;
+    let ctx = h.ctx.clone();
+    crate::preferences_test_support::show(&ctx, |events| h.frame_output(events), "Server for online sharing", egui::accesskit::Role::TextInput);
     let shapes = h.frames(2);
     assert!(has_text(&shapes, "Server for online sharing") && has_text(&shapes, "Reset"));
-    click(&mut h, &shapes, "Reset");
+    let at = crate::preferences_test_support::row_button(&h.frame_output(vec![]), "Server for online sharing", "Reset");
+    h.click(at);
     assert_eq!(h.app.session.prefs.publish_server, DEFAULT_SERVER);
     // Off: Preferences say what that means, and the popover offers the local network only.
     h.app.session.execute("pref.publishServer", &json!({"url": ""})).unwrap();

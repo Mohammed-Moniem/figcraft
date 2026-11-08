@@ -72,6 +72,10 @@ impl Failure {
         }
     }
 
+    pub fn owner_closed() -> Self {
+        Self::admission("CONTROL_REQUEST_DROPPED", "The owning page is no longer active. Nothing was queued or retried.")
+    }
+
     fn dropped(state: RequestState) -> Self {
         let started = matches!(state, RequestState::Running | RequestState::Replied);
         Self {
@@ -162,6 +166,7 @@ pub struct Completion<T> {
 
 pub struct Requests<T> {
     next_id: u64,
+    closed: bool,
     pending: Vec<Pending<T>>,
     queued: Vec<ControlRequest>,
     bytes: usize,
@@ -169,12 +174,39 @@ pub struct Requests<T> {
 
 impl<T> Default for Requests<T> {
     fn default() -> Self {
-        Self { next_id: 0, pending: Vec::new(), queued: Vec::new(), bytes: 0 }
+        Self { next_id: 0, closed: false, pending: Vec::new(), queued: Vec::new(), bytes: 0 }
     }
 }
 
 impl<T> Requests<T> {
+    pub fn ensure_open(&self) -> Result<(), Failure> {
+        if self.closed { Err(Failure::owner_closed()) } else { Ok(()) }
+    }
+
+    /// Finish the owner's wait synchronously; never retry or claim to cancel running work.
+    pub fn close(&mut self) -> Vec<Completion<T>> {
+        self.closed = true;
+        let mut completed = Vec::new();
+        for pending in self.pending.drain(..) {
+            let state = pending.gate.cancel_if_open();
+            let result = match pending.receiver.try_recv() {
+                Ok(reply) => reply.result.map_err(Failure::editor),
+                Err(_) => Err(Failure::dropped(state)),
+            };
+            completed.push(Completion { context: pending.context, result });
+        }
+        self.queued.clear();
+        self.bytes = 0;
+        completed
+    }
+
+    /// A real bfcache restore may admit new calls, with the same monotonic request ID budget.
+    pub fn reopen(&mut self) {
+        self.closed = false;
+    }
+
     pub fn enqueue(&mut self, method: &str, params: Value, options: &Value, now_epoch_ms: f64, context: T) -> Result<(), Failure> {
+        self.ensure_open()?;
         if method.is_empty() || method.len() > 120 || method.chars().any(char::is_control) || !params.is_object() {
             return Err(Failure::admission("CONTROL_INVALID_REQUEST", "Use a bounded method name and an object of request parameters."));
         }
@@ -396,6 +428,60 @@ mod tests {
         assert_eq!(requests.enqueue("engine.commands", json!({}), &json!({}), 1000.0, ()).unwrap_err().code, "CONTROL_QUEUE_FULL");
         assert!(!requests.has_pending());
     }
+
+    #[test]
+    fn owner_close_cancels_queued_calls_releases_budgets_and_settles_once() {
+        let mut requests = Requests::default();
+        requests.enqueue("engine.execute", json!({"command":"file.new"}), &json!({}), 1000.0, "queued").unwrap();
+        let gate = requests.queued[0].state.clone();
+        let closed = requests.close();
+        assert_eq!(closed.len(), 1);
+        assert_eq!(closed[0].context, "queued");
+        let failure = closed.into_iter().next().unwrap().result.unwrap_err();
+        assert_eq!(failure.code, "CONTROL_REQUEST_DROPPED");
+        assert!(!failure.started && !failure.may_have_applied && failure.rejected);
+        assert!(!gate.start());
+        assert!(requests.take_requests().is_empty());
+        assert!(requests.poll(1001.0).is_empty());
+        assert!(requests.close().is_empty());
+        assert!(!requests.has_pending());
+        assert_eq!(requests.bytes, 0);
+        let refused = requests.enqueue("engine.commands", json!({}), &json!({}), 1001.0, "later").unwrap_err();
+        assert_eq!(refused.code, "CONTROL_REQUEST_DROPPED");
+        assert!(refused.rejected && !refused.started && !refused.may_have_applied);
+    }
+
+    #[test]
+    fn owner_close_reports_running_uncertainty_and_ignores_its_late_reply() {
+        let mut requests = Requests::default();
+        requests.enqueue("ui.input", json!({"events":[{"move":[10,10]}]}), &json!({}), 1000.0, ()).unwrap();
+        let request = requests.take_requests().pop().unwrap();
+        assert!(request.state.start());
+        let failure = requests.close().pop().unwrap().result.unwrap_err();
+        assert_eq!(failure.code, "CONTROL_REQUEST_DROPPED");
+        assert!(failure.started && failure.may_have_applied && !failure.rejected);
+        assert_eq!(request.state.state(), RequestState::Running);
+        assert!(request.reply.send(ControlReply { id: request.id, result: Ok(json!({"late":true})) }).is_err());
+        assert!(requests.poll(1001.0).is_empty());
+        assert!(requests.close().is_empty());
+        assert!(requests.take_requests().is_empty());
+    }
+
+    #[test]
+    fn owner_close_preserves_a_committed_reply_and_resume_never_reuses_an_id() {
+        let mut requests = Requests::default();
+        requests.enqueue("ui.screenshot", json!({}), &json!({}), 1000.0, ()).unwrap();
+        let request = requests.take_requests().pop().unwrap();
+        let previous_id = request.id.clone();
+        request.state.commit(|| request.reply.send(ControlReply { id: request.id.clone(), result: Ok(json!({"exact":true})) }).unwrap()).unwrap();
+        assert_eq!(requests.close().pop().unwrap().result.unwrap(), json!({"exact":true}));
+        requests.reopen();
+        requests.enqueue("engine.commands", json!({}), &json!({}), 1001.0, ()).unwrap();
+        let next = requests.take_requests().pop().unwrap();
+        assert!(next.id.as_u64().unwrap() > previous_id.as_u64().unwrap());
+        assert_eq!(requests.pending.len(), 1);
+    }
+
     #[test]
     fn advertised_document_events_match_supported_control_polling() {
         let expected = figcraft_ui_egui::control::document_events_capability();

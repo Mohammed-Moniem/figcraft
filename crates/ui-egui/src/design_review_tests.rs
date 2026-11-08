@@ -49,6 +49,129 @@ fn the_review_window_checks_the_page_and_fixes_what_it_can() {
     assert_eq!(u.app.session.doc().unwrap().node(f).unwrap().layout.as_ref().unwrap().gap, 12.0);
 }
 
+/// Separate files deliberately reuse the node ids and revisions the review remembers.
+fn switched_review() -> (Ui, NodeId) {
+    let mut s = Session::new();
+    let a = frame(&mut s);
+    let mut u = Ui::new(s);
+    crate::design_review::open(&mut u.app);
+    let revision = u.app.session.ds().unwrap().revision;
+    u.app.session.execute("file.new", &json!({})).unwrap();
+    let b = frame(&mut u.app.session);
+    assert_eq!(a, b);
+    assert_eq!(revision, u.app.session.ds().unwrap().revision);
+    (u, b)
+}
+
+#[test]
+fn review_actions_stay_inside_a_narrow_viewport() {
+    let mut s = Session::new();
+    frame(&mut s);
+    let mut u = Ui::new(s);
+    crate::design_review::open(&mut u.app);
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(390.0, 760.0));
+    let mut out = None;
+    for _ in 0..8 {
+        out = Some(u.frame_raw(egui::RawInput { screen_rect: Some(screen), ..Default::default() }));
+    }
+    let shapes = crate::live_tests::flat(&out.unwrap().shapes);
+    for label in ["Check design", "Show ignored", "Fix all (1)"] {
+        let center = text_center(&shapes, label);
+        assert!(screen.contains(center), "{label} is outside the viewport: {center:?}");
+        for shape in &shapes {
+            if let egui::Shape::Text(text) = shape
+                && text.galley.text() == label
+            {
+                assert!(screen.contains_rect(shape.visual_bounding_rect()), "{label} is clipped");
+            }
+        }
+    }
+    let fix = text_center(&shapes, "Fix all (1)");
+    for pressed in [true, false] {
+        u.frame_raw(egui::RawInput {
+            screen_rect: Some(screen),
+            events: vec![
+                egui::Event::PointerMoved(fix),
+                egui::Event::PointerButton { pos: fix, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() },
+            ],
+            ..Default::default()
+        });
+    }
+    assert_eq!(
+        u.app.session.doc().unwrap().node(NodeId(2)).unwrap().layout.as_ref().unwrap().gap,
+        12.0,
+        "the visible narrow-window action really repairs the finding"
+    );
+}
+
+fn assert_no_document_effect(u: &Ui, before: &figcraft_engine::DocState) {
+    let after = u.app.session.ds().unwrap();
+    assert!(std::sync::Arc::ptr_eq(&before.doc, &after.doc), "a stale review must leave the document untouched");
+    assert_eq!(after.revision, before.revision);
+    assert_eq!(after.history.undo.len(), before.history.undo.len());
+    assert_eq!(after.history.redo.len(), before.history.redo.len());
+    assert_eq!(after.selection, before.selection);
+}
+
+#[test]
+fn stale_review_cannot_fix_a_different_file_with_the_same_node_ids() {
+    let (mut u, _) = switched_review();
+    let before = u.app.session.ds().unwrap().clone();
+    crate::design_review::fix_all(&mut u.app);
+    assert_no_document_effect(&u, &before);
+    assert!(u.app.ui.design_review.is_none(), "discard the stale report");
+}
+
+#[test]
+fn stale_review_cannot_comment_on_a_different_file_with_the_same_node_ids() {
+    let (mut u, b) = switched_review();
+    let before = u.app.session.ds().unwrap().clone();
+    crate::design_review::comment_on(&mut u.app, b, "spacing.off-grid", "From A", "A");
+    assert_no_document_effect(&u, &before);
+}
+
+#[test]
+fn stale_review_cannot_write_another_files_ignores() {
+    let (mut u, _) = switched_review();
+    u.app.session.ds_mut().unwrap().path = Some("B.figcraft".into());
+    let mut state = u.app.ui.design_review.take().unwrap();
+    state.ignored_rules.insert("spacing.off-grid".into());
+    let before = u.app.session.prefs.design_review_ignored.clone();
+    crate::design_review::persist_ignores(&mut u.app, &state);
+    assert_eq!(u.app.session.prefs.design_review_ignored, before);
+}
+
+#[test]
+fn stale_review_cannot_apply_design_system_drafts_to_another_file() {
+    let (mut u, _) = switched_review();
+    let before = u.app.session.ds().unwrap().clone();
+    assert!(!crate::design_review::apply_design_system(&mut u.app, Some(vec![3.0, 7.0]), Some(vec!["#123456".into()]), None));
+    assert_no_document_effect(&u, &before);
+}
+
+#[test]
+fn checking_a_stale_review_does_not_retarget_its_ignores_or_scope() {
+    let (mut u, _) = switched_review();
+    u.app.ui.design_review.as_mut().unwrap().scope = crate::design_review::Scope::Selection;
+    crate::design_review::check(&mut u.app);
+    assert!(u.app.ui.design_review.is_none());
+}
+
+#[test]
+fn drawing_discards_stale_review_before_same_revision_live_check_or_click() {
+    let (mut u, _) = switched_review();
+    u.app.ui.design_review.as_mut().unwrap().live = true;
+    let before = u.app.session.ds().unwrap().clone();
+    u.frame(vec![]);
+    assert!(u.app.ui.design_review.is_none());
+    assert_no_document_effect(&u, &before);
+    crate::design_review::open(&mut u.app);
+    crate::design_review::fix_all(&mut u.app);
+    assert_eq!(u.app.session.doc().unwrap().node(NodeId(2)).unwrap().layout.as_ref().unwrap().gap, 12.0);
+    u.app.session.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(u.app.session.doc().unwrap().node(NodeId(2)).unwrap().layout.as_ref().unwrap().gap, 13.0);
+}
+
 #[test]
 fn an_ignored_rule_is_not_fixed() {
     let mut s = Session::new();
@@ -231,6 +354,8 @@ fn the_window_edits_the_design_system() {
     assert_eq!(crate::design_review::parse_color_list("#ff0000, #0a0", 32), Some(vec!["#FF0000".to_string(), "#00AA00".to_string()]));
     assert!(crate::design_review::parse_color_list("#FF0000, blue", 32).is_none());
 
+    h.app.ui.design_review = Some(state);
+
     assert!(crate::design_review::apply_design_system(&mut h.app, Some(vec![0.0, 6.0, 10.0]), Some(vec!["#FF0000".to_string()]), None));
     let config = &h.app.session.ds().unwrap().doc.design_review;
     assert_eq!(config.radii, vec![0.0, 6.0, 10.0]);
@@ -239,7 +364,6 @@ fn the_window_edits_the_design_system() {
     let config = &h.app.session.ds().unwrap().doc.design_review;
     assert_eq!(config.disabled, vec!["icon.emoji".to_string()]);
     assert!(!crate::design_review::apply_design_system(&mut h.app, None, None, None), "nothing to apply is a no-op");
-    drop(state);
 }
 
 #[test]
@@ -282,4 +406,38 @@ fn the_ignore_button_saves_the_ignore_for_the_document() {
     h.frames(2);
     let saved = h.app.session.prefs.design_review_ignored.get("harness.figcraft").expect("the ignore is saved");
     assert!(saved.iter().any(|e| e.contains('@')), "{saved:?}");
+}
+
+// Append to design_review_tests.rs; actual production shared-egui frames, not OS input.
+#[test]
+fn live_review_rechecks_only_after_a_real_document_edit_settles() {
+    let mut session = Session::new();
+    let node = frame(&mut session);
+    let mut u = Ui::new(session);
+    crate::design_review::open(&mut u.app);
+    u.app.ui.design_review.as_mut().unwrap().live = true;
+    let old_report = u.app.ui.design_review.as_ref().unwrap().report.clone().unwrap();
+    assert!(old_report["findings"].as_array().unwrap().iter().any(|f| f["rule"] == "spacing.off-grid"));
+    u.advance_clock(10.0);
+    u.frame(vec![]);
+    u.app.session.execute("node.set", &json!({"ids":[node],"props":{"gap":20,"padding":20}})).unwrap();
+    let after_edit = u.app.session.ds().unwrap().clone();
+    u.advance_clock(11.0);
+    u.frame(vec![]);
+    assert_eq!(u.app.ui.design_review.as_ref().unwrap().report.as_ref().unwrap(), &old_report, "a live check must wait for a settled edit");
+    u.advance_clock(11.2);
+    u.frame(vec![]);
+    assert_eq!(u.app.ui.design_review.as_ref().unwrap().report.as_ref().unwrap(), &old_report);
+    u.advance_clock(11.5);
+    u.frame(vec![]);
+    let new_report = u.app.ui.design_review.as_ref().unwrap().report.as_ref().unwrap();
+    assert!(
+        !new_report["findings"].as_array().unwrap().iter().any(|f| f["rule"] == "spacing.off-grid"),
+        "the actual audit must use the authored new grid-aligned values: {new_report}"
+    );
+    assert_ne!(new_report, &old_report);
+    assert_no_document_effect(&u, &after_edit);
+    u.advance_clock(12.0);
+    u.frame(vec![]);
+    assert_no_document_effect(&u, &after_edit);
 }

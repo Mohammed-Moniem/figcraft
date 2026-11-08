@@ -53,7 +53,7 @@ impl Presenter {
     /// out). The links it opens are the viewer's own only when live from a click, press, drag or
     /// key: a delay, the pointer passing over a layer and a timed mouse trigger fire without the
     /// viewer asking for anything ([`Presenter::urls`], #1096).
-    fn fire_from(&mut self, node: NodeId, k: usize, rect: Option<Rect>, now: f64, live: bool) -> bool {
+    pub(super) fn fire_from(&mut self, node: NodeId, k: usize, rect: Option<Rect>, now: f64, live: bool) -> bool {
         let Some(it) = self.doc.as_ref().and_then(|d| d.node(node)).and_then(|n| n.interactions.get(k)).cloned() else { return false };
         let dur = it.easing.seconds(it.duration_ms);
         let temp = match it.trigger {
@@ -70,7 +70,14 @@ impl Presenter {
         let asked = live
             && matches!(
                 it.trigger,
-                Trigger::OnClick | Trigger::OnPress | Trigger::OnDrag | Trigger::MouseDown | Trigger::MouseUp | Trigger::KeyPress { .. }
+                Trigger::OnClick
+                    | Trigger::OnPress
+                    | Trigger::OnDrag
+                    | Trigger::MouseDown
+                    | Trigger::MouseUp
+                    | Trigger::KeyPress { .. }
+                    | Trigger::KeyDown { .. }
+                    | Trigger::KeyUp { .. }
             );
         for link in self.urls.iter_mut().skip(first_link) {
             link.1 = asked;
@@ -184,6 +191,7 @@ impl Presenter {
                 self.delays_fired.retain(|(id, _)| !doc.is_ancestor(*dest, *id));
                 self.overlays.push(OverlayState {
                     id: *dest,
+                    key_owner: std::sync::Arc::new(()),
                     position: *position,
                     close_on_outside: *close_on_outside,
                     background: *background,
@@ -206,6 +214,7 @@ impl Presenter {
                 self.delays_fired.retain(|(id, _)| !doc.is_ancestor(*dest, *id));
                 match self.overlays.last_mut() {
                     Some(o) => {
+                        o.key_owner = std::sync::Arc::new(());
                         o.id = *dest;
                         o.opened = now;
                         o.transition = tr;
@@ -213,6 +222,7 @@ impl Presenter {
                         o.easing = easing;
                     }
                     None => self.overlays.push(OverlayState {
+                        key_owner: std::sync::Arc::new(()),
                         id: *dest,
                         position: OverlayPosition::Center,
                         close_on_outside: true,

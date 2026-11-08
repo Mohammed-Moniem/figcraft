@@ -143,3 +143,153 @@ fn the_services_keep_the_library_where_the_preferences_are() {
     assert_eq!(again.projects, Some(library()));
     let _ = std::fs::remove_dir_all(d);
 }
+
+// PR1401-S3 bounded project metadata: synthetic references, production loader/store.
+fn project_limits_corpus(folders: usize, files: usize) -> Projects {
+    use figcraft_engine::projects::{Folder, ProjectFile};
+    Projects {
+        next_id: folders as u64 + 1,
+        folders: (1..=folders).map(|i| Folder { id: format!("f{i}"), name: format!("F{i}"), parent: None, created: 0 }).collect(),
+        files: (0..files).map(|i| ProjectFile { path: format!("/{i:05}.fig"), folder: None, added: 0, kind: None }).collect(),
+        ..Projects::default()
+    }
+}
+
+fn project_limits_measure<T>(name: &str, work: impl FnOnce() -> T) -> T {
+    let started = std::time::Instant::now();
+    let value = work();
+    eprintln!("PROJECT_LIMIT_OPERATION {name} elapsed_ms={:.3}", started.elapsed().as_secs_f64() * 1000.0);
+    value
+}
+
+#[test]
+fn project_limits_count_boundary_roundtrips_and_one_over_mutations_do_not_change_state() {
+    use figcraft_engine::projects::{MAX_FILES, MAX_FOLDERS};
+    assert_eq!((MAX_FOLDERS, MAX_FILES), (5_000, 50_000));
+    let d = dir("limits-count");
+    let mut p = project_limits_corpus(MAX_FOLDERS, MAX_FILES);
+    assert_eq!(project_limits_measure("native-count-list-folders", || p.children(None)).len(), MAX_FOLDERS);
+    assert_eq!(project_limits_measure("native-count-list-files", || p.files_in(None).count()), MAX_FILES);
+    let bytes = p.to_json().len();
+    assert!(bytes <= 4 * 1024 * 1024, "count fixture must fit the independent byte bound: {bytes}");
+    eprintln!("PROJECT_LIMIT_CORPUS native-count folders={} files={} bytes={bytes}", p.folders.len(), p.files.len());
+    std::fs::write(d.join("design-sentinel.figcraft"), b"synthetic design sentinel: byte-preservation only").unwrap();
+    let design = std::fs::read(d.join("design-sentinel.figcraft")).unwrap();
+    project_limits_measure("native-count-write", || write(&d, &p)).unwrap();
+    project_limits_measure("native-count-write-backup", || write(&d, &p)).unwrap();
+    let metadata = std::fs::read(d.join(FILE)).unwrap();
+    let backup = std::fs::read(d.join(BACKUP)).unwrap();
+    let loaded = project_limits_measure("native-count-read-repair", || read(&d));
+    assert_eq!(loaded.projects, Some(p.clone()));
+    assert!(loaded.notice.is_none() && loaded.blocked.is_none());
+    assert!(project_limits_measure("native-count-folder-one-over", || p.create_folder("Extra", None, 0)).is_err());
+    assert_eq!(p, loaded.projects.unwrap());
+    assert!(!project_limits_measure("native-count-file-one-over", || p.touch("/extra.fig", None, 0)));
+    assert!(p.move_files(&["/extra.fig".to_string()], None, 0).is_err());
+    assert_eq!(p.to_json().as_bytes(), metadata);
+    assert_eq!(std::fs::read(d.join(FILE)).unwrap(), metadata);
+    assert_eq!(std::fs::read(d.join(BACKUP)).unwrap(), backup);
+    assert_eq!(std::fs::read(d.join("design-sentinel.figcraft")).unwrap(), design);
+    std::fs::remove_dir_all(d).unwrap();
+}
+
+#[test]
+fn project_limits_one_over_count_input_is_repaired_with_exact_original_kept() {
+    use figcraft_engine::projects::{MAX_FILES, MAX_FOLDERS};
+    let d = dir("limits-incoming-count");
+    let good = library();
+    write(&d, &good).unwrap();
+    write(&d, &good).unwrap();
+    let backup = std::fs::read(d.join(BACKUP)).unwrap();
+    let incoming = project_limits_corpus(MAX_FOLDERS + 1, MAX_FILES + 1).to_json();
+    assert!(incoming.len() <= 4 * 1024 * 1024);
+    std::fs::write(d.join(FILE), &incoming).unwrap();
+    let loaded = project_limits_measure("native-one-over-count-read-repair", || read(&d));
+    let p = loaded.projects.unwrap();
+    assert_eq!((p.folders.len(), p.files.len()), (MAX_FOLDERS, MAX_FILES));
+    assert!(p.unsaved && loaded.blocked.is_none());
+    let Some(ProjectsNotice::Repaired { fixes, kept: Some(kept) }) = loaded.notice else { panic!("expected retained original and repair notice") };
+    assert_eq!(fixes, 2);
+    assert_eq!(std::fs::read(kept).unwrap(), incoming.as_bytes());
+    assert_eq!(std::fs::read(d.join(FILE)).unwrap(), incoming.as_bytes(), "loader does not silently replace incoming bytes");
+    assert_eq!(std::fs::read(d.join(BACKUP)).unwrap(), backup);
+    std::fs::remove_dir_all(d).unwrap();
+}
+
+#[test]
+fn project_limits_depth_boundary_refuses_new_child_and_repairs_incoming_depth_33() {
+    use figcraft_engine::projects::MAX_DEPTH;
+    assert_eq!(MAX_DEPTH, 32);
+    let d = dir("limits-depth");
+    let mut p = Projects::default();
+    let mut last = None;
+    for i in 0..MAX_DEPTH {
+        last = Some(p.create_folder(&format!("Depth {i}"), last.as_deref(), 0).unwrap());
+    }
+    p.unsaved = false;
+    let id = last.unwrap();
+    assert_eq!(p.depth(&id), MAX_DEPTH);
+    let before = p.clone();
+    assert!(p.create_folder("One too deep", Some(&id), 0).is_err());
+    assert_eq!(p, before);
+    write(&d, &p).unwrap();
+    assert_eq!(project_limits_measure("native-depth-32-read", || read(&d)).projects, Some(p.clone()));
+    let mut incoming = project_limits_corpus(MAX_DEPTH + 1, 0);
+    for i in 1..incoming.folders.len() {
+        incoming.folders[i].parent = Some(format!("f{i}"));
+    }
+    let text = incoming.to_json();
+    std::fs::write(d.join(FILE), &text).unwrap();
+    let loaded = project_limits_measure("native-depth-33-read-repair", || read(&d));
+    let repaired = loaded.projects.unwrap();
+    assert_eq!(repaired.folders.len(), MAX_DEPTH + 1);
+    assert!(repaired.folders.iter().all(|f| repaired.depth(&f.id) <= MAX_DEPTH));
+    let Some(ProjectsNotice::Repaired { fixes: 1, kept: Some(kept) }) = loaded.notice else { panic!("expected depth repair and exact original") };
+    assert_eq!(std::fs::read(kept).unwrap(), text.as_bytes());
+    std::fs::remove_dir_all(d).unwrap();
+}
+
+fn project_limits_exact_byte_corpus() -> Projects {
+    let mut p = project_limits_corpus(0, 1024);
+    for f in &mut p.files {
+        f.path.push_str(&"x".repeat(4000 - f.path.len()));
+    }
+    let mut needed = (4 * 1024 * 1024usize).checked_sub(p.to_json().len()).expect("short-path corpus is below 4 MiB");
+    for f in &mut p.files {
+        let take = needed.min(4096 - f.path.len());
+        f.path.push_str(&"x".repeat(take));
+        needed -= take;
+    }
+    assert_eq!(needed, 0, "bounded synthetic paths can reach the exact byte limit");
+    assert_eq!(p.to_json().len(), 4 * 1024 * 1024);
+    assert!(p.files.iter().all(|f| f.path.len() <= 4096));
+    p
+}
+
+#[test]
+fn project_limits_exact_byte_write_read_and_one_over_preserve_current_and_distinct_backup() {
+    let d = dir("limits-bytes");
+    write(&d, &library()).unwrap();
+    let mut p = project_limits_exact_byte_corpus();
+    eprintln!("PROJECT_LIMIT_CORPUS native-bytes folders={} files={} bytes={}", p.folders.len(), p.files.len(), p.to_json().len());
+    project_limits_measure("native-exact-4mib-write", || write(&d, &p)).unwrap();
+    let metadata = std::fs::read(d.join(FILE)).unwrap();
+    let backup = std::fs::read(d.join(BACKUP)).unwrap();
+    assert_ne!(metadata, backup, "exercise preservation of a distinct last-good backup");
+    let loaded = project_limits_measure("native-exact-4mib-read", || read(&d));
+    assert_eq!(loaded.projects, Some(p.clone()));
+    assert!(loaded.notice.is_none() && loaded.blocked.is_none());
+    p.files.iter_mut().find(|f| f.path.len() < 4096).unwrap().path.push('x');
+    assert_eq!(p.to_json().len(), 4 * 1024 * 1024 + 1);
+    assert!(project_limits_measure("native-one-byte-over-write", || write(&d, &p)).is_err());
+    assert_eq!(std::fs::read(d.join(FILE)).unwrap(), metadata);
+    assert_eq!(std::fs::read(d.join(BACKUP)).unwrap(), backup, "a refused candidate must not replace a different last-good backup");
+    std::fs::write(d.join(FILE), p.to_json()).unwrap();
+    let over = std::fs::read(d.join(FILE)).unwrap();
+    let blocked = project_limits_measure("native-one-byte-over-read", || read(&d));
+    assert!(blocked.projects.is_none() && blocked.blocked.is_some());
+    assert!(matches!(blocked.notice, Some(ProjectsNotice::Unreadable { .. })));
+    assert_eq!(std::fs::read(d.join(FILE)).unwrap(), over);
+    assert_eq!(std::fs::read(d.join(BACKUP)).unwrap(), backup);
+    std::fs::remove_dir_all(d).unwrap();
+}

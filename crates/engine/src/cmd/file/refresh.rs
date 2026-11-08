@@ -84,7 +84,7 @@ pub(super) fn refresh(s: &mut Session, p: &Value) -> Result<Value> {
             failures.push((i, None));
             continue;
         }
-        let mut replacement = DocState::new(loaded.doc, Some(path.clone())).with_versions(loaded.versions).with_branches(loaded.branches);
+        let mut replacement = DocState::from_native(loaded.doc, Some(path.clone())).with_versions(loaded.versions).with_branches(loaded.branches);
         replacement.uid = ds.uid;
         replacement.revision = ds.revision.wrapping_add(1);
         replacement.view = ds.view.clone();

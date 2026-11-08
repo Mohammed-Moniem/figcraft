@@ -1,11 +1,11 @@
-//! Smart guides and measurements on the canvas: red lines (dashed extension lines), a marker on a
-//! point snapped onto, the outline of the layer measured to, and distance labels placed so they
-//! never overlap one another and stay the same size at every zoom.
+//! Active alignment lines follow the page-adaptive accent. Measurements keep their red lines,
+//! dashed extensions, point markers, measured outline and distance labels; labels never overlap
+//! one another and stay the same size at every zoom.
 
 use egui::{Color32, CornerRadius, Pos2, Rect, Shape, Stroke, StrokeKind, Vec2, pos2, vec2};
 
 use crate::FigApp;
-use crate::theme::{Tokens, semibold};
+use crate::theme::{Tokens, canvas_accent, semibold};
 
 /// Space between a label and the line it labels (or another label), in screen pixels.
 const GAP: f32 = 4.0;
@@ -18,6 +18,7 @@ const PAD: Vec2 = vec2(4.0, 2.0);
 pub fn draw(app: &FigApp, painter: &egui::Painter, t: &Tokens, avoid: Option<Rect>) {
     let ov = &app.session.tool.overlay;
     let line = Stroke::new(1.0, t.guide);
+    let alignment = Stroke::new(1.0, canvas_accent(painter.ctx()));
     if let Some([x0, y0, x1, y1]) = ov.measure_box {
         painter.rect_stroke(Rect::from_two_pos(app.to_screen(x0, y0), app.to_screen(x1, y1)), CornerRadius::ZERO, line, StrokeKind::Middle);
     }
@@ -31,7 +32,9 @@ pub fn draw(app: &FigApp, painter: &egui::Painter, t: &Tokens, avoid: Option<Rec
         } else if g.dashed {
             painter.extend(Shape::dashed_line(&[a, b], line, 3.0, 2.0));
         } else {
-            painter.line_segment([a, b], line);
+            // Labelled lines are distances; a plain line is active alignment feedback,
+            // including matches to object, layout-grid and ruler-guide snap targets.
+            painter.line_segment([a, b], if g.label.is_none() { alignment } else { line });
         }
         if let Some(l) = &g.label {
             labels.push((a, b, l.clone()));
@@ -132,5 +135,170 @@ mod tests {
         // A short one moves beside it.
         let r = place_labels(&[(pos2(50.0, 90.0), pos2(50.0, 110.0), SIZE)], &[size]);
         assert!(!r[0].intersects(size), "{:?}", r[0]);
+    }
+
+    use egui::{Color32, Event, Modifiers, RawInput, Shape};
+    use figcraft_doc::NodeId;
+    use figcraft_engine::{Session, snap::Guide};
+    use serde_json::json;
+
+    use crate::layers_drag_tests::Ui;
+    use crate::live_tests::flat;
+    use crate::theme::{self, Tokens};
+
+    fn smart_guide_scene(dark: bool, accent: &str, page: &str, zoom: f64) -> (Ui, NodeId, NodeId) {
+        let mut s = Session::new();
+        s.prefs = serde_json::from_value(json!({"theme":if dark {"dark"} else {"light"},"accent":accent})).unwrap();
+        s.execute("page.setBackground", &json!({"color":page})).unwrap();
+        let fixed = s.execute("shape.rectangle", &json!({"x":100,"y":100,"width":140,"height":100})).unwrap();
+        let moved = s.execute("shape.rectangle", &json!({"x":350,"y":350,"width":80,"height":50})).unwrap();
+        let fixed = figcraft_engine::params::id_of(&fixed["id"]).unwrap();
+        let moved = figcraft_engine::params::id_of(&moved["id"]).unwrap();
+        s.execute("select.set", &json!({"ids":[moved]})).unwrap();
+        s.execute("view.snapObjects", &json!({"on":true})).unwrap();
+        s.execute("view.snapPixel", &json!({"on":true})).unwrap();
+        let mut u = Ui::new(s);
+        let view = &mut u.app.session.ds_mut().unwrap().view;
+        view.cx = 260.0;
+        view.cy = 260.0;
+        view.zoom = zoom;
+        u.frame(vec![]);
+        (u, fixed, moved)
+    }
+
+    fn guide_strokes(u: &Ui, out: &egui::FullOutput, guide: &Guide) -> Vec<(Color32, f32)> {
+        let a = u.app.to_screen(guide.x0, guide.y0);
+        let b = u.app.to_screen(guide.x1, guide.y1);
+        flat(&out.shapes)
+            .iter()
+            .filter_map(|shape| match shape {
+                Shape::LineSegment { points, stroke } if *points == [a, b] || *points == [b, a] => Some((stroke.color, stroke.width)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn drag_to_center_and_check(dark: bool, accent: &str, page: &str, zoom: f64, vertical: bool) {
+        let (mut u, fixed, moved) = smart_guide_scene(dark, accent, page, zoom);
+        let before = u.app.session.doc().unwrap().clone();
+        let history = u.app.session.undo_depth();
+        let fixed_center = before.world_bounds(fixed).unwrap().center();
+        let moving_center = before.world_bounds(moved).unwrap().center();
+        let start = u.app.to_screen(moving_center.x, moving_center.y);
+        let target = if vertical {
+            u.app.to_screen(fixed_center.x + 0.5 / zoom, moving_center.y)
+        } else {
+            u.app.to_screen(moving_center.x, fixed_center.y + 0.5 / zoom)
+        };
+        assert!(u.app.canvas.rect.contains(start) && u.app.canvas.rect.contains(target), "raw pointer fixture stays inside canvas");
+        u.drag_to(start, target);
+        let out = u.frame_output(vec![]);
+        let center = u.app.session.doc().unwrap().world_bounds(moved).unwrap().center();
+        assert!(
+            if vertical { (center.x - fixed_center.x).abs() < 1e-6 } else { (center.y - fixed_center.y).abs() < 1e-6 },
+            "actual drag snaps centers before its color is checked"
+        );
+        let guide = u
+            .app
+            .session
+            .tool
+            .overlay
+            .guides
+            .iter()
+            .find(|guide| {
+                guide.label.is_none()
+                    && !guide.dashed
+                    && if vertical {
+                        (guide.x0 - fixed_center.x).abs() < 1e-6 && guide.x0 == guide.x1 && guide.y0 != guide.y1
+                    } else {
+                        (guide.y0 - fixed_center.y).abs() < 1e-6 && guide.y0 == guide.y1 && guide.x0 != guide.x1
+                    }
+            })
+            .expect("actual engine center-alignment guide");
+        let strokes = guide_strokes(&u, &out, guide);
+        assert!(!strokes.is_empty(), "the presented frame paints the exact engine guide endpoints");
+        let expected = theme::canvas_accent(&u.ctx);
+        assert_ne!(expected, Tokens::get(&u.ctx).guide, "fixture distinguishes accent and measurement roles");
+        assert!(
+            strokes.iter().all(|stroke| *stroke == (expected, 1.0)),
+            "center guide must use canvas accent: dark={dark}, accent={accent}, page={page}, zoom={zoom}, vertical={vertical}, actual={strokes:?}, expected={expected:?}"
+        );
+        u.button(target, false);
+        assert_eq!(u.app.session.undo_depth().0, history.0 + 1, "color changes add no extra edit");
+        u.app.session.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(u.app.session.doc().unwrap(), &before, "one Undo restores the exact original document");
+    }
+
+    #[test]
+    fn smart_guide_accent_default_center_alignment_uses_the_page_adaptive_accent() {
+        for dark in [false, true] {
+            for page in ["#F5F5F5", "#1E1E1E"] {
+                for zoom in [1.0, 2.0] {
+                    for vertical in [false, true] {
+                        drag_to_center_and_check(dark, "#02DA96", page, zoom, vertical);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn smart_guide_accent_custom_center_alignment_keeps_its_current_ui_role() {
+        for dark in [false, true] {
+            for accent in ["#0D99FF", "#9747FF"] {
+                for page in ["#F5F5F5", "#101820"] {
+                    for vertical in [false, true] {
+                        drag_to_center_and_check(dark, accent, page, 1.0, vertical);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn smart_guide_accent_alt_hover_measurements_keep_red_lines_extensions_and_labels() {
+        for dark in [false, true] {
+            let (mut u, fixed, _) = smart_guide_scene(dark, "#0D99FF", "#F5F5F5", 1.0);
+            let center = u.app.session.doc().unwrap().world_bounds(fixed).unwrap().center();
+            let at = u.app.to_screen(center.x, center.y);
+            let out = u.frame_with(vec![Event::PointerMoved(at)], Modifiers::ALT);
+            let guides = &u.app.session.tool.overlay.guides;
+            assert!(guides.iter().any(|guide| guide.dashed), "actual diagonal Alt measurement includes extension lines");
+            let labelled: Vec<_> = guides.iter().filter(|guide| guide.label.is_some()).collect();
+            assert!(!labelled.is_empty(), "actual Alt hover measures between original rectangles");
+            let red = Color32::from_rgb(242, 72, 34);
+            assert_eq!(Tokens::get(&u.ctx).guide, red);
+            for guide in labelled {
+                let strokes = guide_strokes(&u, &out, guide);
+                assert!(!strokes.is_empty());
+                assert!(strokes.iter().all(|stroke| *stroke == (red, 1.0)), "distance line keeps measurement role");
+            }
+            assert!(
+                flat(&out.shapes).iter().any(|shape| matches!(shape,Shape::Rect(rect) if rect.fill==red)),
+                "distance label pill keeps measurement role"
+            );
+        }
+    }
+
+    #[test]
+    fn smart_guide_accent_point_markers_keep_their_existing_measurement_color() {
+        let (mut u, _, _) = smart_guide_scene(false, "#0D99FF", "#F5F5F5", 1.0);
+        let marker = figcraft_geom::Point::new(200.0, 200.0);
+        u.app.session.tool.overlay.guides = vec![Guide::new(marker, marker)];
+        let at = u.app.to_screen(marker.x, marker.y);
+        let app = &u.app;
+        let ctx = u.ctx.clone();
+        let out = ctx.run_ui(RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0))), ..Default::default() }, |ui| {
+            super::draw(app, ui.painter(), &Tokens::get(ui.ctx()), None);
+        });
+        let marker_strokes: Vec<_> = flat(&out.shapes)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                Shape::LineSegment { points, stroke } if points[0].distance(at) < 6.0 && points[1].distance(at) < 6.0 => Some(stroke),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(marker_strokes.len(), 2);
+        assert!(marker_strokes.iter().all(|stroke| stroke.color == Color32::from_rgb(242, 72, 34) && stroke.width == 1.5));
     }
 }

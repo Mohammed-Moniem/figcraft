@@ -3,6 +3,10 @@
 use crate::{Document, Node, NodeId, NodeKind};
 use figcraft_geom::{BezPath, Point, Rect, Shape};
 
+#[cfg(test)]
+#[path = "geometry_locked_tests.rs"]
+mod locked_tests;
+
 /// The node's outline in its local space (`None` for groups, booleans, text and pages, whose
 /// geometry comes from children or glyphs).
 pub fn shape_path(n: &Node) -> Option<BezPath> {
@@ -140,7 +144,7 @@ fn near_path(path: &BezPath, p: Point, dist: f64) -> bool {
 /// boolean groups are hit where their `result` is.
 pub fn hit_leaf(doc: &Document, page: NodeId, pt: Point, tol: f64, result: BoolResult) -> Option<NodeId> {
     let p = doc.node(page)?;
-    p.children.iter().rev().find_map(|c| hit_rec(doc, *c, pt, tol, 0, result, None).filter(|_| !masked_out(doc, p, *c, pt)))
+    p.children.iter().rev().find_map(|c| hit_rec(doc, *c, pt, tol, 0, result, HitPolicy::default()).filter(|_| !masked_out(doc, p, *c, pt)))
 }
 
 /// Whether child `c` of `parent` is masked at `pt`: a visible mask below it (the nearest mask
@@ -163,7 +167,7 @@ fn covers(doc: &Document, id: NodeId, n: &Node, pt: Point, depth: usize) -> bool
 
 /// Like [`hit_leaf`], but only within layer `root` (it included).
 pub fn hit_in(doc: &Document, root: NodeId, pt: Point, tol: f64, result: BoolResult) -> Option<NodeId> {
-    hit_rec(doc, root, pt, tol, 0, result, None)
+    hit_rec(doc, root, pt, tol, 0, result, HitPolicy::default())
 }
 
 /// [`hit_leaf`] (or [`hit_in`] for a `root` that isn't a page) in outline mode: shapes are hit
@@ -172,10 +176,66 @@ pub fn hit_in(doc: &Document, root: NodeId, pt: Point, tol: f64, result: BoolRes
 /// `also` is what outline mode draws besides the shapes: hidden layers are hit like the others
 /// when it shows them, and every layer on the edge of its box when it shows object bounds.
 pub fn hit_outlines(doc: &Document, root: NodeId, pt: Point, tol: f64, result: BoolResult, also: OutlineHits) -> Option<NodeId> {
+    let policy = HitPolicy { outlines: Some(also), ..Default::default() };
     match doc.node(root) {
-        Some(p) if p.is_page() => p.children.iter().rev().find_map(|c| hit_rec(doc, *c, pt, tol, 0, result, Some(also))),
-        _ => hit_rec(doc, root, pt, tol, 0, result, Some(also)),
+        Some(p) if p.is_page() => p.children.iter().rev().find_map(|c| hit_rec(doc, *c, pt, tol, 0, result, policy)),
+        _ => hit_rec(doc, root, pt, tol, 0, result, policy),
     }
+}
+
+/// Hit testing for a connector end being reattached: use the same root, paint order, clipping,
+/// masks and outline policy as ordinary hits, skipping this connector and its own label only.
+pub fn hit_without_connector(
+    doc: &Document,
+    root: NodeId,
+    pt: Point,
+    tol: f64,
+    result: BoolResult,
+    outlines: Option<OutlineHits>,
+    connector: NodeId,
+) -> Option<NodeId> {
+    if !pt.x.is_finite() || !pt.y.is_finite() || !tol.is_finite() || tol < 0.0 {
+        return None;
+    }
+    let policy = HitPolicy { outlines, without_connector: Some(connector), ..Default::default() };
+    match doc.node(root)? {
+        p if p.is_page() => {
+            p.children.iter().rev().find_map(|c| hit_rec(doc, *c, pt, tol, 0, result, policy).filter(|_| !masked_out(doc, p, *c, pt)))
+        }
+        _ => hit_rec(doc, root, pt, tol, 0, result, policy),
+    }
+}
+
+/// The outermost locked owner of the topmost visible geometry under `pt`, including locks while
+/// hit testing. An unlocked foreground layer hides a locked one behind it. The same walker keeps
+/// clipping, masks, paint order and boolean results consistent with ordinary canvas selection.
+/// This is only a query: unlocking still goes through the engine's undoable lock command.
+pub fn locked_owner_at(doc: &Document, root: NodeId, pt: Point, tol: f64, result: BoolResult, outlines: Option<OutlineHits>) -> Option<NodeId> {
+    if !pt.x.is_finite() || !pt.y.is_finite() || !tol.is_finite() || tol < 0.0 {
+        return None;
+    }
+    let policy = HitPolicy { outlines, include_locked: true, ..Default::default() };
+    let mut at = match doc.node(root)? {
+        p if p.is_page() => {
+            p.children.iter().rev().find_map(|c| hit_rec(doc, *c, pt, tol, 0, result, policy).filter(|_| !masked_out(doc, p, *c, pt)))
+        }
+        _ => hit_rec(doc, root, pt, tol, 0, result, policy),
+    }?;
+    let mut owner = None;
+    // Match the hit walk's bounded depth, including the hit root and page. A corrupt parent cycle
+    // must not allocate an ancestors vector or keep an idle hover running indefinitely.
+    for _ in 0..=513 {
+        let node = doc.node(at)?;
+        if !node.visible {
+            return None;
+        }
+        if node.locked {
+            owner = Some(at);
+        }
+        let Some(parent) = node.parent else { return owner };
+        at = parent;
+    }
+    None
 }
 
 /// What outline mode shows besides the shapes' outlines (see [`hit_outlines`]).
@@ -185,6 +245,13 @@ pub struct OutlineHits {
     pub bounds: bool,
 }
 
+#[derive(Clone, Copy, Default)]
+struct HitPolicy {
+    outlines: Option<OutlineHits>,
+    include_locked: bool,
+    without_connector: Option<NodeId>,
+}
+
 /// Whether `pt` is within `tol` of the edge of `n`'s box.
 fn on_box_edge(doc: &Document, id: NodeId, n: &Node, pt: Point, tol: f64) -> bool {
     let lp = doc.world_transform(id).inverse() * pt;
@@ -192,13 +259,20 @@ fn on_box_edge(doc: &Document, id: NodeId, n: &Node, pt: Point, tol: f64) -> boo
     r.inflate(tol, tol).contains(lp) && !(r.width() > 2.0 * tol && r.height() > 2.0 * tol && r.inflate(-tol, -tol).contains(lp))
 }
 
-fn hit_rec(doc: &Document, id: NodeId, pt: Point, tol: f64, depth: usize, result: BoolResult, also: Option<OutlineHits>) -> Option<NodeId> {
+fn hit_rec(doc: &Document, id: NodeId, pt: Point, tol: f64, depth: usize, result: BoolResult, policy: HitPolicy) -> Option<NodeId> {
     if depth > 512 {
         return None;
     }
     let n = doc.node(id)?;
+    if policy
+        .without_connector
+        .is_some_and(|connector| id == connector || matches!(&n.board, Some(crate::BoardItem::Label { connector: owner }) if *owner == connector))
+    {
+        return None;
+    }
+    let also = policy.outlines;
     let outline = also.is_some();
-    if (!n.visible && !also.is_some_and(|a| a.hidden)) || n.locked {
+    if (!n.visible && !also.is_some_and(|a| a.hidden)) || n.locked && !policy.include_locked {
         return None;
     }
     if let NodeKind::Section { contents_hidden: true } = n.kind {
@@ -216,7 +290,7 @@ fn hit_rec(doc: &Document, id: NodeId, pt: Point, tol: f64, depth: usize, result
         return None;
     }
     for c in n.paint_order().rev() {
-        if let Some(h) = hit_rec(doc, c, pt, tol, depth + 1, result, also).filter(|_| !masked_out(doc, n, c, pt)) {
+        if let Some(h) = hit_rec(doc, c, pt, tol, depth + 1, result, policy).filter(|_| !masked_out(doc, n, c, pt)) {
             return Some(h);
         }
     }
@@ -244,7 +318,7 @@ pub fn layers_at(doc: &Document, page: NodeId, pt: Point, tol: f64, result: Bool
         let at = out.len();
         let whole = matches!(n.kind, NodeKind::BooleanOp { .. } | NodeKind::Section { contents_hidden: true });
         if whole {
-            if hit_rec(doc, id, pt, tol, depth, result, None).is_some() {
+            if hit_rec(doc, id, pt, tol, depth, result, HitPolicy::default()).is_some() {
                 out.push((id, depth));
             }
             return;

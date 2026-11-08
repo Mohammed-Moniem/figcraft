@@ -669,6 +669,117 @@ pub fn draw_node(ctx: &Ctx, pix: &mut Pixmap, id: NodeId, parent_xf: Affine, dep
     }
 }
 
+/// Ordered layers, with shared antialiasing coverage for consecutive plain opaque rectangles.
+pub fn draw_nodes(ctx: &Ctx, pix: &mut Pixmap, nodes: impl IntoIterator<Item = (NodeId, Affine)>, depth: usize) {
+    let mut batch = OpaqueRectangles::default();
+    for (id, parent_xf) in nodes {
+        if let Some(node) = ctx.bounds.node(ctx.doc, id) {
+            batch.push(ctx, pix, node, parent_xf, depth);
+        }
+    }
+    batch.flush(ctx, pix, depth);
+}
+
+// A bound on path construction, independent of document size. Larger runs keep normal paint
+// order in bounded chunks; shared edges crossing a chunk boundary retain separate coverage.
+const MAX_SHARED_RECTANGLES: usize = 4096;
+
+struct OpaqueRectangle<'d> {
+    node: &'d Node,
+    parent_xf: Affine,
+    points: [figcraft_geom::Point; 4],
+}
+
+#[derive(Default)]
+struct OpaqueRectangles<'d> {
+    color: Option<figcraft_color::Color>,
+    rectangles: Vec<OpaqueRectangle<'d>>,
+}
+
+impl<'d> OpaqueRectangles<'d> {
+    fn push(&mut self, ctx: &Ctx<'_, 'd>, pix: &mut Pixmap, node: &'d Node, parent_xf: Affine, depth: usize) {
+        let Some((color, points)) = shared_rectangle(ctx, node, parent_xf, depth) else {
+            self.flush(ctx, pix, depth);
+            draw_layer(ctx, pix, node, parent_xf, depth);
+            return;
+        };
+        if self.color != Some(color) || self.rectangles.len() == MAX_SHARED_RECTANGLES {
+            self.flush(ctx, pix, depth);
+        }
+        self.color = Some(color);
+        self.rectangles.push(OpaqueRectangle { node, parent_xf, points });
+    }
+
+    fn flush(&mut self, ctx: &Ctx, pix: &mut Pixmap, depth: usize) {
+        let color = self.color.take();
+        if self.rectangles.len() >= 2 {
+            let mut builder = tiny_skia::PathBuilder::new();
+            for rectangle in &self.rectangles {
+                let [a, b, c, d] = rectangle.points;
+                builder.move_to(a.x as f32, a.y as f32);
+                builder.line_to(b.x as f32, b.y as f32);
+                builder.line_to(c.x as f32, c.y as f32);
+                builder.line_to(d.x as f32, d.y as f32);
+                builder.close();
+            }
+            if let Some(path) = builder.finish()
+                && let Some(color) = color
+            {
+                // One winding fill covers the union once, rather than source-over compositing
+                // two partial coverages into a transparent shared edge. Reflections have their
+                // contour direction normalized below, so overlapping rectangles cannot cancel.
+                let paint =
+                    tiny_skia::Paint { shader: tiny_skia::Shader::SolidColor(crate::paint::ts_color(color)), anti_alias: true, ..Default::default() };
+                pix.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
+                self.rectangles.clear();
+                return;
+            }
+        }
+        for rectangle in self.rectangles.drain(..) {
+            draw_layer(ctx, pix, rectangle.node, rectangle.parent_xf, depth);
+        }
+    }
+}
+
+/// Only an exact opaque solid rectangle can commute with an adjacent equal paint. Other layer
+/// semantics (including strokes, effects, outline/LOD and masks) keep their ordinary compositor.
+fn shared_rectangle(ctx: &Ctx, n: &Node, parent_xf: Affine, depth: usize) -> Option<(figcraft_color::Color, [figcraft_geom::Point; 4])> {
+    if depth > crate::MAX_EXPORT_DEPTH
+        || ctx.lod
+        || ctx.outline_mode
+        || ctx.outlined.contains(&n.id)
+        || ctx.skip.contains(&n.id)
+        || !matches!(n.kind, NodeKind::Rectangle)
+        || !n.visible
+        || n.is_mask
+        || n.opacity != 1.0
+        || !matches!(n.blend, BlendMode::Normal | BlendMode::PassThrough)
+        || !n.children.is_empty()
+        || !n.effects.is_empty()
+        || !n.strokes.is_empty()
+        || n.fills.len() != 1
+        || n.corners.uniform() != Some(0.0)
+        || !(n.width > 0.0 && n.height > 0.0 && n.width.is_finite() && n.height.is_finite())
+    {
+        return None;
+    }
+    let fill = n.fills.first()?;
+    let PaintKind::Solid { color } = fill.kind else { return None };
+    if !fill.visible || fill.opacity != 1.0 || fill.blend != BlendMode::Normal || color.a != 1.0 {
+        return None;
+    }
+    let xf = parent_xf * n.transform;
+    let determinant = xf.determinant();
+    if !determinant.is_finite() || determinant == 0.0 {
+        return None;
+    }
+    let point = |x, y| xf * figcraft_geom::Point::new(x, y);
+    let [a, b, c, d] = [point(0.0, 0.0), point(n.width, 0.0), point(n.width, n.height), point(0.0, n.height)];
+    let points = if determinant > 0.0 { [a, b, c, d] } else { [a, d, c, b] };
+    // Keep the shared-path rasterizer inside a finite, practical device-coordinate range.
+    points.iter().all(|p| p.x.is_finite() && p.y.is_finite() && p.x.abs() <= 1e8 && p.y.abs() <= 1e8).then_some((color, points))
+}
+
 /// [`draw_node`] for a node already looked up.
 fn draw_layer(ctx: &Ctx, pix: &mut Pixmap, n: &Node, parent_xf: Affine, depth: usize) {
     let id = n.id;
@@ -1062,15 +1173,18 @@ fn draw_children(ctx: &Ctx, pix: &mut Pixmap, n: &Node, xf: Affine, depth: usize
     let kids = &n.children;
     // Each child looked up once: in a large document a lookup is a good part of a layer's cost.
     let nodes: Vec<Option<&Node>> = kids.iter().map(|c| ctx.bounds.node(ctx.doc, *c)).collect();
+    let mut batch = OpaqueRectangles::default();
     for run in Document::paint_runs_of(&nodes, n.layout.as_ref().is_some_and(|l| l.reverse_z)) {
         let (Some(&c), Some(Some(cn))) = (kids.get(run.start), nodes.get(run.start)) else { continue };
         if cn.is_mask && cn.visible {
+            batch.flush(ctx, pix, depth + 1);
             // Everything above the mask (until the next mask) is clipped by its alpha.
             draw_masked(ctx, pix, c, kids.get(run.start + 1..run.end).unwrap_or(&[]), xf, depth);
         } else {
-            draw_layer(ctx, pix, cn, xf, depth + 1);
+            batch.push(ctx, pix, cn, xf, depth + 1);
         }
     }
+    batch.flush(ctx, pix, depth + 1);
 }
 
 #[cfg(test)]
@@ -1155,9 +1269,7 @@ fn draw_masked(ctx: &Ctx, pix: &mut Pixmap, mask_id: NodeId, content: &[NodeId],
     {
         let under = Under { clip: Some(&mask), ..Under::new(pix, (ax, ay), ctx.under) };
         let sub = Ctx { under: Some(&under), ..*ctx };
-        for c in content {
-            draw_node(&sub, &mut layer, *c, axf, depth + 1);
-        }
+        draw_nodes(&sub, &mut layer, content.iter().map(|c| (*c, axf)), depth + 1);
     }
     // A mask applies to a pixmap of its own size: through it onto a copy of the area, put back.
     let Some(mut onto) = pix.clone_rect(area) else { return };

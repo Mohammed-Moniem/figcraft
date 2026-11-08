@@ -1,7 +1,7 @@
 use super::actions::texture_scale;
 use super::layout::{Layout, Place, hotspots};
 use super::transition::{smart_interpolate, transition_frames};
-use super::{ACCENT, Color32, CornerRadius, FLASH_SECS, NodeId, OverlayState, Presenter, Rect, Stroke, StrokeKind, Transition, pos2, vec2};
+use super::{Color32, CornerRadius, FLASH_SECS, NodeId, OverlayState, Presenter, Rect, Stroke, StrokeKind, Transition, pos2, vec2};
 
 pub(super) fn draw(p: &mut Presenter, painter: &egui::Painter, ctx: &egui::Context, l: &Layout, now: f64) {
     let ppp = f64::from(ctx.pixels_per_point());
@@ -115,8 +115,8 @@ pub(super) fn draw(p: &mut Presenter, painter: &egui::Painter, ctx: &egui::Conte
         let (root, place, clip) = l.active(p.current);
         let a = ((p.flash_until - now) / FLASH_SECS) as f32;
         for (_, r) in hotspots(&l.disp, root, &place, clip) {
-            painter.rect_filled(r, CornerRadius::same(4), ACCENT.gamma_multiply(0.25 * a));
-            painter.rect_stroke(r, CornerRadius::same(4), Stroke::new(1.5, ACCENT.gamma_multiply(a)), StrokeKind::Outside);
+            painter.rect_filled(r, CornerRadius::same(4), crate::theme::accent(ctx).gamma_multiply(0.25 * a));
+            painter.rect_stroke(r, CornerRadius::same(4), Stroke::new(1.5, crate::theme::accent(ctx).gamma_multiply(a)), StrokeKind::Outside);
         }
         ctx.request_repaint();
     }

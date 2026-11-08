@@ -134,3 +134,52 @@ fn checker_language_and_availability_changes_invalidate_same_document_marks() {
     assert_eq!(absent["backend"], "unavailable");
     assert!(absent["language"].is_null());
 }
+
+/// A deterministic persistence/service fixture. Only owned temporary bytes are read or written;
+/// the fake checker has no OS learning API, and the production add-word command writes Prefs.
+#[test]
+fn isolated_prefs_reload_keeps_user_dictionary_but_not_run_only_ignores() {
+    let (mut first, _) = editing();
+    first.execute("spelling.ignore", &json!({"word":"wrold"})).unwrap();
+    first.execute("spelling.addWord", &json!({"word":"Helo"})).unwrap();
+    first.sync_spelling();
+    assert!(first.misspelled().is_empty());
+    assert_eq!(first.prefs.dictionary, vec!["helo".to_string()]);
+    let owned = tempfile::tempdir().unwrap();
+    let preferences = owned.path().join("isolated-preferences.json");
+    let document = owned.path().join("synthetic-text.figcraft");
+    let prefs_bytes = serde_json::to_vec(&first.prefs).unwrap();
+    std::fs::write(&preferences, &prefs_bytes).unwrap();
+    std::fs::write(&document, figcraft_format::save_bytes(first.doc().unwrap(), None).unwrap()).unwrap();
+    drop(first);
+    let reloaded: crate::Prefs = serde_json::from_slice(&std::fs::read(&preferences).unwrap()).unwrap();
+    assert_eq!(reloaded.dictionary, vec!["helo".to_string()]);
+    assert!(!std::str::from_utf8(&prefs_bytes).unwrap().contains("wrold"), "ignore is deliberately scoped to a run, not persisted as a learned word");
+    let (doc, issues) = figcraft_format::load_bytes(&std::fs::read(&document).unwrap()).unwrap();
+    assert!(issues.is_empty());
+    let mut restarted = Session::with_document(doc);
+    restarted.prefs = reloaded;
+    let asked = Arc::new(Mutex::new(0));
+    restarted.spelling.set_checker(Box::new(Fake(asked.clone())));
+    let text = restarted.doc().unwrap().nodes().find(|node| node.kind.text().is_some()).unwrap().id;
+    restarted.execute("text.edit.begin", &json!({"id":text,"caret":0})).unwrap();
+    let before = restarted.ds().unwrap().clone();
+    restarted.sync_spelling();
+    assert_eq!(restarted.misspelled(), &[(6, 11)], "the fresh service flags the run-only ignored word; the persisted user word remains accepted");
+    assert!(*asked.lock().unwrap() > 0, "a newly installed checker actually handles this restart");
+    assert!(Arc::ptr_eq(&before.doc, &restarted.ds().unwrap().doc));
+    assert_eq!(before.revision, restarted.ds().unwrap().revision);
+    assert_eq!((before.history.undo.len(), before.history.redo.len()), restarted.undo_depth());
+    restarted.execute("text.spelling", &json!({"on":false})).unwrap();
+    restarted.sync_spelling();
+    assert!(restarted.misspelled().is_empty());
+    restarted.execute("text.spelling", &json!({"on":true})).unwrap();
+    restarted.sync_spelling();
+    assert_eq!(restarted.misspelled(), &[(6, 11)]);
+    assert_eq!(
+        std::fs::read(&preferences).unwrap(),
+        prefs_bytes,
+        "checking, ignoring and service replacement never rewrite an unrelated/global preference file"
+    );
+    assert_eq!(std::fs::read_dir(owned.path()).unwrap().count(), 2, "only the two explicitly owned fixture files exist");
+}

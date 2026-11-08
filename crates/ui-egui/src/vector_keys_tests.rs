@@ -83,3 +83,18 @@ fn a_cut_command_outside_edit_mode_cuts_the_layer() {
     u.frame_with(vec![Event::Cut], Modifiers::SHIFT);
     assert!(u.app.session.doc().unwrap().node(path).is_none(), "outside edit mode the selected layer is cut");
 }
+
+#[test]
+fn native_shift_delete_still_cuts_when_the_x_shortcut_is_disabled() {
+    let mut s = Session::new();
+    let path = id(s.execute("vector.create", &json!({"points": [[100, 100], [200, 100], [300, 100]], "closed": false})).unwrap());
+    s.execute("select.set", &json!({"ids": [path]})).unwrap();
+    for platform in ["mac", "other"] {
+        s.execute("pref.shortcut", &json!({"id": "edit.cut", "platform": platform, "keys": []})).unwrap();
+    }
+    let mut u = Ui::new(s);
+    u.frame_with(vec![Event::Cut], Modifiers::COMMAND);
+    assert!(u.app.session.doc().unwrap().node(path).is_some(), "the disabled X shortcut does not cut");
+    u.frame_with(vec![Event::Cut], Modifiers::SHIFT);
+    assert!(u.app.session.doc().unwrap().node(path).is_none(), "the native Shift+Delete alternative still cuts");
+}

@@ -176,7 +176,7 @@ fn main_toolbar(app: &mut FigApp, ui: &mut Ui, canvas: Rect, t: &Tokens, board: 
         // Boards have no prototypes or Dev Mode; the Design panel is hidden until asked for.
         x = crate::board_picker::button(app, ui, pos2(x, cy), rect.min.y, t) + GAP;
         let r = Rect::from_center_size(pos2(x + TOOL_CELL / 2.0, cy), vec2(TOOL_CELL, TOOL_CELL));
-        let tip = crate::shortcuts::tip(tr("Design panel"), "view.design");
+        let tip = &crate::shortcuts::tip_for(app, tr("Design panel"), "view.design");
         if tool_cell(ui, t, r, "board_panel", Icon::Panels, app.ui.board_panel, tip).clicked() {
             app.run("view.design", json!({}));
         }
@@ -210,7 +210,15 @@ fn group_cell(app: &mut FigApp, ui: &mut Ui, g: &Group, at: egui::Pos2, top: f32
     let shown = if in_group { current } else { remembered(ui, g.key, g.tools.first().map(|x| x.0).unwrap_or(ToolId::Move)) };
     let icon = g.tools.iter().find(|(tid, _)| *tid == shown).map(|(_, i)| *i).unwrap_or(Icon::Move);
     let r = Rect::from_center_size(pos2(at.x + TOOL_CELL / 2.0, at.y), vec2(TOOL_CELL, TOOL_CELL));
-    let resp = tool_cell(ui, t, r, ("tool", g.key), icon, in_group, &format!("{}  {}", tr(shown.label()), pretty_shortcut(shown.shortcut())));
+    let resp = tool_cell(
+        ui,
+        t,
+        r,
+        ("tool", g.key),
+        icon,
+        in_group,
+        &format!("{}  {}", tr(shown.label()), pretty_shortcut(crate::shortcuts::tool_shortcut(app, shown))),
+    );
     if in_group {
         a11y::prefer(&mut app.ui.nav, Region::Toolbar, resp.id);
     }
@@ -262,7 +270,7 @@ fn flyout_caret(app: &mut FigApp, ui: &mut Ui, g: &Group, at: egui::Pos2, t: &To
 /// The Actions palette's button, from `x`. Where the next part starts.
 fn actions_button(app: &mut FigApp, ui: &mut Ui, x: f32, cy: f32, t: &Tokens) -> f32 {
     let r = Rect::from_center_size(pos2(x + TOOL_CELL / 2.0, cy), vec2(TOOL_CELL, TOOL_CELL));
-    let resp = ui.interact(r, ui.scope_id().with("actions"), Sense::click()).tip(crate::shortcuts::tip(tr("Actions"), "app.actions"));
+    let resp = ui.interact(r, ui.scope_id().with("actions"), Sense::click()).tip(crate::shortcuts::tip_for(app, tr("Actions"), "app.actions"));
     app.ui.actions_rect = Some(r);
     // The Actions button reads on while its panel is open; clicking it again closes it.
     let open = app.ui.palette.is_some();
@@ -397,7 +405,7 @@ fn help_button(app: &mut FigApp, ui: &mut Ui, canvas: Rect, pill: Rect, t: &Toke
             (tr("Check for updates…"), "help.checkForUpdates"),
             (tr("About FigCraft"), "help.about"),
         ] {
-            if crate::right::menu_item(ui, l, crate::shortcuts::shortcut(c).unwrap_or("")) {
+            if crate::right::menu_item(ui, l, crate::shortcuts::shortcut_for(app, c).unwrap_or("")) {
                 crate::menus::invoke(app, c);
                 ui.close();
             }
@@ -431,7 +439,15 @@ fn view_only_toolbar(app: &mut FigApp, ui: &mut Ui, why: &'static str) {
     for &(tool, icon) in tools {
         let r = Rect::from_center_size(pos2(x + TOOL_CELL / 2.0, cy), vec2(TOOL_CELL, TOOL_CELL));
         let active = app.session.tool.tool == tool;
-        let resp = tool_cell(ui, &t, r, ("tool", tool.id()), icon, active, &format!("{}  {}", tr(tool.label()), pretty_shortcut(tool.shortcut())));
+        let resp = tool_cell(
+            ui,
+            &t,
+            r,
+            ("tool", tool.id()),
+            icon,
+            active,
+            &format!("{}  {}", tr(tool.label()), pretty_shortcut(crate::shortcuts::tool_shortcut(app, tool))),
+        );
         if active {
             a11y::prefer(&mut app.ui.nav, Region::Toolbar, resp.id);
         }
@@ -646,7 +662,7 @@ fn flyout(app: &mut FigApp, ui: &mut Ui, g: &Group, bottom_left: egui::Pos2) {
         for (tid, icon) in g.tools {
             let r = Rect::from_min_size(pos2(rect.min.x + 8.0, y), vec2(w - 16.0, item_h));
             let resp = ui.interact(r, ui.scope_id().with(("fly", tid.id())), Sense::click());
-            a11y::menu_item(&resp, tr(tid.label()), tid.shortcut(), Some(*tid == app.session.tool.tool));
+            a11y::menu_item(&resp, tr(tid.label()), crate::shortcuts::tool_shortcut(app, *tid), Some(*tid == app.session.tool.tool));
             // The keyboard's item is highlighted like the hovered one.
             a11y::own_focus(&resp);
             if resp.hovered() || resp.has_focus() {
@@ -657,7 +673,13 @@ fn flyout(app: &mut FigApp, ui: &mut Ui, g: &Group, bottom_left: egui::Pos2) {
             }
             icons::paint(ui.painter(), Rect::from_center_size(pos2(r.min.x + 32.0, r.center().y), vec2(16.0, 16.0)), *icon, t.menu_text);
             ui.painter().text(pos2(r.min.x + 48.0, r.center().y), Align2::LEFT_CENTER, tr(tid.label()), regular(12.0), t.menu_text);
-            ui.painter().text(pos2(r.max.x - 8.0, r.center().y), Align2::RIGHT_CENTER, pretty_shortcut(tid.shortcut()), regular(12.0), t.menu_dim);
+            ui.painter().text(
+                pos2(r.max.x - 8.0, r.center().y),
+                Align2::RIGHT_CENTER,
+                pretty_shortcut(crate::shortcuts::tool_shortcut(app, *tid)),
+                regular(12.0),
+                t.menu_dim,
+            );
             if resp.clicked() {
                 chosen = Some(*tid);
             }

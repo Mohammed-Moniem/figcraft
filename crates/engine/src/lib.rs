@@ -26,6 +26,7 @@ pub mod fonts;
 pub mod guard;
 pub mod keymap;
 pub mod measure;
+pub mod pixel_grid;
 pub mod projects;
 pub mod proto_run;
 pub mod restore;
@@ -89,6 +90,7 @@ pub use sharing::background;
 pub use sharing::branches;
 pub use sharing::collab;
 pub use sharing::invite_links;
+pub use sharing::joined;
 pub use sharing::live;
 pub use sharing::online;
 pub use sharing::team;
@@ -225,6 +227,8 @@ mod binding_lists_tests;
 mod board_connected_tests;
 #[cfg(test)]
 mod board_connector_tests;
+#[cfg(test)]
+mod board_end_gap_tests;
 #[cfg(test)]
 mod board_grid_tests;
 #[cfg(test)]
@@ -412,6 +416,8 @@ mod invite_links_tests;
 #[cfg(test)]
 mod jam_open_tests;
 #[cfg(test)]
+mod joined_tests;
+#[cfg(test)]
 mod keymap_tests;
 #[cfg(test)]
 mod korean_text_tests;
@@ -496,6 +502,8 @@ mod pen_vector_edit_tests;
 #[cfg(test)]
 mod penpot_export_tests;
 #[cfg(test)]
+mod pixel_grid_size_tests;
+#[cfg(test)]
 mod pixel_preview_tests;
 #[cfg(test)]
 mod placed_image_size_tests;
@@ -538,6 +546,8 @@ mod proto_run_tests;
 #[cfg(test)]
 mod proto_tail_tests;
 #[cfg(test)]
+mod prototype_key_timing_tests;
+#[cfg(test)]
 mod rest_slot_tests;
 #[cfg(test)]
 mod restore_tests;
@@ -567,6 +577,8 @@ mod select_area_tests;
 mod selection_behaviour_tests;
 #[cfg(test)]
 mod selection_depth_tests;
+#[cfg(test)]
+mod selection_opacity_tests;
 #[cfg(test)]
 mod shape_handles_tests;
 #[cfg(test)]
@@ -685,3 +697,9 @@ mod selection_spacing_tests;
 
 #[cfg(test)]
 mod workspace_completion_tests;
+
+#[cfg(test)]
+mod ui_accent_pref_tests;
+
+#[cfg(test)]
+mod menu_keep_open_tests;

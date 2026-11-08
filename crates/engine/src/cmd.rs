@@ -19,6 +19,7 @@ pub mod props;
 pub mod proto;
 pub mod proto_actions;
 pub mod section;
+pub mod shortcuts;
 pub mod structure;
 pub mod styles;
 pub mod text;
@@ -90,6 +91,7 @@ fn registry() -> &'static Registry {
         list.extend(projects::specs());
         list.extend(page::specs());
         list.extend(view::specs());
+        list.extend(shortcuts::specs());
         list.extend(text::specs());
         list.extend(crate::spelling::specs());
         list.extend(crate::fonts::specs());
@@ -122,6 +124,7 @@ fn registry() -> &'static Registry {
         list.extend(crate::widgets::specs());
         list.extend(crate::live::specs());
         list.extend(crate::online::specs());
+        list.extend(crate::joined::specs());
         list.extend(crate::invite_links::specs());
         list.extend(crate::templates::specs());
         list.extend(crate::restore::specs());

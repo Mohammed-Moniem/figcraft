@@ -8,7 +8,8 @@
 //! - no TCP control server (browsers can't listen on sockets);
 //! - no native file dialogs yet: the session starts with one new document;
 //! - links open in a new browser tab;
-//! - of the preferences, the page keeps only your name across reloads (`kept.rs`);
+//! - the page keeps selected appearance/input settings (`appearance.rs`), separately from the
+//!   name and joined files (`kept.rs`), across reloads;
 //! - an internal error (a panic) can't be caught, so it stops the page: the files with unsaved
 //!   changes are kept in the page's storage and open again on the next reload (`recovery.rs`);
 //! - fonts: the built-in ones, and on request (the font menu's "Use fonts installed on this
@@ -38,6 +39,10 @@
 
 #[cfg(target_arch = "wasm32")]
 mod api;
+#[cfg(any(target_arch = "wasm32", test))]
+mod appearance;
+#[cfg(any(target_arch = "wasm32", test))]
+mod browser_prefs;
 #[cfg(any(target_arch = "wasm32", test))]
 mod file_provider_strings;
 #[cfg(target_arch = "wasm32")]

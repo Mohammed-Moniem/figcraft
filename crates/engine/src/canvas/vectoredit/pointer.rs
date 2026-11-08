@@ -938,7 +938,7 @@ impl Session {
             }
             VGesture::BoxScale { b, handle, targets, .. } => {
                 // The dragged corner or edge snaps like a resize handle.
-                let (c, guides) = point_snap::snap(&targets, &[ev.p()], None, ev.zoom, (modes.0, false), None);
+                let (c, guides) = point_snap::snap(&targets, &[ev.p()], None, ev.zoom, (modes.0, None), None);
                 self.tool.overlay.guides = guides;
                 let q = b.frame.inverse() * (ev.p() + c);
                 let (x0, y0, x1, y1) = crate::tools::resized_box(handle, q, b.width, b.height, ev.shift, ev.alt);

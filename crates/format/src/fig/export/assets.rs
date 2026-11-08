@@ -257,6 +257,9 @@ impl<'d> Exporter<'d> {
                 }
                 f.push(("variableScopes", arr(known)));
             }
+            if v.design_token_type.is_some() {
+                self.warn("variables' design token type hints were left out");
+            }
             if v.hidden_from_publishing || !v.code_syntax.is_empty() || v.extends.is_some() {
                 self.warn("variables' publishing, code syntax and inheritance settings were left out");
             }

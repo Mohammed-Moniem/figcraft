@@ -280,9 +280,7 @@ fn render_one(doc: &Document, page: NodeId, view: &View, opts: &Options) -> Opti
     match opts.solo.filter(|id| *id != page && doc.page_of(*id) == Some(page)) {
         Some(id) => draw::draw_node(&ctx, &mut pix, id, xf * parent_transform(doc, id), 0),
         None => {
-            for c in &p.children {
-                draw::draw_node(&ctx, &mut pix, *c, xf, 0);
-            }
+            draw::draw_nodes(&ctx, &mut pix, p.children.iter().map(|c| (*c, xf)), 0);
         }
     }
     Some(pix)
@@ -316,9 +314,7 @@ fn nodes_into(doc: &Document, ids: &[NodeId], view: &View, pix: &mut Pixmap, tim
     };
     // 0, but inside an exporter's [`at_layer_depth`] its depth: one cap for both (#1082).
     let depth = draw::layer_depth();
-    for id in ids {
-        draw::draw_node(&ctx, pix, *id, view.transform() * parent_transform(doc, *id), depth);
-    }
+    draw::draw_nodes(&ctx, pix, ids.iter().map(|id| (*id, view.transform() * parent_transform(doc, *id))), depth);
 }
 
 /// The page transform of layer `id`'s parent.
@@ -529,6 +525,8 @@ pub fn png_insert_chunk(png: Vec<u8>, kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
     out
 }
 
+#[cfg(test)]
+mod abutting_fill_tests;
 #[cfg(test)]
 mod backdrop_shadow_tests;
 #[cfg(test)]

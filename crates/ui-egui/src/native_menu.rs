@@ -4,7 +4,7 @@
 
 use egui::ViewportId;
 use figcraft_engine::catalog::{MENU, SEP};
-use figcraft_engine::keymap::{self, Platform};
+use figcraft_engine::keymap::Platform;
 use serde_json::json;
 
 use crate::FigApp;
@@ -73,7 +73,7 @@ pub fn menu_bar(app: &FigApp, windows: bool) -> craft_menu::MenuBar {
             path(m.menu),
             m.id.into(),
             i18n::menu_item(m.id, m.label).into_owned(),
-            keymap::primary(m.id, Platform::Mac),
+            app.session.prefs.shortcuts.primary(m.id, Platform::Mac),
             enabled,
             checked,
         ));
@@ -89,6 +89,18 @@ pub fn menu_bar(app: &FigApp, windows: bool) -> craft_menu::MenuBar {
 
 /// File ▸ Open recent: the recent files (greyed when the file is gone), then Clear recent.
 fn recent_rows(app: &FigApp, path: Vec<String>, rows: &mut Vec<craft_menu::Row>) {
+    // A native submenu cannot carry an accelerator. Its bound action opens the Recents view,
+    // while the individual files below keep their existing behavior.
+    if let Some(key) = app.session.prefs.shortcuts.primary("file.openRecent", Platform::Mac) {
+        rows.push(craft_menu::Row {
+            path: path.clone(),
+            command: "file.openRecent".into(),
+            label: tr("Show recent files").into(),
+            shortcut: craft_menu::Chord::parse(key).ok(),
+            enabled: true,
+            kind: craft_menu::ItemKind::Plain,
+        });
+    }
     let recents: Vec<&String> = crate::home_recents::listed(&app.session.prefs.recent_files).collect();
     for p in &recents {
         let file = std::path::Path::new(p.as_str());
@@ -230,5 +242,9 @@ pub fn gate(app: &mut FigApp, ctx: &egui::Context) -> craft_menu::Gate {
     let modal = windows::as_window(app, front, |app| app.pending_dialog.is_some() || app.ui.palette.is_some() || app.ui.confirm_close)
         .unwrap_or(true)
         || ctx.memory(|m| m.top_modal_layer().is_some());
-    craft_menu::Gate { modal, recording_shortcut: false, text_editing: ctx.egui_wants_keyboard_input() }
+    craft_menu::Gate {
+        modal,
+        recording_shortcut: crate::shortcuts_panel::recording_in(ctx, windows::viewport(front)),
+        text_editing: ctx.egui_wants_keyboard_input(),
+    }
 }

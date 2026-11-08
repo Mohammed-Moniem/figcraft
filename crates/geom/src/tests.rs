@@ -139,33 +139,51 @@ fn ellipse_ring_area() {
 
 #[test]
 fn issue_2080_whole_ellipses_have_four_anchors_at_the_extremes() {
+    use kurbo::PathEl::{ClosePath, CurveTo, MoveTo};
     for (w, h) in [(100.0, 100.0), (320.0, 40.0), (1.0, 400.0)] {
         for sweep in [TAU, -TAU] {
             let path = ellipse(w, h, 1.3, sweep, 0.0);
-            let anchors: Vec<_> = path
-                .elements()
-                .iter()
-                .filter_map(|e| match e {
-                    kurbo::PathEl::CurveTo(_, _, end) => Some(*end),
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(anchors, vec![Point::new(w / 2.0, h), Point::new(0.0, h / 2.0), Point::new(w / 2.0, 0.0), Point::new(w, h / 2.0)]);
-            assert!(matches!(path.elements().last(), Some(kurbo::PathEl::ClosePath)));
+            let [MoveTo(start), CurveTo(a, b, bottom), CurveTo(c, d, left), CurveTo(e, f, top), CurveTo(g, i, right), ClosePath] = path.elements()
+            else {
+                panic!("a whole ellipse must be exactly one move, four cubic segments and a close: {:?}", path.elements());
+            };
+            assert_eq!(*start, Point::new(w, h / 2.0));
+            assert_eq!([*bottom, *left, *top, *right], [Point::new(w / 2.0, h), Point::new(0.0, h / 2.0), Point::new(w / 2.0, 0.0), *start]);
+            // Handles are axis-aligned tangents at every extreme, at the standard quarter-ellipse length.
+            assert_eq!([a.x, d.x, e.x, i.x], [w, 0.0, 0.0, w]);
+            assert_eq!([b.y, c.y, f.y, g.y], [h, h, 0.0, 0.0]);
+            let k = 0.552_284_749_830_793_4;
+            for (handle, radius) in [
+                (a.y - h / 2.0, h / 2.0),
+                (b.x - w / 2.0, w / 2.0),
+                (w / 2.0 - c.x, w / 2.0),
+                (d.y - h / 2.0, h / 2.0),
+                (h / 2.0 - e.y, h / 2.0),
+                (w / 2.0 - f.x, w / 2.0),
+                (g.x - w / 2.0, w / 2.0),
+                (h / 2.0 - i.y, h / 2.0),
+            ] {
+                assert!((handle / radius - k).abs() < 1e-12);
+            }
         }
     }
 }
 
 #[test]
 fn issue_2080_whole_rings_have_four_anchors_on_each_closed_contour() {
-    let path = ellipse(200.0, 100.0, 0.0, TAU, 0.5);
-    let contours = split_subpaths(&path);
-    assert_eq!(contours.len(), 2);
-    for contour in &contours {
-        assert_eq!(contour.elements().iter().filter(|e| matches!(e, kurbo::PathEl::CurveTo(..))).count(), 4);
-        assert!(matches!(contour.elements().last(), Some(kurbo::PathEl::ClosePath)));
+    use kurbo::PathEl::{ClosePath, CurveTo, MoveTo};
+    for sweep in [TAU, -TAU] {
+        let path = ellipse(200.0, 100.0, 0.0, sweep, 0.5);
+        let contours = split_subpaths(&path);
+        assert_eq!(contours.len(), 2);
+        for contour in &contours {
+            let [MoveTo(start), CurveTo(_, _, _), CurveTo(_, _, _), CurveTo(_, _, _), CurveTo(_, _, end), ClosePath] = contour.elements() else {
+                panic!("each ring contour must be exactly one move, four cubic segments and a close: {:?}", contour.elements());
+            };
+            assert_eq!(start, end);
+        }
+        assert!(contours[0].area() * contours[1].area() < 0.0, "the hole must keep opposite winding");
     }
-    assert!(contours[0].area() * contours[1].area() < 0.0, "the hole must keep opposite winding");
 }
 
 #[test]

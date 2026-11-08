@@ -12,6 +12,242 @@ use serde_json::json;
 use crate::RightTab;
 use crate::layers_drag_tests::Ui;
 
+fn custom_text(shapes: &[egui::epaint::ClippedShape], label: &str) -> egui::Pos2 {
+    fn find(shape: &egui::Shape, label: &str) -> Option<egui::Pos2> {
+        match shape {
+            egui::Shape::Text(t) if t.galley.job.text == label => Some(t.pos + t.galley.size() / 2.0),
+            egui::Shape::Vec(shapes) => shapes.iter().find_map(|shape| find(shape, label)),
+            _ => None,
+        }
+    }
+    shapes.iter().find_map(|shape| find(&shape.shape, label)).unwrap_or_else(|| panic!("missing visible text {label}"))
+}
+
+fn custom_click(u: &mut Ui, label: &str) {
+    let output = u.frame_output(vec![]);
+    let p = custom_text(&output.shapes, label);
+    u.button(p, true);
+    u.button(p, false);
+}
+
+fn custom_panel(u: &mut Ui, id: &str) {
+    u.ctx.set_os(egui::os::OperatingSystem::Mac);
+    u.app.ui.shortcuts_panel = true;
+    u.app.ui.shortcuts_query = id.to_string();
+    u.frame(vec![]);
+    u.frame(vec![]);
+}
+
+#[test]
+fn custom_shortcut_unbound_row_records_persists_reopens_dispatches_and_resets() {
+    let (mut u, _, _) = setup();
+    let command = "file.versionHistory";
+    custom_panel(&mut u, command);
+    let title = figcraft_engine::keymap::command_binding(command).unwrap().title();
+    custom_click(&mut u, title);
+    assert!(crate::shortcuts_panel::recording(&u.ctx));
+    press(&mut u, Key::F8, Modifiers::ALT);
+    assert!(!crate::shortcuts_panel::recording(&u.ctx));
+    assert!(!u.app.ui.versions.open, "recording the key does not invoke it");
+    assert_eq!(u.app.ui.shortcuts_query, command, "no text leaked into search");
+    assert_eq!(crate::shortcuts::shortcut_for(&u.app, command), Some("Alt+F8"));
+    let palette = crate::menus::command_sections_for(&u.app.session.prefs, command);
+    let hint = &palette.iter().flat_map(|(_, rows)| rows).find(|r| r.key == format!("command:{command}")).unwrap().hint;
+    assert_eq!(hint, &crate::toolbar::pretty_shortcut("Alt+F8"));
+    let bar = crate::native_menu::menu_bar(&u.app, true);
+    assert_eq!(bar.find(&command.into()).unwrap().shortcut, craft_menu::Chord::parse("Alt+F8").ok());
+    let commands = crate::control::handle(&mut u.app, &u.ctx, "engine.commands", &json!({})).unwrap();
+    assert_eq!(commands.as_array().unwrap().iter().find(|c| c["id"] == command).unwrap()["shortcut"], "Alt+F8");
+    u.app.ui.shortcuts_panel = false;
+    press(&mut u, Key::F8, Modifiers::ALT);
+    assert!(u.app.ui.versions.open, "previously unbound command invokes its actual panel");
+    let saved = serde_json::to_value(&u.app.session.prefs).unwrap();
+    let mut session = Session::new();
+    session.prefs = serde_json::from_value(saved).unwrap();
+    let mut reopened = Ui::new(session);
+    custom_panel(&mut reopened, command);
+    assert_eq!(crate::shortcuts::shortcut_for(&reopened.app, command), Some("Alt+F8"));
+    custom_click(&mut reopened, "Reset all shortcuts");
+    assert!(crate::shortcuts::shortcut_for(&reopened.app, command).is_none());
+    assert_eq!(serde_json::to_value(&reopened.app.session.prefs).unwrap()["shortcuts"], json!({}));
+}
+
+#[test]
+fn custom_shortcut_conflict_buttons_and_escape_do_not_run_the_captured_command() {
+    let (mut u, _, _) = setup();
+    let command = "file.versionHistory";
+    custom_panel(&mut u, command);
+    let title = figcraft_engine::keymap::command_binding(command).unwrap().title();
+    custom_click(&mut u, title);
+    press(&mut u, Key::K, Modifiers::COMMAND);
+    assert!(u.app.ui.palette.is_none());
+    assert!(crate::shortcuts::shortcut_for(&u.app, command).is_none(), "conflict is pending");
+    assert!(crate::native_menu::gate(&mut u.app, &u.ctx).recording_shortcut);
+    custom_click(&mut u, "Cancel");
+    assert_eq!(crate::shortcuts::shortcut_for(&u.app, "app.actions"), Some("Cmd+K"));
+    custom_click(&mut u, title);
+    press(&mut u, Key::K, Modifiers::COMMAND);
+    custom_click(&mut u, "Replace shortcut");
+    assert_eq!(crate::shortcuts::shortcut_for(&u.app, command), Some("Cmd+K"));
+    assert_eq!(crate::shortcuts::shortcut_for(&u.app, "app.actions"), Some("Cmd+/"), "other alternate survives explicit replacement");
+    custom_click(&mut u, title);
+    let before = u.app.session.prefs.clone();
+    press(&mut u, Key::Escape, Modifiers::NONE);
+    assert!(!crate::shortcuts_panel::recording(&u.ctx));
+    assert_eq!(u.app.session.prefs, before);
+    assert!(!u.app.ui.versions.open);
+}
+
+#[test]
+fn custom_shortcut_capture_swallows_text_clipboard_and_release_batches() {
+    let (mut u, _, _) = setup();
+    custom_panel(&mut u, "view.zoomIn");
+    crate::shortcuts_panel::begin_capture(&mut u.app, &u.ctx, "view.zoomIn");
+    let before = zoom(&u);
+    u.frame(vec![
+        Event::Key { key: Key::F8, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::ALT },
+        Event::Text("leak".into()),
+        Event::Paste("leak".into()),
+    ]);
+    assert_eq!(zoom(&u), before);
+    assert_eq!(u.app.ui.shortcuts_query, "view.zoomIn");
+    u.frame(vec![Event::Key { key: Key::F8, physical_key: None, pressed: true, repeat: true, modifiers: Modifiers::ALT }]);
+    assert_eq!(zoom(&u), before, "held captured key is not dispatched on repeat");
+    u.frame(vec![Event::Key { key: Key::F8, physical_key: None, pressed: false, repeat: false, modifiers: Modifiers::ALT }]);
+    press(&mut u, Key::F8, Modifiers::ALT);
+    assert!(zoom(&u) > before, "a new press dispatches after release");
+}
+
+#[test]
+fn custom_shortcuts_do_not_steal_text_editing_and_recording_does_not_insert_text() {
+    let mut s = Session::new();
+    let t = id(s.execute("text.create", &json!({"text": "Hello", "x": 0, "y": 0})).unwrap());
+    s.execute("select.set", &json!({"ids": [t]})).unwrap();
+    s.execute("text.edit.begin", &json!({"id": t})).unwrap();
+    s.execute("pref.shortcut", &json!({"id": "view.zoomIn", "keys": ["Alt+F8"]})).unwrap();
+    let mut u = Ui::new(s);
+    u.ctx.set_os(egui::os::OperatingSystem::Mac);
+    let before = zoom(&u);
+    press(&mut u, Key::F8, Modifiers::ALT);
+    assert_eq!(zoom(&u), before, "canvas command is not live in a text editor");
+    press(&mut u, Key::A, Modifiers::COMMAND);
+    press(&mut u, Key::U, Modifiers::COMMAND);
+    assert_eq!(u.app.session.doc().unwrap().node(t).unwrap().kind.text().unwrap().style_at(1).decoration, TextDecoration::Underline);
+    custom_panel(&mut u, "file.versionHistory");
+    crate::shortcuts_panel::begin_capture(&mut u.app, &u.ctx, "file.versionHistory");
+    u.frame(vec![
+        Event::Key { key: Key::F9, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::ALT },
+        Event::Text("leak".into()),
+        Event::Paste("leak".into()),
+    ]);
+    assert_eq!(u.app.session.doc().unwrap().node(t).unwrap().kind.text().unwrap().characters, "Hello");
+    assert!(!u.app.ui.versions.open);
+}
+
+#[test]
+fn custom_shortcut_capture_swallows_os_clipboard_repeats_until_modifier_release() {
+    let (mut u, _, _) = setup();
+    custom_panel(&mut u, "edit.copy");
+    crate::shortcuts_panel::begin_capture(&mut u.app, &u.ctx, "edit.copy");
+    let before = u.app.session.clipboard.layers_generation;
+    u.frame_with(vec![Event::Copy], Modifiers::COMMAND);
+    assert_eq!(u.app.session.clipboard.layers_generation, before);
+    u.frame_with(vec![Event::Copy], Modifiers::COMMAND);
+    assert_eq!(u.app.session.clipboard.layers_generation, before, "no physical key-up is delivered for an OS copy event");
+    u.frame_with(vec![], Modifiers::NONE);
+    u.frame_with(vec![Event::Copy], Modifiers::COMMAND);
+    assert!(u.app.session.clipboard.layers_generation > before, "a fresh OS copy works after releasing the modifier");
+}
+
+#[test]
+fn custom_shortcut_capture_preserves_modifiers_across_raw_clipboard_batches() {
+    let (mut u, _, _) = setup();
+    custom_panel(&mut u, "edit.copy");
+    crate::shortcuts_panel::begin_capture(&mut u.app, &u.ctx, "edit.copy");
+    let before = u.app.session.clipboard.layers_generation;
+    u.frame_with(vec![Event::Copy], Modifiers::COMMAND);
+    assert_eq!(u.app.session.clipboard.layers_generation, before);
+    // A real host reports a modifier only when it changes. The next clipboard repeat has no
+    // ModifiersChanged event, so it must inherit the command key still held by the first batch.
+    u.frame_raw(egui::RawInput { events: vec![Event::Copy], ..Default::default() });
+    assert_eq!(u.app.session.clipboard.layers_generation, before, "recording still owns this repeat");
+    assert!(u.ctx.input(|i| i.modifiers.command), "capture must preserve the physical modifier state");
+    u.frame_raw(egui::RawInput { events: vec![Event::ModifiersChanged(Modifiers::NONE)], ..Default::default() });
+    u.frame_with(vec![Event::Copy], Modifiers::COMMAND);
+    assert!(u.app.session.clipboard.layers_generation > before, "a new copy works after modifier release");
+}
+
+#[test]
+fn custom_shortcut_row_context_menu_removes_and_restores_defaults() {
+    let (mut u, _, _) = setup();
+    custom_panel(&mut u, "view.zoomIn");
+    u.app.run("pref.shortcut", json!({"id": "view.zoomIn", "platform": "mac", "keys": ["Alt+F8"]}));
+    let title = figcraft_engine::keymap::command_binding("view.zoomIn").unwrap().title();
+    for action in ["Remove shortcut", "Reset shortcut"] {
+        let output = u.frame_output(vec![]);
+        let p = custom_text(&output.shapes, title);
+        for pressed in [true, false] {
+            u.frame(vec![
+                Event::PointerMoved(p),
+                Event::PointerButton { pos: p, button: egui::PointerButton::Secondary, pressed, modifiers: Modifiers::NONE },
+            ]);
+        }
+        custom_click(&mut u, action);
+        if action == "Remove shortcut" {
+            assert!(crate::shortcuts::shortcut_for(&u.app, "view.zoomIn").is_none());
+        } else {
+            assert_eq!(crate::shortcuts::shortcut_for(&u.app, "view.zoomIn"), Some("Cmd+="));
+            assert!(!u.app.session.prefs.shortcuts.overridden("view.zoomIn", figcraft_engine::keymap::Platform::Mac));
+        }
+    }
+}
+
+#[test]
+fn custom_shortcut_open_recent_has_a_native_accelerator_and_opens_recents() {
+    let (mut u, _, _) = setup();
+    custom_panel(&mut u, "file.openRecent");
+    u.app.run("pref.shortcut", json!({"id": "file.openRecent", "platform": "mac", "keys": ["Alt+F10"]}));
+    let bar = crate::native_menu::menu_bar(&u.app, true);
+    let item = bar.find(&"file.openRecent".into()).unwrap();
+    assert_eq!(item.shortcut, craft_menu::Chord::parse("Alt+F10").ok());
+    assert_eq!(item.label, "Show recent files");
+    u.app.ui.shortcuts_panel = false;
+    press(&mut u, Key::F10, Modifiers::ALT);
+    assert!(u.app.ui.home);
+    assert_eq!(u.app.ui.home_view.section, crate::home::Section::Recents);
+}
+
+#[test]
+fn custom_shortcut_capture_drains_gesture_keys_held_before_recording() {
+    let (mut u, _, _) = setup();
+    custom_panel(&mut u, "view.zoomIn");
+    u.frame(vec![Event::Key { key: Key::Space, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }]);
+    crate::shortcuts_panel::begin_capture(&mut u.app, &u.ctx, "view.zoomIn");
+    press(&mut u, Key::F9, Modifiers::ALT);
+    assert!(crate::shortcuts_panel::recording(&u.ctx), "the earlier Space still belongs to recording until release");
+    u.frame(vec![Event::Key { key: Key::Space, physical_key: None, pressed: false, repeat: false, modifiers: Modifiers::NONE }]);
+    assert!(!crate::shortcuts_panel::recording(&u.ctx));
+}
+
+#[test]
+fn custom_shortcut_dispatch_replaces_default_and_can_be_disabled() {
+    let (mut u, _, _) = setup();
+    u.ctx.set_os(egui::os::OperatingSystem::Mac);
+    assert!(u.app.run("pref.shortcut", json!({"id": "view.zoomIn", "keys": ["Alt+F8"]})).is_some());
+    let before = zoom(&u);
+    press(&mut u, Key::F8, Modifiers::ALT);
+    assert!(zoom(&u) > before, "custom chord dispatches the command");
+    let before = zoom(&u);
+    press(&mut u, Key::Plus, Modifiers::SHIFT);
+    assert_eq!(zoom(&u), before, "default was replaced");
+    u.app.run("pref.shortcut", json!({"id": "view.zoomIn", "keys": []}));
+    press(&mut u, Key::F8, Modifiers::ALT);
+    assert_eq!(zoom(&u), before, "empty keys unbinds");
+    u.app.run("pref.resetShortcut", json!({"id": "view.zoomIn"}));
+    press(&mut u, Key::Plus, Modifiers::SHIFT);
+    assert!(zoom(&u) > before, "row reset restores the default");
+}
+
 fn id(v: serde_json::Value) -> NodeId {
     NodeId(v["id"].as_u64().unwrap())
 }

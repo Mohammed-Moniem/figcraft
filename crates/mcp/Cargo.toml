@@ -8,12 +8,17 @@ description = "FigCraft MCP server: JSON-RPC 2.0 over stdio, driving a headless 
 [lints]
 workspace = true
 
+[features]
+default = ["headless"]
+headless = ["dep:figcraft-engine", "dep:figcraft-collab-net", "dep:figcraft-doc", "dep:figcraft-geom", "dep:figcraft-render"]
+
 [dependencies]
-figcraft-engine = { workspace = true }
-figcraft-collab-net = { workspace = true }
-figcraft-doc = { workspace = true }
-figcraft-geom = { workspace = true }
-figcraft-render = { workspace = true }
+figcraft-automation-json = { workspace = true }
+figcraft-engine = { workspace = true, optional = true }
+figcraft-collab-net = { workspace = true, optional = true }
+figcraft-doc = { workspace = true, optional = true }
+figcraft-geom = { workspace = true, optional = true }
+figcraft-render = { workspace = true, optional = true }
 serde_json = { workspace = true }
 base64 = { workspace = true }
 log = { workspace = true }
@@ -21,3 +26,13 @@ log = { workspace = true }
 [dev-dependencies]
 proptest = { workspace = true }
 image = { workspace = true }
+
+[[test]]
+name = "it"
+path = "tests/it/main.rs"
+required-features = ["headless"]
+
+[[test]]
+name = "custom_shortcuts"
+path = "tests/custom_shortcuts.rs"
+required-features = ["headless"]

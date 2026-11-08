@@ -120,6 +120,87 @@ pub(super) fn drawn(app: &FigApp, ctx: &Context) -> usize {
     out.shapes.len()
 }
 
+fn selection_outline_opacity_colors(app: &FigApp, ctx: &Context) -> Vec<Color32> {
+    let mut out = ctx.run_ui(egui::RawInput { time: Some(0.0), ..Default::default() }, |ui| {
+        overlays(app, &ui.ctx().layer_painter(LayerId::background()), &Tokens::light());
+    });
+    out.textures_delta.clear();
+    let mut colors = Vec::new();
+    for clipped in ctx.tessellate(out.shapes, out.pixels_per_point) {
+        if let egui::epaint::Primitive::Mesh(mesh) = clipped.primitive {
+            colors.extend(mesh.vertices.into_iter().map(|v| v.color).filter(|c| c.a() > 0));
+        }
+    }
+    colors.sort_by_key(|c| c.to_array());
+    colors
+}
+
+#[test]
+fn selection_outline_opacity_saved_percentage_fades_actual_cached_selection_paint() {
+    let (mut app, ctx, _) = setup();
+    let full = selection_outline_opacity_colors(&app, &ctx);
+    assert!(full.iter().any(|c| c.a() == 255));
+    let geometry_before = geometry(&app, &ctx);
+    // Use a saved preference rather than a new field/API so the original baseline compiles and
+    // genuinely shows its unchanged opaque selection paint before the implementation.
+    app.session.prefs = serde_json::from_value(json!({"selection_outline_opacity":25.0})).unwrap();
+    let faded = selection_outline_opacity_colors(&app, &ctx);
+    assert!(!faded.is_empty());
+    assert!(faded.iter().all(|c| c.a() <= 64), "all selected geometry, handles and labels fade; max alpha {:?}", faded.iter().map(|c| c.a()).max());
+    assert!(kept(&geometry_before, &geometry(&app, &ctx)), "opacity does not invalidate or recolor cached geometry");
+    app.session.prefs = serde_json::from_value(json!({"selection_outline_opacity":100.0})).unwrap();
+    assert_eq!(selection_outline_opacity_colors(&app, &ctx), full, "100% restores the exact original paint");
+}
+
+#[test]
+fn selection_outline_opacity_zero_hides_only_the_selection_and_default_stays_visible() {
+    let (mut app, ctx, ids) = setup();
+    let default = selection_outline_opacity_colors(&app, &ctx);
+    app.session.prefs = serde_json::from_value(json!({"selection_outline_opacity":100.0})).unwrap();
+    assert_eq!(selection_outline_opacity_colors(&app, &ctx), default, "the new default preserves paint");
+    app.session.prefs = serde_json::from_value(json!({"selection_outline_opacity":0.0})).unwrap();
+    assert!(selection_outline_opacity_colors(&app, &ctx).is_empty(), "zero opacity paints no normal selection chrome");
+    assert_eq!(app.session.selection(), ids[..3]);
+    app.session.ds_mut().unwrap().hover = Some(ids[3]);
+    let hover = selection_outline_opacity_colors(&app, &ctx);
+    assert!(hover.iter().any(|c| c.a() == 255), "ordinary unselected hover remains visible");
+}
+
+#[test]
+fn selection_outline_opacity_default_keeps_the_existing_visibility_toggle() {
+    let (mut app, ctx, _) = setup();
+    let full = selection_outline_opacity_colors(&app, &ctx);
+    app.session.prefs = serde_json::from_value(json!({"selection_outline_opacity":100.0})).unwrap();
+    assert_eq!(selection_outline_opacity_colors(&app, &ctx), full);
+    crate::menus::invoke(&mut app, "view.selectionOutlines");
+    assert!(selection_outline_opacity_colors(&app, &ctx).is_empty());
+    crate::menus::invoke(&mut app, "view.selectionOutlines");
+    assert_eq!(selection_outline_opacity_colors(&app, &ctx), full);
+}
+
+#[test]
+fn selection_outline_opacity_does_not_fade_text_carets_or_vector_editing_points() {
+    for vector in [false, true] {
+        let mut s = Session::new();
+        if vector {
+            let path = s.execute("vector.create", &json!({"points":[[100,100],[200,100],[300,100]],"closed":false})).unwrap()["id"].clone();
+            s.execute("vector.edit.begin", &json!({"id":path})).unwrap();
+            s.execute("vector.edit.select", &json!({"vertices":[1]})).unwrap();
+        } else {
+            let text = s.execute("node.create", &json!({"type":"text","text":"Editable","x":0,"y":0})).unwrap()["id"].clone();
+            s.execute("text.edit.begin", &json!({"id":text,"caret":3})).unwrap();
+        }
+        let mut app = FigApp::new(s, Box::new(NoServices));
+        app.canvas.rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0));
+        let ctx = Context::default();
+        set_canvas_page(&ctx, Color32::WHITE);
+        let full = selection_outline_opacity_colors(&app, &ctx);
+        assert!(!full.is_empty());
+        app.session.prefs = serde_json::from_value(json!({"selection_outline_opacity":0.0})).unwrap();
+        assert_eq!(selection_outline_opacity_colors(&app, &ctx), full, "active editing aids are unaffected (vector={vector})");
+    }
+}
+
 #[test]
 fn the_hover_and_drop_highlights_show_over_kept_geometry() {
     let (mut app, ctx, ids) = setup();

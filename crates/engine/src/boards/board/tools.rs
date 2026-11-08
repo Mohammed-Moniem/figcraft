@@ -100,13 +100,41 @@ impl Session {
     /// is within [`ATTACH_PX`], else the side [`side_at`] the pointer; with Cmd/Ctrl held, right
     /// there), or the point.
     fn end_at(&self, ev: &PointerEvent) -> End {
+        self.end_at_without(ev, None)
+    }
+
+    /// Reattaching must look behind the connector being dragged and its label. Ordinary hit
+    /// testing is unchanged; only this connector's otherwise blocking hit is bypassed.
+    fn connector_target(&self, doc: &Document, page: NodeId, p: Point, tol: f64, except: Option<NodeId>) -> Option<NodeId> {
+        let target = |leaf| figcraft_doc::geometry::select_target(doc, leaf, &[], false);
+        let ignored = |id| {
+            except.is_some_and(|except| {
+                id == except || doc.node(id).is_some_and(|n| matches!(n.board, Some(BoardItem::Label { connector }) if connector == except))
+            })
+        };
+        let first = target(self.hit(doc, page, p, tol)?);
+        if !ignored(first) {
+            return Some(first);
+        }
+        let ds = self.ds().ok()?;
+        let selection = self.selection();
+        let result = crate::booleans::result_outline(doc, &selection);
+        let root = ds.focused().unwrap_or(page);
+        let outlines =
+            ds.view.outlines.then_some(figcraft_doc::geometry::OutlineHits { hidden: ds.view.outline_hidden, bounds: ds.view.outline_bounds });
+        figcraft_doc::geometry::hit_without_connector(doc, root, p, tol, Some(&result), outlines, except?).map(target)
+    }
+
+    fn end_at_without(&self, ev: &PointerEvent, except: Option<NodeId>) -> End {
         let zoom = ev.zoom.max(1e-6);
         let hit = (|| {
             let ds = self.ds().ok()?;
             // Under the connector being dragged out (previewed in the document), not on it.
             let doc = ds.interaction.as_ref().map_or(&*ds.doc, |it| &*it.doc);
-            let leaf = self.hit(doc, ds.page, ev.p(), 2.0 / zoom)?;
-            let t = figcraft_doc::geometry::select_target(doc, leaf, &[], false);
+            // An automatic endpoint is drawn outside the shape. It must still attach when
+            // dropped there, including at high zoom. Cmd/Ctrl placement keeps its old exact hit.
+            let clearance = if ev.cmd { 0.0 } else { figcraft_doc::END_GAP };
+            let t = self.connector_target(doc, ds.page, ev.p(), clearance + 2.0 / zoom, except)?;
             let n = doc.node(t)?;
             if matches!(n.board, Some(BoardItem::Connector(_)) | Some(BoardItem::Label { .. }) | Some(BoardItem::Ink)) {
                 return None;
@@ -137,9 +165,25 @@ impl Session {
     /// (`at`, else its named side's) lit.
     fn show_attach(&mut self, end: Option<End>, at: Option<Point>) {
         let attach = match end {
-            Some(End::Node { node, side, .. }) => self.doc().ok().and_then(|d| d.world_bounds(node)).map(|b| {
+            Some(End::Node { node, side, at: manual }) => self.doc().ok().and_then(|d| d.world_bounds(node)).map(|b| {
                 let on = at.or_else(|| (side != Side::Auto).then(|| side.point(b)));
-                SIDES.map(|s| s.point(b)).map(|p| ([p.x, p.y], on.is_some_and(|o| (o - p).hypot() < 1e-6))).to_vec()
+                // Automatic route ends are offset from their border indicator. Keep the nearest
+                // side lit; hand-placed points retain the previous exact-point indication.
+                let tolerance = if manual.is_some() { 1e-6 } else { figcraft_doc::END_GAP + 1e-6 };
+                let lit = on.and_then(|on| {
+                    SIDES
+                        .into_iter()
+                        .map(|s| (s, (s.point(b) - on).hypot()))
+                        .filter(|(_, d)| *d <= tolerance)
+                        .min_by(|a, b| a.1.total_cmp(&b.1))
+                        .map(|(s, _)| s)
+                });
+                SIDES
+                    .map(|s| {
+                        let p = s.point(b);
+                        ([p.x, p.y], lit == Some(s))
+                    })
+                    .to_vec()
             }),
             _ => None,
         };
@@ -203,7 +247,7 @@ impl Session {
         let fixed = ends_now(doc, id).map(|(a, b)| if from { b } else { a });
         let other = other_end(doc, id, from).and_then(|e| e.node());
         self.tool.overlay.rubber = fixed.map(|f| [f.x, f.y, ev.x, ev.y]);
-        let target = Some(self.end_at(ev)).filter(|e| e.node().is_none() || e.node() != other);
+        let target = Some(self.end_at_without(ev, Some(id))).filter(|e| e.node().is_none() || e.node() != other);
         self.show_attach(target, None);
         if let Ok(ds) = self.ds_mut() {
             ds.revision += 1;
@@ -218,7 +262,7 @@ impl Session {
         if (ev.p() - start).hypot() * ev.zoom.max(1e-6) < 4.0 {
             return Ok(());
         }
-        let target = self.end_at(ev);
+        let target = self.end_at_without(ev, Some(id));
         let other = other_end(self.doc()?, id, from).and_then(|e| e.node());
         if target.node().is_some() && target.node() == other {
             return Ok(());

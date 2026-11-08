@@ -1,14 +1,10 @@
-//! A JPEG header check run before any JPEG from a file is decoded: on the canvas and in exports
-//! (`figcraft-render`) and for the pictures files carry ([`crate::thumbnail`]).
+//! JPEG sampling-header inspection. This remains available for diagnostics; it is not a decode
+//! denylist. The PR374 backport lets valid progressive CMYK frames reach the bounded decoder.
 
 /// Whether `bytes` are a progressive JPEG whose frame samples some component more finely (across
-/// or down) than its first. zune-jpeg 0.5.15, the decoder behind `image`, asserts in its upsampler
-/// on such a frame (etemesi254/zune-image#236; fixed there by 36007420, unreleased as of
-/// 0.5.16-rc3), and in the browser a panic aborts the page. Until the fix ships, such a JPEG is
-/// refused from its header: the decoder refuses the larger ones itself, so nothing that decoded is
-/// lost. Baseline frames of the same shape decode and are left to it.
-/// shortcut: remove this check (and its callers' early return) once `Cargo.lock` has zune-jpeg
-/// 0.5.16 or later.
+/// or down) than its first. Unpatched zune-jpeg 0.5.15 asserted on some such frames. The local
+/// package backports both sampling-stride and scratch-space fixes from upstream PR374, so this
+/// property alone no longer rejects an image. Header inspection does not establish pixel validity.
 pub fn finer_than_first(bytes: &[u8]) -> bool {
     let Some((marker, frame)) = frame(bytes) else { return false };
     if !matches!(marker, 0xC2 | 0xC6 | 0xCA | 0xCE) {

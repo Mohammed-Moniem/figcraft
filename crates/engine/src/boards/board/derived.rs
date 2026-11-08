@@ -81,6 +81,27 @@ pub(crate) fn settle_routes(doc: &mut Document, before: &Document, touched: &BTr
     }
 }
 
+/// Older native boards saved automatic connector metadata alongside their old border-start
+/// vectors. Refresh only those derived routes on load; manual points and imported vectors keep
+/// their exact saved geometry. The caller adopts the result into its clean saved baseline.
+pub(crate) fn settle_loaded_routes(doc: &mut Document) {
+    if !is_board(doc) {
+        return;
+    }
+    let automatic: BTreeSet<NodeId> = doc
+        .nodes()
+        .filter_map(|n| match &n.board {
+            Some(BoardItem::Connector(c)) if [c.from, c.to].into_iter().any(|end| matches!(end, End::Node { at: None, .. })) => Some(n.id),
+            _ => None,
+        })
+        .collect();
+    if automatic.is_empty() {
+        return;
+    }
+    let before = doc.clone();
+    settle_routes(doc, &before, &automatic);
+}
+
 /// After layout: a stamp moves with the object it sits on; one moved by itself (a drag, a nudge)
 /// sits on whatever is under its centre now; one whose object is gone, or on another page, sits on
 /// nothing and stays where it is.
@@ -287,7 +308,7 @@ pub(super) fn place_route(doc: &mut Document, id: NodeId, pts: &[Point], routing
 }
 
 /// The page points connector `c` runs through (see [`figcraft_doc::route_points`]): from the
-/// middle of the side of each attached layer facing the other end (or the side it names).
+/// outside the middle of each attached layer's side facing the other end (or the side it names).
 pub fn route(doc: &Document, c: &Connector) -> Option<Vec<Point>> {
     let (from, to) = route_ends(doc, c)?;
     figcraft_doc::route_along(from, to, c.routing, c.path.as_ref())

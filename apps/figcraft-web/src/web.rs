@@ -8,8 +8,7 @@ const CANVAS_ID: &str = "figcraft_canvas";
 const LOADING_ID: &str = "figcraft_loading";
 /// What the page shows once it stopped on an internal error (styled in `index.html`).
 const STOPPED_ID: &str = "figcraft_stopped";
-/// The local storage key your name is kept under ([`crate::kept`]).
-const NAME_KEY: &str = "figcraft.userName";
+const PREFS_ERROR: &str = "figcraft.kept.error";
 /// The local storage key the recovery copies are kept under ([`crate::recovery`]): a JSON list of
 /// base64 `.figcraft` files.
 const RECOVERY_KEY: &str = "figcraft.recovery";
@@ -66,13 +65,23 @@ pub fn start() {
                     if let Some(server) = page_meta("figcraft-server").as_deref().and_then(crate::query::page_server) {
                         session.prefs.publish_server = server;
                     }
-                    crate::kept::restore_name(&mut session, local_storage().and_then(|s| s.get_item(NAME_KEY).ok().flatten()));
+                    let storage = local_storage();
+                    let (restored, preferences) =
+                        crate::browser_prefs::load(&mut session, |key| storage.as_ref().ok_or(())?.get_item(key).map_err(|_| ()));
+                    let preferences_readable = preferences.readable();
+                    let visit_name = preferences.visit_name_capture();
                     let recovered = restore_unsaved(&mut session);
                     // Live sessions: the browser joins sessions and publishes files to servers;
                     // whatever arrives on the socket wakes the page for a frame.
                     let ctx = cc.egui_ctx.clone();
                     session.live.install(Box::new(figcraft_collab_net::NetLink::new(std::sync::Arc::new(move || ctx.request_repaint()))));
-                    let mut fig = FigApp::new(session, Box::new(WebServices { reduce_motion, ctx: cc.egui_ctx.clone(), host: app_bridge.clone() }));
+                    let mut fig = FigApp::new(
+                        session,
+                        Box::new(WebServices { reduce_motion, ctx: cc.egui_ctx.clone(), host: app_bridge.clone(), preferences }),
+                    );
+                    if !restored || !preferences_readable {
+                        fig.show_error(figcraft_ui_egui::browser_preferences_error(true));
+                    }
                     match crate::file_providers::install(fig.file_providers.clone(), cc.egui_ctx.clone()) {
                         Ok(host) => fig.file_providers = host,
                         Err(error) => log::error!("file provider capability could not be installed: {error:?}"),
@@ -82,11 +91,16 @@ pub fn start() {
                         log::error!("couldn't listen for pasted images: {e:?}");
                     }
                     // `?author=`: the host's name for the user signs this visit's comments and board
-                    // notes (nothing is stored in the browser, so nothing needs keeping).
+                    // notes. Capture its exact assignment so other preference saves do not keep
+                    // a visit-only author; explicit different name edits retain normal behavior.
                     if app_bridge.is_some()
                         && let Some(author) = query_param("author")
                     {
+                        let local_name = (!author.trim().is_empty()).then(|| fig.session.prefs.user_name.clone());
                         crate::host::Bridge::set_author(&mut fig, &author);
+                        if let Some(local_name) = local_name {
+                            visit_name.assigned(local_name, fig.session.prefs.user_name.clone());
+                        }
                     }
                     // `#join=<link>`: join that session, as opening an invite link does on the desktop.
                     let hash = web_sys::window().and_then(|w| w.location().hash().ok()).unwrap_or_default();
@@ -210,6 +224,9 @@ impl eframe::App for WebShell {
             });
         }
         figcraft_ui_egui::windows::guard(&mut self.fig, ctx, |fig| fig.background_tick(ctx));
+        if ctx.data_mut(|d| d.remove_temp::<bool>(egui::Id::unique(PREFS_ERROR))).unwrap_or(false) {
+            self.fig.show_error(figcraft_ui_egui::browser_preferences_error(false));
+        }
         crate::file_providers::publish(&self.fig.file_providers);
         // The host hears when unsaved changes appear or go away (crate::host).
         if let Some(bridge) = &self.host {
@@ -252,6 +269,8 @@ struct WebServices {
     ctx: egui::Context,
     /// The host bridge in host mode: files are handed over instead of downloaded ([`crate::host`]).
     host: Option<crate::host::Bridge>,
+    /// Independent bounded appearance and joined/name persistence, including visit attribution.
+    preferences: crate::browser_prefs::Storage,
 }
 
 impl Services for WebServices {
@@ -330,10 +349,12 @@ impl Services for WebServices {
     fn reduce_motion(&self) -> bool {
         self.reduce_motion.as_ref().is_some_and(web_sys::MediaQueryList::matches)
     }
-    /// Only your name is kept ([`crate::kept`]): the rest starts afresh with each page.
+    /// Keep the explicit appearance allowlist and separate name/joined record, never all Prefs.
     fn save_prefs(&mut self, prefs: &figcraft_engine::Prefs) {
-        if let Some(Err(e)) = local_storage().map(|s| s.set_item(NAME_KEY, &prefs.user_name)) {
-            log::warn!("couldn't keep your name: {e:?}");
+        if !self.preferences.store(prefs, |key, value| local_storage().is_some_and(|s| s.set_item(key, value).is_ok())) {
+            // Browser exceptions can contain the attempted value. Surface a fixed message only.
+            self.ctx.data_mut(|d| d.insert_temp(egui::Id::unique(PREFS_ERROR), true));
+            self.ctx.request_repaint();
         }
     }
     /// The browser's language (`navigator.language`).

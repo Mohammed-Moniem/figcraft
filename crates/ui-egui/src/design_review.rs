@@ -306,6 +306,9 @@ fn report_reason(finding: &Value) -> (String, String) {
 /// and `toggle` come from the editor's fields; `toggle` is a rule id and whether it is now off.
 /// False when there was nothing to apply.
 pub(crate) fn apply_design_system(app: &mut FigApp, radii: Option<Vec<f64>>, brand: Option<Vec<String>>, toggle: Option<(String, bool)>) -> bool {
+    if !current_review(app) {
+        return false;
+    }
     use serde_json::Map;
     let mut params = Map::new();
     if let Some(r) = radii {
@@ -335,6 +338,8 @@ pub(crate) fn apply_design_system(app: &mut FigApp, radii: Option<Vec<f64>>, bra
 
 /// The window's state, kept while it is open.
 pub struct State {
+    /// Reports and drafts belong to this live document, even when another file reuses its ids.
+    owner: Option<u64>,
     pub scope: Scope,
     pub filter: SeverityFilter,
     /// Re-run after an edit, once the document has been still for a moment.
@@ -381,6 +386,7 @@ impl State {
         }
         let config = app.session.ds().ok().map(|d| d.doc.design_review.clone()).unwrap_or_default();
         Self {
+            owner: app.session.ds().ok().map(|d| d.uid),
             scope: Scope::Page,
             filter: SeverityFilter::All,
             live: false,
@@ -399,6 +405,10 @@ impl State {
             checked_revision: 0,
             changed_at: 0.0,
         }
+    }
+
+    fn owns_document(&self, app: &FigApp) -> bool {
+        self.owner.is_some() && self.owner == app.session.ds().ok().map(|d| d.uid)
     }
 
     fn is_ignored(&self, finding: &Value) -> bool {
@@ -456,6 +466,15 @@ pub(crate) fn open(app: &mut FigApp) {
     check(app);
 }
 
+/// Also guard direct callbacks: a tab can change before the next drawing pass drops the window.
+fn current_review(app: &mut FigApp) -> bool {
+    let current = app.ui.design_review.as_ref().is_some_and(|s| s.owns_document(app));
+    if !current {
+        app.ui.design_review = None;
+    }
+    current
+}
+
 /// The preferences key the window's ignores are kept under: the document's path, empty for a
 /// file that has never been saved (its ignores last for the session).
 fn document_key(app: &FigApp) -> String {
@@ -470,6 +489,9 @@ const MAX_IGNORED_DOCS: usize = 200;
 /// Keep the window's ignores in the preferences under the document's path. An unsaved file has no
 /// key and keeps them for the session only.
 pub(crate) fn persist_ignores(app: &mut FigApp, state: &State) {
+    if !state.owns_document(app) {
+        return;
+    }
     let key = document_key(app);
     if key.is_empty() {
         return;
@@ -492,6 +514,9 @@ pub(crate) fn persist_ignores(app: &mut FigApp, state: &State) {
 
 /// Run `design.audit` for the window's scope and keep the report.
 pub(crate) fn check(app: &mut FigApp) {
+    if !current_review(app) {
+        return;
+    }
     let Some(scope) = app.ui.design_review.as_ref().map(|s| s.scope) else { return };
     let revision = app.session.ds().map(|d| d.revision).unwrap_or(0);
     let result = app.run("design.audit", json!({"scope": scope.id()}));
@@ -517,6 +542,9 @@ pub(crate) fn check(app: &mut FigApp) {
 }
 
 fn fix(app: &mut FigApp, mut params: Value) {
+    if !current_review(app) {
+        return;
+    }
     // The window repairs the rows the user kept, never a descendant finding it ignored.
     if let Some(o) = params.as_object_mut() {
         o.insert("exact".into(), Value::Bool(true));
@@ -530,6 +558,9 @@ fn fix(app: &mut FigApp, mut params: Value) {
 
 /// Repair the visible findings the audit marks fixable, then check again.
 pub(crate) fn fix_all(app: &mut FigApp) {
+    if !current_review(app) {
+        return;
+    }
     let Some(state) = app.ui.design_review.as_ref() else { return };
     let ids = state.nodes(None, false);
     let rules = state.fix_rules();
@@ -546,6 +577,9 @@ fn fix_finding(app: &mut FigApp, rule: &str, node: NodeId) {
 /// Post one finding as a comment anchored to its layer, so the team can discuss it in the
 /// comments workflow (`fix_comments` / `watch_comments`).
 pub(crate) fn comment_on(app: &mut FigApp, node: NodeId, rule: &str, message: &str, path: &str) {
+    if !current_review(app) {
+        return;
+    }
     let found = app.session.doc().ok().and_then(|d| Some((d.world_bounds(node)?.center(), d.page_of(node))));
     let Some((center, page)) = found else { return };
     let text = format!("{} · {rule}\n{message}\n{path}", tr("Design review"));
@@ -669,7 +703,7 @@ fn score_block(ui: &mut egui::Ui, t: &Tokens, score: f64, high: u64, medium: u64
         (SeverityFilter::Low, tr("Low"), low, t.text_tertiary),
     ];
     let counts = |ui: &mut egui::Ui, filter: &mut SeverityFilter, changed: &mut bool| {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             for (choice, label, count, color) in &choices {
                 if chip(ui, t, &format!("{label} {count}"), *filter == *choice, Some(*color)).clicked() && *filter != *choice {
@@ -680,6 +714,13 @@ fn score_block(ui: &mut egui::Ui, t: &Tokens, score: f64, high: u64, medium: u64
         });
     };
     egui::Frame::NONE.fill(t.field).corner_radius(CornerRadius::same(10)).inner_margin(egui::Margin::same(12)).show(ui, |ui| {
+        if ui.available_width() < 370.0 {
+            ui.label(RichText::new(format!("{} {score:.0}", tr("Score"))).size(20.0).strong().color(score_color(t, score)));
+            score_bar(ui, t, score, t.panel);
+            counts(ui, filter, &mut changed);
+            changed |= ui.checkbox(live, tr("Live")).changed();
+            return;
+        }
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 ui.label(RichText::new(format!("{score:.0}")).size(26.0).strong().color(score_color(t, score)));
@@ -803,6 +844,9 @@ pub(crate) fn live_recheck_due(live: bool, seen: u64, checked: u64, changed_at: 
 /// Draw the window. Called once a frame from `dialogs::show`.
 pub(crate) fn show(app: &mut FigApp, ctx: &Context) {
     let Some(mut state) = app.ui.design_review.take() else { return };
+    if !state.owns_document(app) {
+        return;
+    }
     let t = Tokens::get(ctx);
     let now = ctx.input(|i| i.time);
     let revision = app.session.ds().map(|d| d.revision).unwrap_or(0);
@@ -826,8 +870,8 @@ pub(crate) fn show(app: &mut FigApp, ctx: &Context) {
     let mut config_brand: Option<Vec<String>> = None;
     let mut config_toggle: Option<(String, bool)> = None;
 
-    let width = 430.0;
     let screen = ctx.content_rect();
+    let width = (screen.width() - 60.0).clamp(200.0, 430.0);
     // A fixed window height keeps the footer on the window instead of over the toolbar; the list
     // takes what is left after the header, the score and the footer.
     let window_height = (screen.height() - 120.0).clamp(420.0, 720.0);
@@ -841,19 +885,24 @@ pub(crate) fn show(app: &mut FigApp, ctx: &Context) {
         .open(&mut open)
         .show(ctx, |ui| {
             ui.set_width(width);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 let scopes = [Scope::Selection, Scope::Page, Scope::Document];
                 let options: Vec<(&str, bool)> = scopes.iter().map(|s| (tr(s.label()), *s == state.scope)).collect();
                 if let Some(choice) = segmented(ui, &t, &options) {
                     state.scope = scopes[choice];
                     scope_changed = true;
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if primary_button(ui, &t, tr("Check design"), Some(Icon::Check)).clicked() {
-                        action = Some(Action::Check);
-                    }
-                });
+                if width >= 400.0 {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if primary_button(ui, &t, tr("Check design"), Some(Icon::Check)).clicked() {
+                            action = Some(Action::Check);
+                        }
+                    });
+                }
             });
+            if width < 400.0 && primary_button(ui, &t, tr("Check design"), Some(Icon::Check)).clicked() {
+                action = Some(Action::Check);
+            }
             ui.add_space(2.0);
             let config = app.session.ds().map(|d| d.doc.design_review.clone()).unwrap_or_default();
             ui.horizontal(|ui| {

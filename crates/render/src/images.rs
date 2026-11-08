@@ -142,9 +142,6 @@ fn decode_in(bytes: &[u8], target: ColorProfile) -> Option<(Pixmap, bool)> {
 /// tall.
 pub(crate) fn decode_within(bytes: &[u8], target: ColorProfile, max_side: u32, max_bytes: u64) -> Option<(Pixmap, bool)> {
     use image::ImageDecoder;
-    if figcraft_format::jpeg::finer_than_first(bytes) {
-        return None;
-    }
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?;
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(max_bytes);

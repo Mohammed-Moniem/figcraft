@@ -3,7 +3,7 @@
 //! behave the same.
 
 use base64::Engine as _;
-use figcraft_engine::params::normalize_paint;
+use figcraft_automation_json::normalize_paint;
 use serde_json::{Map, Value, json};
 
 use crate::backend::{Backend, decode_data, page_children};
@@ -65,7 +65,7 @@ fn ids_schema(desc: &str) -> Value {
     json!({"type": "array", "description": desc, "items": {"anyOf": [{"type": "integer"}, {"type": "string"}]}})
 }
 fn fields_schema() -> Value {
-    json!({"type": "array", "items": {"type": "string", "enum": figcraft_engine::inspect::NODE_KEYS},
+    json!({"type": "array", "items": {"type": "string", "enum": figcraft_automation_json::NODE_KEYS},
         "description": "Exact, case-sensitive top-level node keys to include at every level, pages too (e.g. name, type, x, fills, characters, pluginData). Omit for all properties; [] keeps only ids and structure. id, children, childCount and the transport's truncated marker are always kept. Selecting visible emits an explicit boolean for every node. Unknown keys are an error."})
 }
 fn outline_schema() -> Value {
@@ -444,12 +444,12 @@ fn req_s<'a>(a: &'a Map<String, Value>, k: &str) -> Result<&'a str, String> {
 fn n_arg(a: &Map<String, Value>, k: &str) -> Result<Option<f64>, String> {
     match a.get(k) {
         None | Some(Value::Null) => Ok(None),
-        Some(v) => figcraft_engine::params::f64_of(v).map(Some).ok_or_else(|| format!("`{k}` must be a finite number")),
+        Some(v) => figcraft_automation_json::f64_of(v).map(Some).ok_or_else(|| format!("`{k}` must be a finite number")),
     }
 }
 
 fn id_arg(v: &Value) -> Result<u64, String> {
-    figcraft_engine::params::id_of(v).map(|i| i.0).ok_or_else(|| format!("{v} is not a layer id"))
+    figcraft_automation_json::id_of(v).ok_or_else(|| format!("{v} is not a layer id"))
 }
 
 fn ids_arg(a: &Map<String, Value>, k: &str) -> Result<Option<Vec<u64>>, String> {
@@ -481,7 +481,7 @@ fn bounds_of(b: &mut dyn Backend, ids: &[u64]) -> Option<(f64, f64, f64, f64)> {
 }
 
 /// Make paint/effect JSON friendlier than the engine's strict serde (see
-/// [`figcraft_engine::params::normalize_paint`]). The engine reads paints this way itself; effects
+/// [`figcraft_automation_json::normalize_paint`]). The engine reads paints this way itself; effects
 /// still need it here.
 pub fn normalize_props(props: &mut Map<String, Value>) {
     for k in ["fills", "strokes", "effects"] {
@@ -785,7 +785,7 @@ fn node_at(b: &mut dyn Backend, id: u64, depth: u64, options: &Value) -> Result<
 
 fn inspection_options(a: &Map<String, Value>) -> Result<Value, String> {
     let options = Value::Object(a.iter().filter(|(k, _)| matches!(k.as_str(), "fields" | "outline")).map(|(k, v)| (k.clone(), v.clone())).collect());
-    figcraft_engine::inspect::InspectOptions::parse(&options)?;
+    figcraft_automation_json::InspectOptions::parse(&options)?;
     Ok(options)
 }
 
@@ -1187,7 +1187,7 @@ fn pointer(b: &mut dyn Backend, a: &Map<String, Value>) -> Result<ToolResult, St
     p.insert("y".into(), json!(y));
     if let Some(to) = a.get("to").filter(|v| !v.is_null()) {
         let arr =
-            to.as_array().filter(|t| t.len() == 2 && t.iter().all(|v| figcraft_engine::params::f64_of(v).is_some())).ok_or("`to` must be [x, y]")?;
+            to.as_array().filter(|t| t.len() == 2 && t.iter().all(|v| figcraft_automation_json::f64_of(v).is_some())).ok_or("`to` must be [x, y]")?;
         p.insert("to".into(), Value::Array(arr.clone()));
     }
     if let Some(s) = n_arg(a, "steps")? {

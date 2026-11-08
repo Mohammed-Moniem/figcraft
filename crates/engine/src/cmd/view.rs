@@ -57,6 +57,7 @@ fn toggle(s: &mut Session, p: &Value, id: &str) -> Result<Value> {
 
 /// Set `v`'s View toggles to the ones the preferences keep (the others stay as they are).
 pub(crate) fn apply_kept(prefs: &crate::Prefs, v: &mut ViewState) {
+    v.pixel_grid_size = crate::pixel_grid::size_or_default(prefs.pixel_grid_size);
     for (id, f, _) in TOGGLES.iter().filter(|t| t.2) {
         if let Some(on) = prefs.view.get(*id) {
             *f(v) = *on;
@@ -91,11 +92,109 @@ fn pixel_preview(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"on": v.pixel_preview, "scale": v.pixel_scale}))
 }
 
+fn pixel_grid_size(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "pref.pixelGridSize";
+    let reset = match p.get("reset") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(v)) => *v,
+        Some(_) => return Err(bad(CMD, "reset must be a boolean")),
+    };
+    if reset && p.get("size").is_some_and(|v| !v.is_null()) {
+        return Err(bad(CMD, "pass size or reset, not both"));
+    }
+    let next = if reset {
+        Some(crate::pixel_grid::DEFAULT_SIZE)
+    } else {
+        match p.get("size") {
+            None | Some(Value::Null) => None,
+            Some(v) => Some(
+                v.as_f64()
+                    .and_then(crate::pixel_grid::valid_size)
+                    .ok_or_else(|| bad(CMD, "size must be finite and between 0.125 and 10000 page units"))?,
+            ),
+        }
+    };
+    if let Some(size) = next {
+        s.prefs_unsaved |= s.prefs.pixel_grid_size != size;
+        s.prefs.pixel_grid_size = size;
+        for d in &mut s.docs {
+            d.view.pixel_grid_size = size;
+        }
+    }
+    Ok(json!({"size":crate::pixel_grid::size_or_default(s.prefs.pixel_grid_size)}))
+}
+
+fn selection_outline_opacity(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "pref.selectionOutlineOpacity";
+    let reset = match p.get("reset") {
+        None => false,
+        Some(Value::Bool(value)) => *value,
+        Some(_) => return Err(bad(CMD, "reset must be a boolean")),
+    };
+    if p.get("reset").is_some() && p.get("opacity").is_some() {
+        return Err(bad(CMD, "pass opacity or reset, not both"));
+    }
+    let next = if reset {
+        Some(crate::prefs::DEFAULT_SELECTION_OUTLINE_OPACITY)
+    } else {
+        match p.get("opacity") {
+            None => None,
+            Some(value) => Some(
+                value
+                    .as_f64()
+                    .and_then(crate::prefs::valid_selection_outline_opacity)
+                    .ok_or_else(|| bad(CMD, "opacity must be finite and between 0 and 100 percent"))?,
+            ),
+        }
+    };
+    if let Some(opacity) = next {
+        s.prefs_unsaved |= s.prefs.selection_outline_opacity != opacity;
+        s.prefs.selection_outline_opacity = opacity;
+    }
+    Ok(json!({"opacity":s.prefs.selection_outline_opacity()}))
+}
+
 fn zoom_to(s: &mut Session, z: f64) -> Result<Value> {
     let v = view(s)?;
     let c = (v.cx, v.cy);
     v.set_zoom_at(z, c);
     Ok(json!({"zoom": v.zoom}))
+}
+
+/// Query or replace an app-wide accent, validating the complete request before mutation.
+fn accent_color(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "pref.accentColor";
+    let fields = [p.get("color"), p.get("preset"), p.get("reset")];
+    if fields.iter().filter(|v| v.is_some()).count() > 1 {
+        return Err(bad(CMD, "choose only one of color, preset or reset"));
+    }
+    let next = if let Some(v) = p.get("color") {
+        let rgb = v.as_str().and_then(crate::Prefs::parse_accent).ok_or_else(|| bad(CMD, "color must be an opaque #RRGGBB hex value"))?;
+        Some(crate::prefs::accent_hex(rgb))
+    } else if let Some(v) = p.get("preset") {
+        Some(
+            match v.as_str() {
+                Some("green") => crate::prefs::UI_ACCENT_DEFAULT,
+                Some("blue") => "#0D99FF",
+                Some("purple") => "#9747FF",
+                Some("orange") => "#E67E22",
+                _ => return Err(bad(CMD, "preset must be green, blue, purple or orange")),
+            }
+            .to_owned(),
+        )
+    } else if let Some(v) = p.get("reset") {
+        if v != true {
+            return Err(bad(CMD, "reset must be true"));
+        }
+        Some(crate::prefs::UI_ACCENT_DEFAULT.into())
+    } else {
+        None
+    };
+    if let Some(next) = next {
+        s.prefs.accent = next;
+        s.prefs_unsaved = true;
+    }
+    Ok(json!({"color":s.prefs.accent}))
 }
 
 /// How far an arrow key pans the view with nothing selected (screen pixels; Shift: ten times).
@@ -213,8 +312,11 @@ fn ui_scale_step(s: &mut Session, dir: i32) -> Result<Value> {
 
 fn pref(s: &mut Session, p: &Value, f: fn(&mut crate::Prefs) -> &mut bool) -> Result<Value> {
     let slot = f(&mut s.prefs);
-    *slot = boolean(p, "on").unwrap_or(!*slot);
-    Ok(json!({"on": *slot}))
+    let on = boolean(p, "on").unwrap_or(!*slot);
+    let changed = *slot != on;
+    *slot = on;
+    s.prefs_unsaved |= changed;
+    Ok(json!({"on": on}))
 }
 
 pub(crate) fn tool(s: &mut Session, t: ToolId) -> Result<Value> {
@@ -396,6 +498,12 @@ pub fn specs() -> Vec<CommandSpec> {
             s.prefs.theme = "system".into();
             ok()
         }),
+        spec!("pref.keepMenuOpen", "Keep menus open when toggling options", "{on?}", false, |s, p| {
+            if p.get("on").is_some() && boolean(p, "on").is_none() {
+                return Err(bad("pref.keepMenuOpen", "`on` must be a boolean"));
+            }
+            pref(s, p, |x| &mut x.keep_menu_open)
+        }),
         spec!("pref.keepTool", "Keep tool selected after use", "{on?}", false, |s, p| pref(s, p, |x| &mut x.keep_tool)),
         spec!("pref.highlightHover", "Highlight layers on hover", "{on?}", false, |s, p| pref(s, p, |x| &mut x.highlight_on_hover)),
         spec!("pref.renameDuplicates", "Rename duplicated layers", "{on?}", false, |s, p| pref(s, p, |x| &mut x.rename_duplicates)),
@@ -408,7 +516,21 @@ pub fn specs() -> Vec<CommandSpec> {
             false,
             |s, p| pref(s, p, |x| &mut x.scroll_wheel_zoom)
         ),
+        spec!(
+            "pref.accentColor",
+            "Accent color",
+            "{color?: opaque #RRGGBB, preset?: green|blue|purple|orange, reset?: true}  choose one to set the interface accent; omit all to read → {color}",
+            false,
+            accent_color
+        ),
         spec!("pref.reduceMotion", "Reduce motion", "{on?}", false, |s, p| pref(s, p, |x| &mut x.reduce_motion)),
+        spec!(
+            "pref.numberWheel",
+            "Scroll to change focused number fields",
+            "{on?}  wheel over a focused numeric field steps it; other wheel gestures keep scrolling → {on}",
+            false,
+            |s, p| pref(s, p, |x| &mut x.number_wheel)
+        ),
         spec!(
             "pref.gpuCanvas",
             "Draw the canvas on the GPU",
@@ -485,6 +607,20 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(json!({"enabled": s.prefs.mcp_enabled, "port": s.prefs.mcp_port}))
             }
         ),
+        spec!(
+            "pref.pixelGridSize",
+            "Pixel grid size",
+            "{size? (page units, finite 0.125..10000; default query), reset? (true restores 1; exclusive with size)} → {size}: app-wide spacing for pixel grid and pixel snapping; visibility/snapping toggles remain independent",
+            false,
+            pixel_grid_size
+        ),
+        spec!(
+            "pref.selectionOutlineOpacity",
+            "Selection outline opacity",
+            "{opacity? (finite 0..100 percent; default query), reset? (true restores 100; exclusive with opacity)} → {opacity}: app-wide selection chrome opacity; does not alter artwork, selection or history",
+            false,
+            selection_outline_opacity
+        ),
         spec!("pref.nudge", "Nudge amount", "{small?, big?}", false, |s, p| {
             s.prefs.nudge_small = num(p, "small").unwrap_or(s.prefs.nudge_small).clamp(0.01, 1000.0);
             s.prefs.nudge_big = num(p, "big").unwrap_or(s.prefs.nudge_big).clamp(0.01, 10000.0);
@@ -498,7 +634,9 @@ pub fn specs() -> Vec<CommandSpec> {
             |s, p| {
                 let name = req_string("pref.userName", p, "name")?;
                 let name: String = name.trim().chars().filter(|c| !c.is_control()).take(crate::live::MAX_NAME).collect();
-                s.prefs.user_name = if name.is_empty() { super::comment::DEFAULT_AUTHOR.into() } else { name };
+                let name = if name.is_empty() { super::comment::DEFAULT_AUTHOR.into() } else { name };
+                s.prefs_unsaved |= s.prefs.user_name != name;
+                s.prefs.user_name = name;
                 s.live_rename();
                 Ok(json!({"name": s.prefs.user_name}))
             }
@@ -679,5 +817,142 @@ mod start_on_home_tests {
         assert_eq!(s.execute("pref.startOnHome", &json!({"on": false})).unwrap()["on"], false);
         let old: crate::Prefs = serde_json::from_value(json!({"theme": "dark"})).unwrap();
         assert!(!old.start_on_home);
+    }
+}
+
+#[cfg(test)]
+mod boolean_preference_save_tests {
+    use serde_json::json;
+
+    use crate::{Prefs, Session};
+
+    #[test]
+    fn number_wheel_setters_and_toggle_request_save_without_document_edits() {
+        let mut s = Session::new();
+        s.execute("shape.rectangle", &json!({"width":100,"height":80})).unwrap();
+        s.ds_mut().unwrap().mark_saved();
+        let document = s.doc().unwrap().clone();
+        let selection = s.selection();
+        let history = s.undo_depth();
+        for (params, wanted) in [(json!({"on":true}), true), (json!({"on":false}), false), (json!({}), true), (json!({}), false)] {
+            s.prefs_unsaved = false;
+            assert_eq!(s.execute("pref.numberWheel", &params).unwrap()["on"], wanted);
+            assert!(s.prefs_unsaved, "{params}: an independent change must request persistence");
+            let restored: Prefs = serde_json::from_value(serde_json::to_value(&s.prefs).unwrap()).unwrap();
+            assert_eq!(restored.number_wheel, wanted);
+            assert_eq!(&document, s.doc().unwrap());
+            assert_eq!(selection, s.selection());
+            assert_eq!(history, s.undo_depth());
+            assert!(!s.ds().unwrap().is_dirty());
+        }
+    }
+
+    #[test]
+    fn number_wheel_same_value_avoids_save_and_preserves_an_existing_request() {
+        let mut s = Session::new();
+        for wanted in [false, true] {
+            s.execute("pref.numberWheel", &json!({"on":wanted})).unwrap();
+            s.prefs_unsaved = false;
+            assert_eq!(s.execute("pref.numberWheel", &json!({"on":wanted})).unwrap()["on"], wanted);
+            assert!(!s.prefs_unsaved, "an unchanged explicit value needs no write");
+            s.prefs_unsaved = true;
+            s.execute("pref.numberWheel", &json!({"on":wanted})).unwrap();
+            assert!(s.prefs_unsaved, "an idempotent setter must not clear another pending save");
+        }
+    }
+
+    #[test]
+    fn shared_boolean_preference_setters_keep_explicit_and_toggle_semantics() {
+        type Read = fn(&Prefs) -> bool;
+        let cases: &[(&str, Read)] = &[
+            ("pref.keepTool", |p| p.keep_tool),
+            ("pref.highlightHover", |p| p.highlight_on_hover),
+            ("pref.renameDuplicates", |p| p.rename_duplicates),
+            ("pref.showDimensions", |p| p.show_dimensions),
+            ("pref.numberKeysOpacity", |p| p.number_keys_opacity),
+            ("pref.scrollWheelZoom", |p| p.scroll_wheel_zoom),
+            ("pref.reduceMotion", |p| p.reduce_motion),
+            ("pref.gpuCanvas", |p| p.gpu_canvas),
+            ("pref.startOnHome", |p| p.start_on_home),
+        ];
+        for &(id, read) in cases {
+            let mut s = Session::new();
+            let initial = read(&s.prefs);
+            s.prefs_unsaved = false;
+            assert_eq!(s.execute(id, &json!({"on":initial})).unwrap()["on"], initial, "{id}");
+            assert!(!s.prefs_unsaved, "{id}: unchanged");
+            assert_eq!(s.execute(id, &json!({"on":!initial})).unwrap()["on"], !initial, "{id}");
+            assert!(s.prefs_unsaved, "{id}: explicit change");
+            s.prefs_unsaved = false;
+            assert_eq!(s.execute(id, &json!({})).unwrap()["on"], initial, "{id}");
+            assert!(s.prefs_unsaved, "{id}: toggle");
+        }
+    }
+}
+
+#[cfg(test)]
+mod user_name_preference_save_tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    #[test]
+    fn changed_user_name_requests_save_without_document_edits() {
+        let mut s = Session::new();
+        let document = s.doc().unwrap().clone();
+        let selection = s.selection();
+        let history = s.undo_depth();
+        for (raw, wanted) in [
+            (json!("  Original local author  "), "Original local author"),
+            (json!("Other\0 author"), "Other author"),
+            (json!("   "), "You"),
+            (json!(42), "42"),
+            (json!(true), "true"),
+        ] {
+            s.prefs_unsaved = false;
+            assert_eq!(s.execute("pref.userName", &json!({"name":raw})).unwrap()["name"], wanted);
+            assert!(s.prefs_unsaved, "a changed normalized name must request persistence");
+            let restored: crate::Prefs = serde_json::from_value(serde_json::to_value(&s.prefs).unwrap()).unwrap();
+            assert_eq!(restored.user_name, wanted);
+            assert_eq!(&document, s.doc().unwrap());
+            assert_eq!(selection, s.selection());
+            assert_eq!(history, s.undo_depth());
+            assert!(!s.ds().unwrap().is_dirty());
+        }
+    }
+
+    #[test]
+    fn normalized_same_user_name_avoids_save_and_preserves_an_existing_request() {
+        let mut s = Session::new();
+        for (saved, raw) in [
+            ("Synthetic Name".to_owned(), "  Synthetic\0 Name  ".to_owned()),
+            ("x".repeat(crate::live::MAX_NAME), format!(" {}truncated", "x".repeat(crate::live::MAX_NAME))),
+        ] {
+            s.prefs.user_name = saved.clone();
+            for pending in [false, true] {
+                s.prefs_unsaved = pending;
+                assert_eq!(s.execute("pref.userName", &json!({"name":raw})).unwrap()["name"], saved);
+                assert_eq!(s.prefs_unsaved, pending, "normalization to the saved value must not create or clear a save request");
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_user_name_keeps_preferences_history_and_save_request() {
+        let mut s = Session::new();
+        s.prefs.user_name = "Original local author".into();
+        let before = s.prefs.clone();
+        let document = s.doc().unwrap().clone();
+        let history = s.undo_depth();
+        for params in [json!({}), json!({"name":null}), json!({"name":[]}), json!({"name":{}})] {
+            for pending in [false, true] {
+                s.prefs_unsaved = pending;
+                assert!(s.execute("pref.userName", &params).is_err(), "{params}");
+                assert_eq!(s.prefs, before);
+                assert_eq!(s.prefs_unsaved, pending);
+                assert_eq!(&document, s.doc().unwrap());
+                assert_eq!(history, s.undo_depth());
+            }
+        }
     }
 }

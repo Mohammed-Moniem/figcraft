@@ -9,6 +9,7 @@ description = "FigCraft engine: sessions, undo history, the command registry eve
 workspace = true
 
 [dependencies]
+figcraft-automation-json = { workspace = true }
 flate2 = { workspace = true }
 figcraft-geom = { workspace = true }
 figcraft-color = { workspace = true }

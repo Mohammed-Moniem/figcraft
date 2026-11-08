@@ -132,6 +132,7 @@ fn closed_overlays_animate_out_unless_instant() {
     let (_, a, b) = doc_with_two_frames();
     let mut p = Presenter::new(a);
     let ov = |transition, opened| OverlayState {
+        key_owner: Arc::new(()),
         id: b,
         position: OverlayPosition::Center,
         close_on_outside: true,

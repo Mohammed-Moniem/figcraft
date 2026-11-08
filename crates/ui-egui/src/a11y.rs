@@ -335,7 +335,7 @@ fn keys(app: &mut FigApp, ctx: &Context) {
         return;
     }
     // F6 / Shift+F6 (and the commands they run).
-    if let Some((id, key, m)) = binding_pressed(ctx, &[NEXT_REGION, PREVIOUS_REGION]) {
+    if let Some((id, key, m)) = binding_pressed(app, ctx, &[NEXT_REGION, PREVIOUS_REGION]) {
         ctx.input_mut(|i| i.consume_key(m, key));
         app.ui.nav.step(if id == NEXT_REGION { 1 } else { -1 });
     }
@@ -413,7 +413,7 @@ fn keys(app: &mut FigApp, ctx: &Context) {
         Region::Layers if in_region && app.ui.nav.last.row_focused => {
             // The canvas shortcuts are off while a row has the keyboard: rename (F2, Cmd/Ctrl+R)
             // and the context menu (Shift+F10) work on its layer here.
-            if let Some((id, key, m)) = binding_pressed(ctx, &["object.rename", "view.contextMenu"]) {
+            if let Some((id, key, m)) = binding_pressed(app, ctx, &["object.rename", "view.contextMenu"]) {
                 ctx.input_mut(|i| i.consume_key(m, key));
                 crate::shortcuts::run_binding(app, id);
             }
@@ -457,11 +457,11 @@ fn keys(app: &mut FigApp, ctx: &Context) {
 }
 
 /// The first of the commands `ids` a key pressed this frame is bound to (canvas keys), with the key.
-fn binding_pressed(ctx: &Context, ids: &[&str]) -> Option<(&'static str, Key, Modifiers)> {
+fn binding_pressed(app: &FigApp, ctx: &Context, ids: &[&str]) -> Option<(&'static str, Key, Modifiers)> {
     ctx.input(|i| {
         i.events.iter().find_map(|e| match e {
             Event::Key { key, physical_key, pressed: true, modifiers, .. } => {
-                crate::shortcuts::lookup(keymap::Context::Canvas, *key, *physical_key, *modifiers)
+                crate::shortcuts::lookup_for(app, keymap::Context::Canvas, *key, *physical_key, *modifiers)
                     .filter(|b| ids.contains(&b.id))
                     .map(|b| (b.id, *key, *modifiers))
             }

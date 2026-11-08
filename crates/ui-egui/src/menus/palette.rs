@@ -160,7 +160,7 @@ pub(crate) fn palette_sections(app: &FigApp, q: &str, tab: PaletteTab) -> Vec<(S
         PaletteTab::All => {
             let recents = app.session.prefs.recent_actions.iter().filter_map(|key| recent_row(app, key, q)).collect();
             let mut out = vec![(tr("Recents").to_string(), recents)];
-            out.extend(command_sections(q));
+            out.extend(command_sections_for(&app.session.prefs, q));
             out
         }
         PaletteTab::Assets => asset_sections(app, q),
@@ -206,7 +206,7 @@ pub(crate) fn run_action(app: &mut FigApp, key: &str) {
 pub(crate) struct ActionRow {
     pub(crate) key: String,
     pub(crate) label: String,
-    hint: String,
+    pub(crate) hint: String,
     /// A letter tile instead of an icon (plugins carry no artwork).
     tile: Option<char>,
 }
@@ -247,8 +247,13 @@ fn matches(q: &str, label: &str, extra: &str) -> bool {
 }
 
 /// A command's row: its label, and its shortcut as the hint.
-fn command_row(id: &str, label: String) -> ActionRow {
-    ActionRow { key: format!("command:{id}"), label, hint: crate::shortcuts::shortcut(id).map(pretty_shortcut).unwrap_or_default(), tile: None }
+fn command_row(prefs: &figcraft_engine::Prefs, id: &str, label: String) -> ActionRow {
+    ActionRow {
+        key: format!("command:{id}"),
+        label,
+        hint: prefs.shortcuts.primary(id, crate::shortcuts::platform()).map(pretty_shortcut).unwrap_or_default(),
+        tile: None,
+    }
 }
 
 /// Most rows a search shows (the best matches).
@@ -260,7 +265,12 @@ const MAX_HITS: usize = 60;
 /// (labels starting with the query, then the shortest), each group placed by its best row. Labels
 /// match in the UI language and in English. The Plugins menu's items come with the plugins
 /// ([`plugin_rows`]).
+#[cfg(test)]
 pub(crate) fn command_sections(q: &str) -> Vec<(String, Vec<ActionRow>)> {
+    command_sections_for(&figcraft_engine::Prefs::default(), q)
+}
+
+pub(crate) fn command_sections_for(prefs: &figcraft_engine::Prefs, q: &str) -> Vec<(String, Vec<ActionRow>)> {
     let ql = q.trim().to_lowercase();
     let mut menu_of = std::collections::HashMap::new();
     for m in MENU.iter().filter(|m| m.label != SEP) {
@@ -296,11 +306,11 @@ pub(crate) fn command_sections(q: &str) -> Vec<(String, Vec<ActionRow>)> {
             continue;
         }
         if matches(&ql, &label, &format!("{english} {id}")) {
-            hits.push((group, command_row(id, label.into_owned())));
+            hits.push((group, command_row(prefs, id, label.into_owned())));
         }
     }
     if ql.is_empty() {
-        hits.push((Some("Design"), command_row("design.audit", tr("Review design").to_string())));
+        hits.push((Some("Design"), command_row(prefs, "design.audit", tr("Review design").to_string())));
     }
     if !ql.is_empty() {
         hits.sort_by_cached_key(|(_, row)| (!row.label.to_lowercase().starts_with(&ql), row.label.chars().count()));
@@ -345,7 +355,7 @@ fn plugin_rows(app: &FigApp, q: &str) -> Vec<ActionRow> {
     for m in MENU.iter().filter(|m| m.label != SEP && m.menu.split('/').next() == Some("Plugins") && available(m.id)) {
         let label = i18n::menu_item(m.id, m.label);
         if matches(&ql, &label, &format!("{} {}", m.label, m.id)) {
-            rows.push(command_row(m.id, label.into_owned()));
+            rows.push(command_row(&app.session.prefs, m.id, label.into_owned()));
         }
     }
     rows
@@ -404,7 +414,7 @@ pub(crate) fn recent_row(app: &FigApp, key: &str, q: &str) -> Option<ActionRow> 
         if !available(id) || !matches(&ql, &label, &format!("{english} {id}")) {
             return None;
         }
-        return Some(command_row(id, label.into_owned()));
+        return Some(command_row(&app.session.prefs, id, label.into_owned()));
     }
     if let Some(rest) = key.strip_prefix("plugin:") {
         let (pid, cid) = rest.split_once('/')?;

@@ -27,6 +27,32 @@ fn rule_nodes(report: &Value, rule: &str) -> Vec<u64> {
 }
 
 #[test]
+fn pure_design_queries_preserve_revision_history_and_the_live_color_gesture() {
+    let mut s = Session::new();
+    ex(&mut s, "node.create", json!({"type":"frame","width":200,"height":100,"props":{"layout":"vertical","gap":13,"padding":11}}));
+    s.begin_interaction("Color").unwrap();
+    for (command, params, success) in [
+        ("design.audit", json!({"scope":"page"}), true),
+        ("design.rules", json!({}), true),
+        ("design.assert", json!({"failOn":"low"}), false),
+        ("design.audit", json!({"rules":["not-a-rule"]}), false),
+    ] {
+        let before = s.ds().unwrap().clone();
+        let journal = s.journal.clone();
+        assert_eq!(s.execute(command, &params).is_ok(), success, "{command}");
+        let after = s.ds().unwrap();
+        assert!(std::sync::Arc::ptr_eq(&before.doc, &after.doc), "{command} changes no authored data");
+        assert_eq!(after.revision, before.revision, "{command} must not self-invalidate a live audit");
+        assert_eq!((after.history.undo.len(), after.history.redo.len()), (before.history.undo.len(), before.history.redo.len()));
+        assert_eq!((&after.selection, after.page), (&before.selection, before.page));
+        let interaction = after.interaction.as_ref().expect("queries do not finish a color gesture");
+        assert_eq!(interaction.label, "Color");
+        assert!(std::sync::Arc::ptr_eq(&interaction.doc, &before.interaction.as_ref().unwrap().doc));
+        assert_eq!(s.journal, journal);
+    }
+}
+
+#[test]
 fn reports_spacing_radius_copy_and_small_type() {
     let mut s = Session::new();
     let f = id(&ex(

@@ -54,6 +54,7 @@ fn portable_text_other_computer() {
     std::fs::write(dir.join("test.figcraft"), figcraft_format::save_bytes(&doc, None).unwrap()).unwrap();
     std::fs::write(dir.join("pixels.bin"), figcraft_render::render_node(&doc, id, 2.0).unwrap().data()).unwrap();
     std::fs::write(dir.join("text.svg"), figcraft_svg::export_svg(&doc, &[id], &Default::default()).unwrap()).unwrap();
+    std::fs::write(dir.join("authoring.pdf"), figcraft_pdf::export_nodes_pdf(&doc, &[id]).unwrap()).unwrap();
     let child = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "portable_text_other_computer", "--nocapture"])
         .env("FIGCRAFT_PORTABLE_TEXT_CHILD", &dir)
@@ -62,6 +63,15 @@ fn portable_text_other_computer() {
         .unwrap();
     assert!(child.status.success(), "{}\n{}", String::from_utf8_lossy(&child.stdout), String::from_utf8_lossy(&child.stderr));
     eprintln!("portable text: separate-process missing-font equivalence and edit protection verified");
+    // Acceptance-only retained exports, produced by this author process and its face-absent child.
+    if let Some(out) = std::env::var_os("FIGCRAFT_PORTABLE_PDF_EVIDENCE_DIR") {
+        let out = std::path::PathBuf::from(out);
+        std::fs::create_dir_all(&out).unwrap();
+        for name in ["authoring.pdf", "missing-face.pdf", "without-geometry.pdf"] {
+            assert!(!out.join(name).exists(), "never overwrite an existing acceptance export");
+            std::fs::copy(dir.join(name), out.join(name)).unwrap();
+        }
+    }
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -154,6 +164,8 @@ fn verify_missing_font(dir: &std::path::Path) {
     let live_svg = figcraft_svg::export_svg(&doc, &[id], &figcraft_svg::SvgOptions { outline_text: false, ..Default::default() }).unwrap();
     assert!(!live_svg.contains("<text"), "an absent font must not change the exported appearance");
     assert!(figcraft_pdf::export_nodes_pdf(&doc, &[id]).unwrap().starts_with(b"%PDF"));
+    std::fs::write(dir.join("missing-face.pdf"), figcraft_pdf::export_nodes_pdf(&doc, &[id]).unwrap()).unwrap();
+    std::fs::write(dir.join("without-geometry.pdf"), figcraft_pdf::export_nodes_pdf(&unpreserved, &[id]).unwrap()).unwrap();
     let mut linked = doc.clone();
     for url in [Some("https://example.org/current"), None] {
         if let NodeKind::Text(t) = &mut linked.get_mut(id).unwrap().kind {

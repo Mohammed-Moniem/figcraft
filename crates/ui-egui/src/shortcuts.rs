@@ -1,7 +1,6 @@
 //! Keyboard handling: the shortcuts of [`figcraft_engine::keymap`], tool keys, nudging, opacity
 //! digits and text editing keys.
 
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use egui::ime_context::{CommittedText, ImeMutationStamp, ImeObservation, ImeTarget};
@@ -27,7 +26,7 @@ pub fn platform() -> Platform {
     }
 }
 
-fn note_platform(ctx: &Context) {
+pub(crate) fn note_platform(ctx: &Context) {
     PLATFORM.store(if ctx.os() == egui::os::OperatingSystem::Mac { 1 } else { 2 }, Ordering::Relaxed);
 }
 
@@ -55,6 +54,7 @@ const UNSHIFTED_SYMBOLS: [Key; 11] = [
 /// keyboard: a symbol another layout types with Shift (`/` is Shift+7 on a German keyboard, where
 /// the key's position differs from the symbol) counts without the Shift. Characters egui has no key
 /// for (`ü`, `ж`) already arrive as the key at that position.
+#[cfg(test)]
 pub fn lookup(context: keymap::Context, key: Key, physical: Option<Key>, m: Modifiers) -> Option<&'static keymap::Binding> {
     let mut held = mods(m);
     if held.shift && physical.is_some_and(|p| p != key) && UNSHIFTED_SYMBOLS.contains(&key) {
@@ -63,30 +63,37 @@ pub fn lookup(context: keymap::Context, key: Key, physical: Option<Key>, m: Modi
     keymap::lookup(platform(), context, key.name(), held)
 }
 
+/// Resolve the same saved keys the menus, palette and control channel display.
+pub fn lookup_for(app: &FigApp, context: keymap::Context, key: Key, physical: Option<Key>, m: Modifiers) -> Option<keymap::Binding> {
+    app.session.prefs.shortcuts.lookup(platform(), context, key.name(), key_mods(key, physical, m))
+}
+
+pub(crate) fn key_mods(key: Key, physical: Option<Key>, m: Modifiers) -> keymap::Mods {
+    let mut held = mods(m);
+    if held.shift && physical.is_some_and(|p| p != key) && UNSHIFTED_SYMBOLS.contains(&key) {
+        held.shift = false;
+    }
+    held
+}
+
 /// The key a menu shows for a command.
+#[cfg(test)]
 pub fn shortcut(id: &str) -> Option<&'static str> {
     keymap::primary(id, platform())
 }
 
-/// A tooltip naming a command's key on this platform ("Align left  ⌥A"; just the label unbound).
-pub fn tip(label: &'static str, id: &str) -> &'static str {
-    cached_tip(label, shortcut(id))
+pub fn shortcut_for<'a>(app: &'a FigApp, id: &str) -> Option<&'a str> {
+    app.session.prefs.shortcuts.primary(id, platform())
 }
 
-/// Panels ask for their tooltips every frame: each (label, key, platform) is built once.
-fn cached_tip(label: &'static str, key: Option<&'static str>) -> &'static str {
-    type Entry = (Platform, &'static str, &'static str, &'static str);
-    static CACHE: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
-    let Some(key) = key else { return label };
-    let p = platform();
-    let Ok(mut cache) = CACHE.lock() else { return label };
-    if let Some(e) = cache.iter().find(|e| e.0 == p && e.1 == label && e.2 == key) {
-        return e.3;
-    }
-    // A bounded set: one entry per tooltip in the code.
-    let text: &'static str = Box::leak(format!("{label}  {}", keymap::display(key, p)).into_boxed_str());
-    cache.push((p, label, key, text));
-    text
+/// An owned tooltip: rebinding repeatedly must never leak cached strings.
+pub fn tip_for(app: &FigApp, label: &str, id: &str) -> String {
+    shortcut_for(app, id).map_or_else(|| label.to_string(), |key| format!("{label}  {}", keymap::display(key, platform())))
+}
+
+pub fn tool_shortcut(app: &FigApp, tool: figcraft_engine::ToolId) -> &str {
+    let id = if tool == figcraft_engine::ToolId::Eyedropper { "edit.pickColor".to_string() } else { format!("tool.{}", tool.id()) };
+    shortcut_for(app, &id).unwrap_or("")
 }
 
 /// Run the shortcuts this frame's keys press. `typing`: a field had the keyboard when the frame
@@ -118,6 +125,13 @@ pub(crate) fn handle_input(
             // once at the end of the pass (see `FigApp::frame`).
             app.sync_preedit();
         }
+        return;
+    }
+    // Modal widgets route their own keys when drawn later in the frame. The updater's
+    // opening flag also covers its first frame, before egui has registered the modal layer.
+    // Do not deliver those keys to canvas shortcuts, live text editing or a deferred field save.
+    if app.updates_rt.manual_window_open || ctx.memory(|memory| memory.top_modal_layer().is_some()) {
+        clear_field_save_marker(ctx);
         return;
     }
     // The shared field helpers already processed this batch and committed their buffers. An
@@ -165,7 +179,7 @@ pub(crate) fn handle_input(
     // An image-only clipboard brings no paste event with text: the desktop shell sends an image
     // paste event instead, and in the browser it's the key press that pastes.
     let paste_event = events.iter().any(|e| matches!(e, Event::Paste(_)));
-    let paste_key = events.iter().any(|e| matches!(e, Event::Key { key: Key::V, pressed: true, repeat: false, modifiers, .. } if modifiers.command && v_binding(*modifiers) == Some("edit.paste")));
+    let paste_key = events.iter().any(|e| matches!(e, Event::Key { key: Key::V, pressed: true, repeat: false, modifiers, .. } if modifiers.command && v_binding(&app.session.prefs.shortcuts, *modifiers) == Some("edit.paste")));
     if paste.image || (paste_key && !paste_event) {
         crate::menus::paste(app, None, None);
     }
@@ -176,9 +190,18 @@ pub(crate) fn handle_input(
             // (Alt+Cmd/Ctrl+C) arrives here and never as a key.
             Event::Copy => {
                 let props = ctx.input(|i| i.modifiers.alt);
-                crate::menus::invoke(app, if props { "edit.copyProperties" } else { "edit.copy" });
+                let id = if props { "edit.copyProperties" } else { "edit.copy" };
+                let m = ctx.input(|i| i.modifiers);
+                if lookup_for(app, keymap::Context::Canvas, Key::C, Some(Key::C), Modifiers { command: true, ..m }).is_some_and(|b| b.id == id) {
+                    crate::menus::invoke(app, id);
+                }
             }
-            Event::Cut => cut(app),
+            Event::Cut => {
+                let m = ctx.input(|i| i.modifiers);
+                if accepts_cut(app, m) {
+                    cut(app);
+                }
+            }
             Event::Paste(text) if !paste.drop_text => crate::menus::paste(app, Some(text), None),
             Event::Key { key, physical_key, pressed: true, modifiers, repeat }
                 if key_event(app, *key, *physical_key, *modifiers, *repeat, now, ctx) =>
@@ -188,6 +211,14 @@ pub(crate) fn handle_input(
             _ => {}
         }
     }
+}
+
+fn accepts_cut(app: &FigApp, m: Modifiers) -> bool {
+    // Windows translates Shift+Delete to Cut without a key event. It is a native alternative,
+    // not Shift+Cmd/Ctrl+X; preserve it while the actual X chord follows the saved keymap.
+    let shift_delete = m.shift && !m.command && !m.mac_cmd && !m.ctrl && !m.alt;
+    shift_delete
+        || lookup_for(app, keymap::Context::Canvas, Key::X, Some(Key::X), Modifiers { command: true, ..m }).is_some_and(|b| b.id == "edit.cut")
 }
 
 /// Cut: usually the layers. Windows sends Shift+Delete (remove the points and heal the path)
@@ -262,6 +293,7 @@ pub(crate) fn prepare_field_save(app: &FigApp, ctx: &Context) -> Option<AfterFie
         || !crate::a11y::field_focused(ctx)
         || app.ui.palette.is_some()
         || app.pending_dialog.is_some()
+        || app.updates_rt.manual_window_open
         || egui::Popup::is_any_open(ctx)
         || ctx.memory(|m| m.top_modal_layer().is_some())
     {
@@ -271,8 +303,8 @@ pub(crate) fn prepare_field_save(app: &FigApp, ctx: &Context) -> Option<AfterFie
     note_platform(ctx);
     let (command, key, modifiers) = ctx.input(|i| {
         i.events.iter().find_map(|e| match e {
-            Event::Key { key, physical_key, pressed: true, repeat: false, modifiers } if modifiers.command => {
-                lookup(keymap::Context::Canvas, *key, *physical_key, *modifiers)
+            Event::Key { key, physical_key, pressed: true, repeat: false, modifiers } => {
+                lookup_for(app, keymap::Context::Canvas, *key, *physical_key, *modifiers)
                     .filter(|b| FROM_A_FIELD.contains(&b.id))
                     .map(|b| (b.id, *key, *modifiers))
             }
@@ -348,8 +380,8 @@ pub(crate) fn release_field_for_save(response: &egui::Response) {
 
 /// The command Cmd/Ctrl+V runs with `m` held too: `edit.paste`, `edit.pasteOver` (Shift),
 /// `edit.pasteProperties` (Alt), or `None` for a chord nothing is bound to. The keymap decides.
-fn v_binding(m: Modifiers) -> Option<&'static str> {
-    lookup(keymap::Context::Canvas, Key::V, Some(Key::V), Modifiers { command: true, ..m }).map(|b| b.id)
+fn v_binding(keys: &keymap::ShortcutOverrides, m: Modifiers) -> Option<&'static str> {
+    keys.lookup(platform(), keymap::Context::Canvas, "V", mods(Modifiers { command: true, ..m })).map(|b| b.id)
 }
 
 /// What this frame's paste events ask for ([`paste_events`]).
@@ -376,8 +408,8 @@ pub fn paste_events(app: &mut FigApp, ctx: &Context) -> PasteEvents {
             match ev {
                 Event::ModifiersChanged(m) => *held = *m,
                 // Without Cmd/Ctrl held it's another paste key (Shift+Insert, a Paste key).
-                Event::Paste(_) if held.command => out.drop_text |= v_binding(*held) != Some("edit.paste"),
-                Event::PasteImage(_) => out.image = true,
+                Event::Paste(_) if held.command => out.drop_text |= v_binding(&app.session.prefs.shortcuts, *held) != Some("edit.paste"),
+                Event::PasteImage(_) => out.image |= !held.command || v_binding(&app.session.prefs.shortcuts, *held) == Some("edit.paste"),
                 // Keys let go in another window never come back as releases.
                 Event::WindowFocused(false) => *held = Modifiers::NONE,
                 _ => {}
@@ -393,6 +425,7 @@ pub fn run_binding(app: &mut FigApp, id: &str) {
     // Dev Mode places and edits nothing: Enter selects children.
     let dev = app.ui.right_tab == crate::RightTab::Inspect;
     match id {
+        "edit.cut" => cut(app),
         "select.none" => {
             if let Some(ctx) = &app.ui_context
                 && crate::proto_panel::close_editor(ctx)
@@ -457,9 +490,9 @@ fn key_event(app: &mut FigApp, key: Key, physical: Option<Key>, m: Modifiers, re
             return true;
         }
     }
-    if let Some(b) = lookup(keymap::Context::Canvas, key, physical, m) {
+    if let Some(b) = lookup_for(app, keymap::Context::Canvas, key, physical, m) {
         // Copy/cut/paste arrive as clipboard events on most platforms.
-        if matches!(b.id, "edit.copy" | "edit.cut" | "edit.paste") {
+        if matches!(b.id, "edit.copy" | "edit.cut" | "edit.paste") && m.command && matches!(key, Key::C | Key::X | Key::V) {
             return true;
         }
         if !repeat || matches!(b.id, "edit.undo" | "edit.redo" | "view.zoomIn" | "view.zoomOut") {
@@ -873,7 +906,7 @@ fn text_line_index(app: &FigApp, id: figcraft_doc::NodeId, p: figcraft_geom::Poi
 
 /// Shortcuts live while editing text (Bold, lists, alignment, size/weight/spacing steps, Save…).
 fn text_shortcut(app: &mut FigApp, key: Key, physical: Option<Key>, m: Modifiers) -> bool {
-    match lookup(keymap::Context::Text, key, physical, m) {
+    match lookup_for(app, keymap::Context::Text, key, physical, m) {
         Some(b) => {
             crate::menus::invoke(app, b.id);
             true

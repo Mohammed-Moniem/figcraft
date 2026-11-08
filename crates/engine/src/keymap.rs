@@ -9,6 +9,9 @@
 //! `PageDown`, `Home`, `End`, `ArrowLeft`/`Right`/`Up`/`Down`, `F1`…`F12`. Shifted symbols
 //! (`?`, `+`, `<`, `>`, `{`, `}`, `|`, `!`) stand for the unshifted key with Shift held.
 
+mod overrides;
+pub use overrides::{ShortcutOverrides, chord, command_binding, editable};
+
 /// Which platform's keys to use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum Platform {

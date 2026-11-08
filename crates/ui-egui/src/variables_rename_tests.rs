@@ -182,3 +182,332 @@ fn a_collection_of_this_file_extends_from_its_context_menu() {
     assert!(has_text(&shown, "radius"));
     assert!(has_text(&shown, "Extends \"Theme\": overridden values are marked"));
 }
+
+// Append this review-owned fixture to variables_rename_tests.rs only for the parent-owned
+// serial red/green run. It reuses actual shared egui frame/AccessKit helpers in that module.
+// Source was independently read; reviewer did not compile or mutate product files.
+
+fn variables_owner_fixture_with_native_clone() -> (Ui, String, usize, usize) {
+    let mut u = variables_window();
+    let coll = u.app.session.execute("variable.createCollection", &serde_json::json!({"name":"Owner collection"})).unwrap();
+    let cid = coll["id"].as_str().unwrap().to_string();
+    let v = u
+        .app
+        .session
+        .execute("variable.create", &serde_json::json!({"collection":cid,"name":"Owner variable","type":"String","value":"Original"}))
+        .unwrap();
+    let vid = v["id"].as_str().unwrap().to_string();
+    let a = u.app.session.active;
+    let bytes = figcraft_format::save_bytes(u.app.session.doc().unwrap(), None).unwrap();
+    let (cloned, issues) = figcraft_format::load_bytes(&bytes).unwrap();
+    assert!(issues.is_empty());
+    u.app.session.execute("file.new", &serde_json::json!({"name":"Other owner"})).unwrap();
+    let b = u.app.session.active;
+    u.app.session.ds_mut().unwrap().doc = std::sync::Arc::new(cloned);
+    assert_ne!(u.app.session.docs[a].uid, u.app.session.docs[b].uid);
+    assert_eq!(
+        u.app.session.docs[a].doc.variables, u.app.session.docs[b].doc.variables,
+        "actual native format preserves the variable/collection UUIDs"
+    );
+    u.app.session.active = a;
+    for _ in 0..10 {
+        u.frame(vec![]);
+    }
+    (u, vid, a, b)
+}
+
+#[test]
+fn variables_pending_rename_cannot_commit_into_a_native_copy_with_the_same_uuid() {
+    let (mut u, vid, a, b) = variables_owner_fixture_with_native_clone();
+    let shapes = flat(&u.frame_output(vec![]).shapes);
+    click_checking_focus(&mut u, text_center(&shapes, "Owner variable"), 2);
+    assert!(matches!(&u.app.ui.variables.as_ref().unwrap().rename,Some(crate::variables_panel::Rename::Variable(id)) if *id==vid));
+    checked_frame(&mut u, vec![Event::Text("Must not reach another document".into())], 0);
+    assert_eq!(u.app.session.docs[a].doc.variables.get_by_id(&vid).unwrap().name, "Owner variable", "draft is still uncommitted in A");
+    let a_before = u.app.session.docs[a].doc.clone();
+    let b_before = u.app.session.docs[b].doc.clone();
+    u.app.session.active = b;
+    let b_undo = u.app.session.undo_depth();
+    for pressed in [true, false] {
+        checked_frame(&mut u, vec![Event::Key { key: Key::Enter, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE }], 1);
+    }
+    for _ in 0..3 {
+        u.frame(vec![]);
+    }
+    assert_eq!(u.app.session.docs[b].doc, b_before, "pending A rename must never rename B's equal UUID");
+    assert_eq!(u.app.session.undo_depth(), b_undo, "B gets no rename undo step");
+    assert_eq!(u.app.session.docs[a].doc, a_before, "ownership change cancels the uncommitted name without changing A");
+    assert!(u.app.ui.variables.as_ref().is_none_or(|st| st.rename.is_none()), "stale rename target cleared");
+}
+
+#[test]
+fn variables_pending_collection_rename_cannot_commit_into_a_native_copy() {
+    let (mut u, _vid, a, b) = variables_owner_fixture_with_native_clone();
+    let shapes = flat(&u.frame_output(vec![]).shapes);
+    click_checking_focus(&mut u, text_center(&shapes, "Owner collection"), 2);
+    checked_frame(&mut u, vec![Event::Text("Foreign collection name".into())], 0);
+    let a_before = u.app.session.docs[a].doc.clone();
+    let b_before = u.app.session.docs[b].doc.clone();
+    u.app.session.active = b;
+    let undo = u.app.session.undo_depth();
+    for pressed in [true, false] {
+        checked_frame(&mut u, vec![Event::Key { key: Key::Enter, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE }], 1);
+    }
+    assert_eq!(u.app.session.docs[b].doc, b_before, "collection rename draft cannot follow the UUID into B");
+    assert_eq!(u.app.session.docs[a].doc, a_before);
+    assert_eq!(u.app.session.undo_depth(), undo);
+}
+
+// Append beside variables_owner_fixture_with_native_clone in variables_rename_tests.rs.
+// Actual egui pointer/keyboard drafts across A -> B -> A; no direct temp-buffer injection.
+fn owner_enter(u: &mut Ui) {
+    for pressed in [true, false] {
+        checked_frame(u, vec![Event::Key { key: Key::Enter, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE }], 0);
+    }
+    for _ in 0..3 {
+        u.frame(vec![]);
+    }
+}
+fn owner_replace_draft(u: &mut Ui, text: &str) {
+    for pressed in [true, false] {
+        checked_frame(u, vec![Event::Key { key: Key::A, physical_key: None, pressed, repeat: false, modifiers: Modifiers::COMMAND }], 0);
+    }
+    checked_frame(u, vec![Event::Text(text.into())], 0);
+}
+fn owner_open_details(u: &mut Ui) {
+    let shapes = flat(&u.frame_output(vec![]).shapes);
+    let row = text_center(&shapes, "Owner variable");
+    let g = crate::variables_panel::Geom::floating(u.ctx.content_rect(), None, true);
+    click_checking_focus(u, Pos2::new(g.panel.max.x - 20.0, row.y), 1);
+    for _ in 0..3 {
+        u.frame(vec![]);
+    }
+}
+#[test]
+fn variables_value_draft_does_not_resurrect_after_a_to_b_to_a() {
+    let (mut u, vid, a, b) = variables_owner_fixture_with_native_clone();
+    let a_before = u.app.session.docs[a].doc.clone();
+    let b_before = u.app.session.docs[b].doc.clone();
+    let a_undo = u.app.session.undo_depth();
+    let shapes = flat(&u.frame_output(vec![]).shapes);
+    click_checking_focus(&mut u, text_center(&shapes, "Original"), 1);
+    owner_replace_draft(&mut u, "Stale value draft");
+    assert_eq!(u.app.session.docs[a].doc, a_before, "typed value is an uncommitted draft");
+    u.app.session.active = b;
+    u.frame(vec![]);
+    owner_enter(&mut u);
+    assert_eq!(u.app.session.docs[b].doc, b_before, "B never receives A's value draft");
+    u.app.session.active = a;
+    for _ in 0..3 {
+        u.frame(vec![]);
+    }
+    let shapes = flat(&u.frame_output(vec![]).shapes);
+    assert!(!has_text(&shapes, "Stale value draft"), "returning to A cannot revive old field buffer");
+    assert_eq!(u.app.session.docs[a].doc, a_before, "returning to the same UUID/value cell cannot commit old draft");
+    assert_eq!(u.app.session.undo_depth(), a_undo);
+    let shapes = flat(&u.frame_output(vec![]).shapes);
+    click_checking_focus(&mut u, text_center(&shapes, "Original"), 1);
+    owner_replace_draft(&mut u, "Fresh value");
+    owner_enter(&mut u);
+    let values = &u.app.session.doc().unwrap().variables.get_by_id(&vid).unwrap().values;
+    assert!(values.values().any(|v| *v == figcraft_doc::VariableValue::String("Fresh value".into())), "fresh same-document cell edits still work");
+    assert_eq!(u.app.session.docs[b].doc, b_before);
+    assert_eq!(u.app.session.undo_depth().0, a_undo.0 + 1, "fresh value edit is one undo step");
+}
+#[test]
+fn variables_details_draft_does_not_resurrect_after_a_to_b_to_a() {
+    let (mut u, vid, a, b) = variables_owner_fixture_with_native_clone();
+    for index in [a, b] {
+        u.app.session.active = index;
+        u.app.session.execute("variable.update", &serde_json::json!({"variable":vid,"description":"Original description"})).unwrap();
+    }
+    u.app.session.active = a;
+    for _ in 0..5 {
+        u.frame(vec![]);
+    }
+    let a_before = u.app.session.docs[a].doc.clone();
+    let b_before = u.app.session.docs[b].doc.clone();
+    let a_undo = u.app.session.undo_depth();
+    owner_open_details(&mut u);
+    let shapes = flat(&u.frame_output(vec![]).shapes);
+    click_checking_focus(&mut u, text_center(&shapes, "Original description"), 1);
+    owner_replace_draft(&mut u, "Stale details draft");
+    assert_eq!(u.app.session.docs[a].doc, a_before, "description remains a draft");
+    u.app.session.active = b;
+    u.frame(vec![]);
+    owner_enter(&mut u);
+    assert_eq!(u.app.session.docs[b].doc, b_before, "details draft never crosses into B");
+    u.app.session.active = a;
+    for _ in 0..3 {
+        u.frame(vec![]);
+    }
+    owner_open_details(&mut u);
+    let shapes = flat(&u.frame_output(vec![]).shapes);
+    assert!(!has_text(&shapes, "Stale details draft"), "same UUID details field must start from authored data after return");
+    assert_eq!(u.app.session.docs[a].doc, a_before);
+    assert_eq!(u.app.session.undo_depth(), a_undo);
+    let shapes = flat(&u.frame_output(vec![]).shapes);
+    click_checking_focus(&mut u, text_center(&shapes, "Original description"), 1);
+    owner_replace_draft(&mut u, "Fresh description");
+    owner_enter(&mut u);
+    assert_eq!(u.app.session.doc().unwrap().variables.get_by_id(&vid).unwrap().description, "Fresh description");
+    assert_eq!(u.app.session.docs[b].doc, b_before);
+    assert_eq!(u.app.session.undo_depth().0, a_undo.0 + 1);
+}
+
+// Append to variables_rename_tests.rs for the root-owned serial red/green run.
+// Reuses the actual frame, pointer, shape and native-copy helpers in that module.
+// This reviewer did not run Cargo or modify product source.
+
+fn owner_reclone_b(u: &mut Ui, a: usize, b: usize) {
+    let bytes = figcraft_format::save_bytes(&u.app.session.docs[a].doc, None).unwrap();
+    let (copy, issues) = figcraft_format::load_bytes(&bytes).unwrap();
+    assert!(issues.is_empty());
+    u.app.session.docs[b].doc = std::sync::Arc::new(copy);
+    assert_ne!(u.app.session.docs[a].uid, u.app.session.docs[b].uid);
+    assert_eq!(u.app.session.docs[a].doc.variables, u.app.session.docs[b].doc.variables);
+    u.app.session.active = a;
+    for _ in 0..8 {
+        u.frame(vec![]);
+    }
+}
+
+fn variables_context_menu_owner_case(kind: &str) {
+    let (mut u, _vid, a, b) = variables_owner_fixture_with_native_clone();
+    if kind == "mode" {
+        let collection = u.app.session.doc().unwrap().variables.collections[0].id.clone();
+        u.app.session.execute("variable.addMode", &serde_json::json!({"collection":collection,"name":"Owner extra mode"})).unwrap();
+        owner_reclone_b(&mut u, a, b);
+    }
+    let (row, action) = match kind {
+        "collection" => ("Owner collection", "Delete collection"),
+        "mode" => ("Owner extra mode", "Delete mode"),
+        _ => ("Owner variable", "Delete variable"),
+    };
+    let shapes = flat(&u.frame_output(vec![]).shapes);
+    click_with(&mut u, text_center(&shapes, row), PointerButton::Secondary);
+    let menu = flat(&u.frame_output(vec![]).shapes);
+    assert!(has_text(&menu, action), "the actual A {kind} menu opened");
+    let before_a = u.app.session.docs[a].doc.clone();
+    let before_b = u.app.session.docs[b].doc.clone();
+    let undo_a = u.app.session.docs[a].history.undo.len();
+    let undo_b = u.app.session.docs[b].history.undo.len();
+    // No outside pointer press: this is the real command-driven file switch path.
+    u.app.run("doc.switch", serde_json::json!({"index":b})).unwrap();
+    let after_switch = flat(&u.frame_output(vec![]).shapes);
+    let stale_menu = has_text(&after_switch, action);
+    if stale_menu {
+        // Exercise the destructive old menu if it survived, rather than just inspecting IDs.
+        click_with(&mut u, text_center(&after_switch, action), PointerButton::Primary);
+    }
+    assert_eq!(u.app.session.docs[b].doc, before_b, "A's {kind} menu cannot delete matching data in B");
+    assert_eq!(u.app.session.docs[a].doc, before_a);
+    assert_eq!(u.app.session.docs[a].history.undo.len(), undo_a);
+    assert_eq!(u.app.session.docs[b].history.undo.len(), undo_b, "B has no foreign menu history");
+    assert!(!stale_menu, "the old {kind} menu must retire on owner change");
+    // A fresh same-document menu still performs the requested action once.
+    let shapes = flat(&u.frame_output(vec![]).shapes);
+    click_with(&mut u, text_center(&shapes, row), PointerButton::Secondary);
+    let fresh = flat(&u.frame_output(vec![]).shapes);
+    assert!(has_text(&fresh, action));
+    click_with(&mut u, text_center(&fresh, action), PointerButton::Primary);
+    assert_ne!(u.app.session.docs[b].doc, before_b, "a fresh B {kind} menu remains usable");
+    assert_eq!(u.app.session.docs[b].history.undo.len(), undo_b + 1);
+    assert_eq!(u.app.session.docs[a].doc, before_a);
+}
+
+#[test]
+fn variables_context_variable_delete_cannot_retarget_a_native_copy() {
+    variables_context_menu_owner_case("variable");
+}
+
+#[test]
+fn variables_context_collection_delete_cannot_retarget_a_native_copy() {
+    variables_context_menu_owner_case("collection");
+}
+
+#[test]
+fn variables_context_mode_delete_cannot_retarget_a_native_copy() {
+    variables_context_menu_owner_case("mode");
+}
+
+fn owner_hold_drag(u: &mut Ui, from: Pos2) {
+    u.frame(vec![Event::PointerMoved(from)]);
+    u.frame(vec![Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE }]);
+    for dy in [4.0, 10.0, 16.0] {
+        u.frame(vec![Event::PointerMoved(from + egui::vec2(0.0, dy))]);
+    }
+}
+
+fn owner_release_drag(u: &mut Ui, at: Pos2) {
+    u.frame(vec![Event::PointerMoved(at)]);
+    u.frame(vec![Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE }]);
+    for _ in 0..3 {
+        u.frame(vec![]);
+    }
+}
+
+#[test]
+fn variables_held_collection_drag_cannot_reorder_a_native_copy() {
+    let (mut u, _vid, a, b) = variables_owner_fixture_with_native_clone();
+    for name in ["Second owner collection", "Third owner collection"] {
+        u.app.session.execute("variable.createCollection", &serde_json::json!({"name":name})).unwrap();
+    }
+    owner_reclone_b(&mut u, a, b);
+    let shapes = flat(&u.frame_output(vec![]).shapes);
+    let from = text_center(&shapes, "Owner collection");
+    let to = text_center(&shapes, "Third owner collection") + egui::vec2(0.0, 14.0);
+    let before_a = u.app.session.docs[a].doc.clone();
+    let before_b = u.app.session.docs[b].doc.clone();
+    let undo_a = u.app.session.docs[a].history.undo.len();
+    let undo_b = u.app.session.docs[b].history.undo.len();
+    owner_hold_drag(&mut u, from);
+    u.app.run("doc.switch", serde_json::json!({"index":b})).unwrap();
+    u.frame(vec![]); // the pointer remains held while B draws its same collection IDs
+    owner_release_drag(&mut u, to);
+    assert_eq!(u.app.session.docs[b].doc, before_b, "A's held collection cannot reorder B");
+    assert_eq!(u.app.session.docs[a].doc, before_a);
+    assert_eq!(u.app.session.docs[a].history.undo.len(), undo_a);
+    assert_eq!(u.app.session.docs[b].history.undo.len(), undo_b);
+    // Demonstrate that these real coordinates do cause a reorder when owned by B.
+    owner_hold_drag(&mut u, from);
+    owner_release_drag(&mut u, to);
+    assert_ne!(u.app.session.docs[b].doc, before_b, "a fresh owned collection drag still reorders");
+    assert_eq!(u.app.session.docs[b].history.undo.len(), undo_b + 1);
+    assert_eq!(u.app.session.docs[a].doc, before_a);
+}
+
+#[test]
+fn variables_held_group_drag_cannot_reorder_the_native_copys_view() {
+    let (mut u, vid, a, b) = variables_owner_fixture_with_native_clone();
+    let collection = u.app.session.doc().unwrap().variables.collections[0].id.clone();
+    u.app.session.execute("variable.update", &serde_json::json!({"variable":vid,"name":"Alpha owner group/One"})).unwrap();
+    for name in ["Beta owner group/Two", "Gamma owner group/Three"] {
+        u.app.session.execute("variable.create", &serde_json::json!({"collection":collection,"name":name,"type":"String","value":"value"})).unwrap();
+    }
+    owner_reclone_b(&mut u, a, b);
+    let shapes = flat(&u.frame_output(vec![]).shapes);
+    let from = text_center(&shapes, "Alpha owner group");
+    let to = text_center(&shapes, "Gamma owner group") + egui::vec2(0.0, 12.0);
+    let panel = crate::variables_panel::Geom::floating(u.ctx.content_rect(), None, true).panel;
+    assert!(from.x < panel.min.x + u.app.ui.variables.as_ref().unwrap().sidebar_w, "real group sidebar row");
+    let before_a = u.app.session.docs[a].doc.clone();
+    let before_b = u.app.session.docs[b].doc.clone();
+    let undo_a = u.app.session.docs[a].history.undo.len();
+    let undo_b = u.app.session.docs[b].history.undo.len();
+    assert!(u.app.ui.variables.as_ref().unwrap().group_order.is_empty());
+    owner_hold_drag(&mut u, from);
+    u.app.run("doc.switch", serde_json::json!({"index":b})).unwrap();
+    u.frame(vec![]);
+    owner_release_drag(&mut u, to);
+    assert!(u.app.ui.variables.as_ref().unwrap().group_order.is_empty(), "A's held group must not write B's group ordering");
+    assert_eq!(u.app.session.docs[b].doc, before_b);
+    assert_eq!(u.app.session.docs[a].doc, before_a);
+    assert_eq!(u.app.session.docs[a].history.undo.len(), undo_a);
+    assert_eq!(u.app.session.docs[b].history.undo.len(), undo_b);
+    owner_hold_drag(&mut u, from);
+    owner_release_drag(&mut u, to);
+    assert!(!u.app.ui.variables.as_ref().unwrap().group_order.is_empty(), "fresh same-owner group drag still reorders the view");
+    assert_eq!(u.app.session.docs[b].doc, before_b, "group ordering remains a view preference");
+    assert_eq!(u.app.session.docs[b].history.undo.len(), undo_b);
+}

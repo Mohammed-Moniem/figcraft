@@ -762,3 +762,198 @@ fn native_menu_key_keeps_its_document_and_system_clipboard_until_presented() {
     assert_eq!(u.app.session.ds().unwrap().uid, b);
     assert!(!u.app.control_synthetic);
 }
+
+/// Run only the background callback of hidden viewports. No input, controller query or UI pass
+/// is supplied by the fixture: the capture must ask for every real paint it needs.
+fn capture_progress_hidden_logic(u: &mut Ui) -> usize {
+    let mut input = egui::RawInput::default();
+    for viewport in std::iter::once(egui::ViewportId::ROOT).chain(u.app.windows.list.iter().map(|window| crate::windows::viewport(window.id))) {
+        input.viewports.insert(viewport, egui::ViewportInfo { minimized: Some(true), ..Default::default() });
+    }
+    let ctx = u.ctx.clone();
+    let out = ctx.run_logic(&input, |ctx| super::background(&mut u.app, ctx));
+    out.viewport_commands
+        .values()
+        .flat_map(|commands| commands.iter())
+        .filter(|command| matches!(command, egui::ViewportCommand::RequestPaintWhileHidden))
+        .count()
+}
+
+/// Present only the named window, as eframe's deferred viewport callback does.
+fn capture_progress_window_frame(u: &mut Ui, window: u64) -> egui::FullOutput {
+    if window == 0 {
+        return u.frame_output(vec![]);
+    }
+    let now = u.app.clock.now() + 1.0 / 60.0;
+    u.advance_clock(now);
+    let viewport = crate::windows::viewport(window);
+    let mut input = egui::RawInput {
+        viewport_id: viewport,
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0))),
+        time: Some(now),
+        ..Default::default()
+    };
+    input.viewports.insert(viewport, egui::ViewportInfo { parent: Some(egui::ViewportId::ROOT), minimized: Some(false), ..Default::default() });
+    let ctx = u.ctx.clone();
+    let mut out = ctx.run_ui(input, |ui| {
+        crate::windows::as_window(&mut u.app, window, |app| app.ui(ui)).expect("the child window exists");
+    });
+    out.textures_delta.clear();
+    out
+}
+
+/// Capture the real one-shot callback issued by the control path, without delivering its pixels.
+fn capture_progress_callback(u: &mut Ui, window: u64) -> egui::ScreenshotCallback {
+    for _ in 0..12 {
+        let out = capture_progress_window_frame(u, window);
+        if let Some(callback) = out
+            .viewport_output
+            .values()
+            .flat_map(|viewport| viewport.commands.iter())
+            .find_map(|command| if let egui::ViewportCommand::Screenshot(callback) = command { Some(callback.clone()) } else { None })
+        {
+            return callback;
+        }
+    }
+    panic!("the capture did not issue its renderer callback");
+}
+
+/// A renderer may service map_async only after another submission. This bounded backend fixture
+/// withholds the actual screenshot callback until the application requests a later real paint.
+/// Source8 stalls here: the capture is issued, but supplies no follow-up paint while pixels are pending.
+#[test]
+fn an_idle_issued_readback_completes_from_capture_owned_paints_without_input() {
+    let mut u = Ui::new(Session::new());
+    let rx = push(&mut u, 901, json!({}));
+    let mut callback = Some(capture_progress_callback(&mut u, 0));
+    let spec = u.app.capture.shots[0].spec.expect("issued geometry");
+    let deadline = u.app.capture.shots[0].deadline;
+    let before = u.app.session.ds().expect("document");
+    let (document, revision, page, selection) = (before.doc.clone(), before.revision, before.page, before.selection.clone());
+    let history = u.app.session.undo_depth();
+    let start = u.app.clock.now();
+    let mut reply = None;
+    for step in 1..=8 {
+        u.advance_clock(start + f64::from(step) * 0.025);
+        if capture_progress_hidden_logic(&mut u) > 0 {
+            // This is the later real paint/submission. It must not reissue the screenshot.
+            let out = u.frame_output(vec![]);
+            assert!(!has_screenshot(&out), "progress never duplicates an issued readback");
+            if let Some(callback) = callback.take() {
+                callback.complete(Arc::new(egui::ColorImage::filled(spec.size_px, egui::Color32::GREEN)));
+            }
+        }
+        if let Ok(value) = rx.try_recv() {
+            reply = Some(value);
+            break;
+        }
+    }
+    let reply = reply.expect("an idle issued capture must drive its callback and draining paint before its deadline");
+    assert_eq!(reply.id, json!(901));
+    let image = reply.result.expect("the real callback's PNG");
+    assert_eq!(image["width"].as_u64(), Some(spec.size_px[0] as u64));
+    assert_eq!(image["height"].as_u64(), Some(spec.size_px[1] as u64));
+    assert_eq!(image["format"], "png");
+    assert!(u.app.clock.now() < deadline, "progress does not extend the admitted lifetime");
+    assert!(u.app.capture.shots.is_empty());
+    assert_eq!(capture_progress_hidden_logic(&mut u), 0, "completed captures leave no progress paints behind");
+    let after = u.app.session.ds().expect("document");
+    assert_eq!(*after.doc, *document);
+    assert_eq!((after.revision, after.page, &after.selection), (revision, page, &selection));
+    assert_eq!(u.app.session.undo_depth(), history);
+}
+
+/// Controller/logic callbacks can arrive far faster than rendering. Four pending captures of one
+/// viewport must share a bounded progress cadence and retain their existing image reservations.
+#[test]
+fn issued_readback_progress_is_cadenced_per_viewport_without_reissuing_or_reallocating() {
+    let mut u = Ui::new(Session::new());
+    let _receivers: Vec<_> = (0..4).map(|i| push(&mut u, 910 + i, json!({}))).collect();
+    settle_to_issue(&mut u, 4);
+    let reserved: Vec<_> = u.app.capture.shots.iter().map(|shot| shot.reserved).collect();
+    let specs: Vec<_> = u.app.capture.shots.iter().map(|shot| shot.spec).collect();
+    let start = u.app.clock.now();
+    let mut paints = 0;
+    for millisecond in 0..=1000 {
+        u.advance_clock(start + f64::from(millisecond) / 1000.0);
+        paints += capture_progress_hidden_logic(&mut u);
+    }
+    assert!((30..=61).contains(&paints), "one-second pending readbacks need progress, capped near display cadence per viewport: {paints}");
+    assert_eq!(u.app.capture.shots.len(), 4);
+    assert!(u.app.capture.shots.iter().all(|shot| shot.issued && shot.retries == 0));
+    assert_eq!(
+        u.app.capture.shots.iter().map(|shot| shot.reserved).collect::<Vec<_>>(),
+        reserved,
+        "waiting never allocates another image reservation"
+    );
+    assert_eq!(u.app.capture.shots.iter().map(|shot| shot.spec).collect::<Vec<_>>(), specs);
+    let overflow = push(&mut u, 914, json!({}));
+    capture_progress_hidden_logic(&mut u);
+    let refused = overflow.try_recv().expect("the fifth request is refused while progress remains active");
+    assert!(refused.result.expect_err("slot budget").contains("too many screenshots"));
+    assert_eq!(u.app.capture.shots.len(), 4);
+    assert_eq!(u.app.capture.shots.iter().map(|shot| shot.reserved).collect::<Vec<_>>(), reserved);
+    assert!(reserved.iter().sum::<usize>() <= super::MAX_SHOT_TOTAL_BYTES);
+}
+
+#[test]
+fn a_cancelled_issued_readback_stops_progress_and_ignores_its_late_callback() {
+    let mut u = Ui::new(Session::new());
+    let dir = commit_dir("progress-cancelled");
+    let path = dir.join("late.png");
+    let rx = push(&mut u, 920, json!({"path": path.to_string_lossy()}));
+    let callback = capture_progress_callback(&mut u, 0);
+    let spec = u.app.capture.shots[0].spec.expect("geometry");
+    u.app.capture.shots[0].state.cancel_if_open();
+    u.advance_clock(u.app.clock.now() + 0.1);
+    assert_eq!(capture_progress_hidden_logic(&mut u), 0);
+    assert!(u.app.capture.shots.is_empty());
+    callback.complete(Arc::new(egui::ColorImage::filled(spec.size_px, egui::Color32::RED)));
+    assert_eq!(capture_progress_hidden_logic(&mut u), 0);
+    assert!(rx.try_recv().is_err());
+    assert!(!path.exists());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn an_issued_readback_deadline_stops_progress_and_answers_once_without_extending_it() {
+    let mut u = Ui::new(Session::new());
+    let dir = commit_dir("progress-timeout");
+    let path = dir.join("late.png");
+    let rx = push(&mut u, 921, json!({"path": path.to_string_lossy()}));
+    let callback = capture_progress_callback(&mut u, 0);
+    let spec = u.app.capture.shots[0].spec.expect("geometry");
+    let deadline = u.app.capture.shots[0].deadline;
+    u.advance_clock(deadline);
+    assert_eq!(capture_progress_hidden_logic(&mut u), 0);
+    let reply = rx.try_recv().expect("one unchanged deadline reply");
+    assert!(reply.result.expect_err("timeout").contains("didn't deliver"));
+    assert!(u.app.capture.shots.is_empty());
+    callback.complete(Arc::new(egui::ColorImage::filled(spec.size_px, egui::Color32::BLUE)));
+    assert_eq!(capture_progress_hidden_logic(&mut u), 0);
+    assert!(rx.try_recv().is_err());
+    assert!(!path.exists());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_closed_window_stops_its_issued_capture_progress_and_rejects_late_pixels() {
+    let mut u = Ui::new(Session::new());
+    u.ctx.set_embed_viewports(false);
+    let uid = u.app.session.ds().expect("document").uid;
+    let window = crate::windows::push(&mut u.app, crate::UiState::default(), crate::restore::Geometry::default());
+    crate::windows::adopt_restored(&mut u.app, window, &[uid], Some(uid));
+    let rx = push(&mut u, 922, json!({"window": window}));
+    let callback = capture_progress_callback(&mut u, window);
+    let spec = u.app.capture.shots[0].spec.expect("child geometry");
+    // The authoritative native-window entry is gone; its admitted capture must not keep it alive.
+    u.app.windows.list.retain(|entry| entry.id != window);
+    u.advance_clock(u.app.clock.now() + 0.1);
+    assert_eq!(capture_progress_hidden_logic(&mut u), 0);
+    let reply = rx.try_recv().expect("closed window reply");
+    assert!(reply.result.expect_err("closed").contains("window closed"));
+    assert!(u.app.capture.shots.is_empty());
+    callback.complete(Arc::new(egui::ColorImage::filled(spec.size_px, egui::Color32::RED)));
+    assert_eq!(capture_progress_hidden_logic(&mut u), 0);
+    assert!(rx.try_recv().is_err());
+}

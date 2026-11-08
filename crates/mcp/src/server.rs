@@ -1,8 +1,10 @@
 //! JSON-RPC 2.0 framing and the MCP lifecycle / tools / resources / prompts methods.
 
 use std::io::{BufRead, Read, Write};
+#[cfg(feature = "headless")]
 use std::sync::Arc;
 
+#[cfg(feature = "headless")]
 use figcraft_engine::file_access::{Roots, confined};
 
 use serde_json::{Value, json};
@@ -55,6 +57,7 @@ pub struct Server {
     initialized: bool,
     /// The automation roots every request's file access is confined to (`--automation-read-root`,
     /// `--automation-write-root`), if any.
+    #[cfg(feature = "headless")]
     roots: Option<Arc<Roots>>,
     /// The client's name from `initialize` (`clientInfo.title`, else `.name`; empty until then):
     /// every command runs as this AI agent, so its comments are signed with it, not the user's name.
@@ -119,17 +122,25 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 
 impl Server {
     pub fn new(backend: Box<dyn Backend>) -> Self {
-        Self { backend, initialized: false, roots: None, agent: String::new() }
+        Self {
+            backend,
+            initialized: false,
+            #[cfg(feature = "headless")]
+            roots: None,
+            agent: String::new(),
+        }
     }
 
     /// Confine the files every request reads and writes to `roots` (see
     /// [`figcraft_engine::file_access`]).
+    #[cfg(feature = "headless")]
     pub fn with_roots(mut self, roots: Option<Roots>) -> Self {
         self.roots = roots.map(Arc::new);
         self
     }
 
     /// A server over a fresh headless session.
+    #[cfg(feature = "headless")]
     pub fn headless() -> Self {
         Self::new(Box::new(crate::Headless::new()))
     }
@@ -218,21 +229,34 @@ impl Server {
             return Some(error(id, INVALID_PARAMS, "`params` must be an object"));
         }
         // A bug that panics fails this request only; the server keeps serving.
-        let roots = self.roots.clone();
-        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| confined(roots.as_ref(), || self.request(method, &params)))).unwrap_or_else(
-            |p| Err((INTERNAL_ERROR, format!("internal error in `{method}`: {} (please report this bug)", panic_message(p.as_ref())))),
-        );
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.confined_request(method, &params))).unwrap_or_else(|p| {
+            Err((INTERNAL_ERROR, format!("internal error in `{method}`: {} (please report this bug)", panic_message(p.as_ref()))))
+        });
         Some(match r {
             Ok(r) => response(id, r),
             Err((code, m)) => error(id, code, m),
         })
     }
 
-    /// What `initialize` says about the automation roots.
+    fn confined_request(&mut self, method: &str, params: &Value) -> Result<Value, (i64, String)> {
+        #[cfg(feature = "headless")]
+        {
+            let roots = self.roots.clone();
+            confined(roots.as_ref(), || self.request(method, params))
+        }
+        #[cfg(not(feature = "headless"))]
+        {
+            self.request(method, params)
+        }
+    }
+
     fn roots_note(&self) -> String {
-        let Some(r) = &self.roots else { return String::new() };
-        let j = r.to_json();
-        format!(" Files: only these folders may be read: {}; written: {} (any other path is refused).", j["read"], j["write"])
+        #[cfg(feature = "headless")]
+        if let Some(r) = &self.roots {
+            let j = r.to_json();
+            return format!(" Files: only these folders may be read: {}; written: {} (any other path is refused).", j["read"], j["write"]);
+        }
+        String::new()
     }
 
     fn notification(&mut self, method: &str) {

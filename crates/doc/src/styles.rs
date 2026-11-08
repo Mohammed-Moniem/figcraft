@@ -74,6 +74,49 @@ pub enum VariableType {
     Boolean,
 }
 
+/// Persistent interchange type: native numeric/string variables do not imply a token unit
+/// or font-family meaning. This metadata never limits which native properties can use a variable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DesignTokenType {
+    Color,
+    Dimension,
+    Number,
+    FontFamily,
+    FontWeight,
+}
+
+impl DesignTokenType {
+    pub fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "color" => Self::Color,
+            "dimension" => Self::Dimension,
+            "number" => Self::Number,
+            "fontFamily" => Self::FontFamily,
+            "fontWeight" => Self::FontWeight,
+            _ => return None,
+        })
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Color => "color",
+            Self::Dimension => "dimension",
+            Self::Number => "number",
+            Self::FontFamily => "fontFamily",
+            Self::FontWeight => "fontWeight",
+        }
+    }
+
+    pub const fn variable_type(self) -> VariableType {
+        match self {
+            Self::Color => VariableType::Color,
+            Self::FontFamily => VariableType::String,
+            Self::Dimension | Self::Number | Self::FontWeight => VariableType::Number,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "camelCase")]
 pub enum VariableValue {
@@ -270,6 +313,9 @@ pub struct Variable {
     /// `ANDROID`), e.g. `var(--space-xs)`; generated code uses the Web one.
     #[serde(default, rename = "codeSyntax", skip_serializing_if = "BTreeMap::is_empty")]
     pub code_syntax: BTreeMap<String, String>,
+    /// A compatible design-token type retained across native and token interchange.
+    #[serde(default, rename = "designTokenType", skip_serializing_if = "Option::is_none")]
+    pub design_token_type: Option<DesignTokenType>,
 }
 
 /// The platforms a variable has code syntax for (the variables JSON's `codeSyntax` keys).

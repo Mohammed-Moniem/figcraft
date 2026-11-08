@@ -11,7 +11,7 @@ pub(crate) fn recovered(path: &str) -> Result<DocState> {
 /// copies in the page's storage, not in files).
 pub(crate) fn recovered_from(bytes: &[u8]) -> Result<DocState> {
     let loaded = figcraft_format::load_bytes_with_versions(bytes).map_err(|e| EngineError::Other(e.to_string()))?;
-    Ok(DocState::new(loaded.doc, None).with_versions(loaded.versions).with_branches(loaded.branches).unsaved())
+    Ok(DocState::from_native(loaded.doc, None).with_versions(loaded.versions).with_branches(loaded.branches).unsaved())
 }
 
 /// The largest file opened or imported as a document. A `.figcraft` file keeps its images as
@@ -721,7 +721,9 @@ pub(crate) fn variables_param(cmd: &str, p: &Value) -> Result<Option<Value>> {
         Some(Value::String(path)) => parse(&read(path)?)?,
         Some(_) => return Err(bad(cmd, "variables: the local variables JSON (an object, JSON text or a path)")),
     };
-    if !figcraft_format::rest::is_variables_json(&v) {
+    // variable.import also accepts DTCG tokens; it validates that format before any mutation.
+    // File-open sidecars still require the native variables shape.
+    if cmd != "variable.import" && !figcraft_format::rest::is_variables_json(&v) {
         return Err(bad(cmd, "variables: expected the local variables JSON (`meta.variableCollections` and `meta.variables`)"));
     }
     Ok(Some(v))

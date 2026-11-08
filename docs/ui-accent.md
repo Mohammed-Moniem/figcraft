@@ -1,0 +1,9 @@
+# Optional interface accent
+
+The local fork offers Preferences → Accent color: Green (the existing default), Blue (#0D99FF), Purple (#9747FF), Orange (#E67E22), or a custom opaque sRGB color. Use the swatch picker or enter six hexadecimal digits with #, then press Enter or leave the field. Invalid input keeps the current color and explains the accepted format. Escape closes Preferences and abandons an unfinished hex edit. Reset restores Green.
+
+The chosen hex is saved as accent beside theme in the app settings. Old or malformed saved accent values use Green without discarding other preferences. The preference applies across windows, light/dark themes, dark style popovers, selection and focus, active controls and popup highlights. Contrast variants may lighten or darken the displayed role while preserving the saved hex. Custom text and menu roles target at least 4.5:1; primary-control boundaries, focus and outlines target at least 3:1 against their tested UI/page surfaces. The exact existing Green palette remains unchanged, including its historical contrast values. Page-background contrast does not guarantee contrast against every piece of artwork beneath an outline.
+
+Document paints, Undo, component/status semantics, collaborator identity colors, app icons and brand artwork are independent of this preference.
+
+Automation command pref.accentColor takes one of color (#RRGGBB), preset (green, blue, purple, orange), or reset:true; an empty object queries it. It returns {color:"#RRGGBB"}. Hex is normalized to uppercase. Alpha, shorthand, named colors and conflicting updates are rejected atomically. This is a local-fork feature requested in issue #1776. Earlier upstream PR #974/#979 were closed unmerged; this implementation does not claim upstream acceptance or a target-app parity-score change.

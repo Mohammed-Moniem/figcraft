@@ -522,6 +522,7 @@ pub fn sync_extensions(doc: &mut Document) {
                 Some(Some(p)) => {
                     if v.kind != p.kind {
                         v.kind = p.kind;
+                        v.design_token_type = p.design_token_type;
                         v.overrides.clear();
                     }
                     v.name.clone_from(&p.name);

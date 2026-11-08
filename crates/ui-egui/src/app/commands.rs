@@ -14,6 +14,7 @@ impl FigApp {
 
     /// Run a command, surfacing errors as a toast. Returns the result.
     pub fn run(&mut self, id: &str, params: Value) -> Option<Value> {
+        crate::number_wheel::before_edit(self);
         if self.file_providers.busy() && matches!(id, "file.close" | "file.revert") {
             self.toast("Finish or cancel the pending file provider operation before closing or reverting");
             return None;
@@ -333,6 +334,23 @@ impl FigApp {
         self.autosave_tick(ctx, now);
         self.auto_save_tick(ctx, now);
         updates_ui::tick(self, ctx);
+        // Hidden browser tabs run logic without painting. A successful join must be durable
+        // there too, rather than waiting for the next visible UI frame.
+        self.keep_preferences(ctx);
         self.logic_ticked = true;
+    }
+
+    pub(crate) fn keep_preferences(&mut self, ctx: &egui::Context) {
+        if std::mem::take(&mut self.session.plugins.unsaved)
+            | std::mem::take(&mut self.session.live.unsaved)
+            | std::mem::take(&mut self.session.prefs_unsaved)
+        {
+            self.services.save_prefs(&self.session.prefs);
+        }
+        if self.services.take_prefs_save_failure() {
+            self.show_error(crate::local_preferences_error());
+            // A save can fail after this frame's toast was drawn, or while only logic runs.
+            ctx.request_repaint();
+        }
     }
 }

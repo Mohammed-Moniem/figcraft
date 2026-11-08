@@ -83,6 +83,67 @@ fn preferences_are_readable_by_their_owner_only() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn joined_history_and_forget_survive_native_reload_with_private_atomic_preferences() {
+    use figcraft_ui_egui::Services;
+    let dir = root("joined-history");
+    let prefs=serde_json::from_value(json!({"user_name":"Synthetic visitor", "joined_files":[{
+        "address":"wss://example.invalid/Shared/", "file":"f", "name":"Synthetic shared file", "link":"figcraft://join?server=wss://example.invalid/Shared/&file=f&token=synthetic-view-secret", "access":"view", "opened":123
+    }]})).unwrap();
+    let mut desktop = Desktop::load_from(Some(dir.clone()), Arc::new(Mutex::new(None)));
+    desktop.save_prefs(&prefs);
+    let mut fig = start(&dir);
+    assert_eq!(fig.session.prefs.joined_files.len(), 1);
+    assert_eq!(fig.session.prefs.joined_files[0].name, "Synthetic shared file");
+    assert!(!fig.session.live.available(), "loading history does not start a connection");
+    assert!(!dir.join("state.json.tmp").exists());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(dir.join("state.json")).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+    fig.run("collab.forgetJoined", json!({"file":"f"})).unwrap();
+    frames(&mut fig, &egui::Context::default());
+    assert!(start(&dir).session.prefs.joined_files.is_empty());
+    assert_eq!(start(&dir).session.prefs.user_name, "Synthetic visitor");
+    assert!(!std::fs::read_to_string(dir.join("state.json")).unwrap().contains("synthetic-view-secret"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn joined_forget_reports_native_write_failure_and_keeps_the_previous_durable_entry() {
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let fixture = Cleanup(root("joined-write-failure"));
+    let dir = &fixture.0;
+    let prefs=serde_json::from_value(json!({"language":"en", "user_name":"Synthetic visitor", "joined_files":[{
+        "address":"wss://example.invalid/Shared/", "file":"f", "name":"Synthetic shared file", "link":"figcraft://join?server=wss://example.invalid/Shared/&file=f&token=synthetic-view-secret", "access":"view", "opened":123
+    }]})).unwrap();
+    crate::services::write_prefs(dir, &prefs);
+    let mut fig = start(dir);
+    std::fs::create_dir(dir.join("state.json.tmp")).unwrap();
+    fig.run("collab.forgetJoined", json!({"file":"f"})).unwrap();
+    frames(&mut fig, &egui::Context::default());
+    assert!(fig.session.prefs.joined_files.is_empty(), "the in-memory operation stays usable");
+    assert_eq!(start(dir).session.prefs.joined_files.len(), 1, "a failed atomic write leaves the old whole version");
+    let error = fig.ui.last_error.as_deref().expect("failed native persistence must be reported in the UI");
+    assert!(error.contains("Changes may be lost") && !error.contains("synthetic-view-secret"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(dir.join("state.json")).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+    std::fs::remove_dir(dir.join("state.json.tmp")).unwrap();
+    let mut reloaded = start(dir);
+    reloaded.run("collab.forgetJoined", json!({"file":"f"})).unwrap();
+    frames(&mut reloaded, &egui::Context::default());
+    assert!(start(dir).session.prefs.joined_files.is_empty(), "Forget becomes durable after storage is writable again");
+}
+
 /// A live link that only records the sessions it was told to leave.
 struct Leaves(Arc<Mutex<Vec<u64>>>);
 

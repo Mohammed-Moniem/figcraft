@@ -13,19 +13,23 @@ use crate::library::{is_remote_collection, local_collections};
 use crate::params::{get, string};
 use crate::{EngineError, Result, Session, bad, spec};
 
+mod dtcg;
+#[cfg(test)]
+mod dtcg_tests;
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         spec!(
             "variable.export",
             "Export variables",
-            "{collections? [ids or names; default every collection of this file, not library copies], format? (json (default): the local variables JSON that variable.import reads, colour calculations as the colour they show in each mode with other collections in their default modes | css: custom properties, the default mode on :root and each other mode on [data-<collection>=\"<mode>\"], colour calculations as the colour they show in that mode with other collections in their default modes; numbers in px unless layers or scopes use them as opacity or font weight | tailwind: a Tailwind CSS v4 stylesheet, the default mode as an @theme block named the way inspect.code's tailwind utilities read them: --color-*, --radius-*, --text-*, --spacing-*, --font-*, unique per file; each other mode as in css; colour calculations as the colour they show in that mode, other collections in their default modes) | dart: a Dart file for Flutter, a class of constants per collection and mode (Color, double, String, bool), aliases and colour calculations resolved), path? (write it there)}  → {text}, or {path} when written",
+            "{collections? [ids or names; default every local collection of this file], format? (json|css|tailwind|dart|dtcg; default json), mode? (DTCG visible mode id/name; default first), path? (write it there)} → {text}, or {path} when written. JSON is the native variables response read by variable.import. CSS writes custom properties and Tailwind writes v4 @theme names; numbers use px except unitless roles. Dart writes Flutter constants. These formats flatten color calculations in each mode with other collections in their default modes. DTCG writes supported color/dimension/number/fontFamily/fontWeight tokens and keeps native modes, general strings, booleans and calculations in the documented ai.storyteller.figcraft extension.",
             false,
             export
         ),
         spec!(
             "variable.import",
             "Import variables",
-            "{variables (the local variables JSON, as variable.export writes it: an object, JSON text or a path to a regular file of at most 256 MiB; `variableCollections` and `variables` under `meta` or at the top level)}  collections join this file's collection of the same name (values by mode name; new modes and variables are added, a variable of another type is skipped), others are added  → {collections (added), variables (added), updated, warnings (also when it holds no variables, or fewer than its collections list)}",
+            "{variables (DTCG tokens or the native variables JSON; an object, JSON text or a path to a regular file of at most 256 MiB), remSize? (DTCG rem-to-px conversion; default 16)} Collections merge by name; values by mode name. New modes and variables are added; a variable of another type is skipped. DTCG refuses a conflicting referenced type before mutation. → {collections (added), variables (added), updated, warnings}",
             true,
             import
         ),
@@ -49,7 +53,8 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
         "css" => css(doc, &colls, false),
         "tailwind" => css(doc, &colls, true),
         "dart" => dart(&doc.variables, &colls),
-        _ => return Err(bad(cmd, "format: json|css|tailwind|dart")),
+        "dtcg" => dtcg::export(doc, &colls, p)?,
+        _ => return Err(bad(cmd, "format: json|css|tailwind|dart|dtcg")),
     };
     match string(p, "path") {
         Some(path) => {
@@ -257,7 +262,38 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "variable.import";
     let v =
         super::file::variables_param(cmd, p)?.ok_or_else(|| bad(cmd, "`variables` (the variables JSON: an object, JSON text or a path) required"))?;
-    let (src, mut warnings) = figcraft_format::rest::read_variables(&v).ok_or_else(|| bad(cmd, "not a variables JSON"))?;
+    let native_shape = figcraft_format::rest::is_variables_json(&v);
+    let tokens = dtcg::has_tokens(&v);
+    if !native_shape && !tokens {
+        return Err(bad(
+            cmd,
+            "variables: expected the local variables JSON (`meta.variableCollections` and `meta.variables`) or DTCG tokens with $value/$ref",
+        ));
+    }
+    let is_dtcg = !native_shape || tokens;
+    let (src, mut warnings) = if !is_dtcg {
+        figcraft_format::rest::read_variables(&v).ok_or_else(|| bad(cmd, "not a variables JSON"))?
+    } else {
+        dtcg::import(&v, p, s.doc()?.color_profile)?
+    };
+    if is_dtcg {
+        let doc = s.doc()?;
+        let skipped: BTreeSet<_> = src
+            .variables
+            .iter()
+            .filter(|v| {
+                let Some(c) = src.collection_by_id(&v.collection) else { return false };
+                let local = doc.variables.collections.iter().find(|x| x.name == c.name && x.extends.is_none() && !is_remote_collection(doc, &x.id));
+                local.is_some_and(|c| doc.variables.variables.iter().any(|x| x.collection == c.id && x.name == v.name && x.kind != v.kind))
+            })
+            .map(|v| v.id.as_str())
+            .collect();
+        if let Some(v) =
+            src.variables.iter().find(|v| v.values.values().any(|value| value.references().iter().any(|id| skipped.contains(id.as_str()))))
+        {
+            return Err(bad(cmd, format!("DTCG {}: a referenced variable has a conflicting type in this file", v.name)));
+        }
+    }
     let doc = s.doc_mut()?;
     // Imported collection → (this file's collection, imported mode → its mode).
     let mut colls: BTreeMap<CollectionId, (CollectionId, BTreeMap<ModeId, ModeId>)> = BTreeMap::new();
@@ -345,7 +381,13 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
                         }
                     }
                 }
-                other => other.clone(),
+                other => {
+                    let mut value = other.clone();
+                    for reference in value.references_mut() {
+                        *reference = ids.get(reference).cloned().ok_or_else(|| bad(cmd, "a calculation target wasn't imported"))?;
+                    }
+                    value
+                }
             };
             if let Some(slot) = doc.variables.variables.iter_mut().find(|x| x.id == *local) {
                 slot.values.insert(lm.clone(), val);
@@ -356,6 +398,13 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
         let all: Vec<ModeId> =
             doc.variables.collections.iter().find(|x| x.id == *cid).map(|x| x.modes.iter().map(|m| m.id.clone()).collect()).unwrap_or_default();
         if let Some(slot) = doc.variables.variables.iter_mut().find(|x| x.id == *local) {
+            slot.design_token_type = v.design_token_type;
+            if is_dtcg {
+                slot.description = v.description.clone();
+                slot.scopes = v.scopes.clone();
+                slot.code_syntax = v.code_syntax.clone();
+                slot.hidden_from_publishing = v.hidden_from_publishing;
+            }
             let first = all.iter().find_map(|m| slot.values.get(m)).cloned().unwrap_or_else(|| VariableValue::default_for(slot.kind));
             for m in all {
                 slot.values.entry(m).or_insert_with(|| first.clone());

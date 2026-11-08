@@ -165,12 +165,13 @@ fn fire_pads(p: &mut Presenter, doc: &Document, root: NodeId, pads: &[String], n
 pub(super) struct InputMode {
     pub over_area: bool,
     pub keys_on: bool,
+    pub controller_on: bool,
     pub pane: bool,
     pub now: f64,
 }
 
 pub(super) fn input(p: &mut Presenter, ctx: &egui::Context, l: &Layout, mode: InputMode) {
-    let InputMode { over_area, keys_on, pane, now } = mode;
+    let InputMode { over_area, keys_on, controller_on, pane, now } = mode;
     let (pos, pressed, released, down, wheel, velocity, dt, keys) = ctx.input(|i| {
         let keys: Vec<(egui::Key, egui::Modifiers)> = i
             .events
@@ -191,10 +192,10 @@ pub(super) fn input(p: &mut Presenter, ctx: &egui::Context, l: &Layout, mode: In
             keys,
         )
     });
-    let keys = if keys_on { keys } else { Vec::new() };
+    let mut keys = if keys_on { keys } else { Vec::new() };
     // Controller buttons pressed while a link notice shows are dropped, as keys are.
     let pads = std::mem::take(&mut p.pads);
-    let pads = if p.link_notice.is_none() { pads } else { Vec::new() };
+    let mut pads = if p.link_notice.is_none() { pads } else { Vec::new() };
     follow_drag(p, pos, down, now);
     let pos = pos.filter(|_| over_area || p.press.is_some());
     release_drag_scroll(p, l, down, velocity, now);
@@ -213,6 +214,12 @@ pub(super) fn input(p: &mut Presenter, ctx: &egui::Context, l: &Layout, mode: In
             p.revert(now);
             return;
         }
+    }
+    let scope = super::keys::Scope { keyboard: keys_on, controller: controller_on };
+    let key_outcome = super::keys::process(p, ctx, doc, root, scope, now, &mut pads);
+    keys.retain(|(key, _)| !key_outcome.claimed.contains(key));
+    if key_outcome.fired {
+        return;
     }
     // The wheel scrolls the innermost frame under the pointer that can still move that way, else
     // pans a view bigger than the window. When it stops it coasts on, slowing down.

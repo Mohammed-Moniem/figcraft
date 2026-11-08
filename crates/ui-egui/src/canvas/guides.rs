@@ -106,7 +106,7 @@ fn through(app: &FigApp, owner: NodeId, index: usize, vertical: bool, p: Point, 
     let v = guides::offset_at(&ds.doc, owner, vertical, p)?;
     let offset = match object_zoom.and_then(|zoom| figcraft_engine::snap::snap_guide(&ds.doc, ds.page, owner, vertical, v, zoom)) {
         Some(snapped) => snapped,
-        None if pixel => v.round(),
+        None if pixel => figcraft_engine::pixel_grid::round(v, ds.view.pixel_grid_step()),
         None => (v * 100.0).round() / 100.0,
     };
     if owner == ds.page { Some(Placed { owner, index, vertical, offset, line: None }) } else { place(&ds.doc, owner, index, vertical, offset) }

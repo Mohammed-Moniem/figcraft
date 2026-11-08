@@ -108,3 +108,51 @@ fn a_sound_image_is_placed_and_stays() {
     // What isn't an image at all keeps its own message.
     assert!(place(&mut s, b"not an image", json!({})).is_err());
 }
+
+#[test]
+fn progressive_cmyk_is_placed_cached_and_exported_with_visible_pixels() {
+    for (bytes, width, height, expected) in [
+        (include_bytes!("../../format/tests/fixtures/jpeg/progressive-cmyk-8x8.jpg").as_slice(), 8, 8, [102, 104, 101]),
+        (include_bytes!("../../format/tests/fixtures/jpeg/progressive-cmyk-300x200.jpg").as_slice(), 300, 200, [64, 64, 64]),
+        (include_bytes!("../../format/tests/fixtures/jpeg/progressive-cmyk-17x19.jpg").as_slice(), 17, 19, [64, 64, 64]),
+    ] {
+        let mut s = Session::new();
+        let placed = place(&mut s, bytes, json!({"x":0,"y":0})).unwrap();
+        assert_eq!((placed["width"].as_f64(), placed["height"].as_f64()), (Some(width as f64), Some(height as f64)));
+        let exported = s.execute("file.export", &json!({"ids":[placed["id"]],"format":"png"})).unwrap();
+        let png = base64::engine::general_purpose::STANDARD.decode(exported["data"].as_str().unwrap()).unwrap();
+        let pixels = image::load_from_memory(&png).unwrap().to_rgba8();
+        assert_eq!(pixels.dimensions(), (width, height));
+        assert!(pixels.pixels().all(|p| p[3] == 255), "export must contain opaque image pixels");
+        for (&got, expected) in pixels.get_pixel(0, 0).0[..3].iter().zip(expected) {
+            assert!(got.abs_diff(expected) <= 3, "export against independent decoder: {got} vs {expected}");
+        }
+        if width != 8 {
+            assert!(pixels.pixels().all(|p| p.0[..3].iter().all(|v| v.abs_diff(64) <= 3)));
+        }
+        let saved = s.execute("file.saveAs", &json!({"data":true})).unwrap();
+        let archive = base64::engine::general_purpose::STANDARD.decode(saved["data"].as_str().unwrap()).unwrap();
+        let preview = figcraft_format::thumbnail::archive_preview(Cursor::new(archive), 512).picture.expect("saved file has its rendered thumbnail");
+        assert!(preview.rgba.chunks_exact(4).any(|p| p[3] == 255 && p[..3].iter().any(|v| *v < 240)), "saved thumbnail contains the image");
+        let again = place(&mut s, bytes, json!({"x":400,"y":0})).unwrap();
+        assert_eq!(again["image"], placed["image"]);
+        assert_eq!(s.doc().unwrap().images.len(), 1);
+    }
+}
+
+#[test]
+fn progressive_cmyk_opens_fills_and_replaces_an_image() {
+    let bytes = include_bytes!("../../format/tests/fixtures/jpeg/progressive-cmyk-8x8.jpg");
+    let mut s = Session::new();
+    let r = s.execute("shape.rectangle", &json!({"width":8,"height":8})).unwrap();
+    let id: NodeId = params::id_of(&r["id"]).unwrap();
+    let old = s.doc().unwrap().node(id).unwrap().fills.clone();
+    place(&mut s, bytes, json!({"target":id})).unwrap();
+    assert_ne!(s.doc().unwrap().node(id).unwrap().fills, old);
+    assert_eq!(s.doc().unwrap().images.len(), 1);
+    s.execute("image.replace", &json!({"ids":[id],"data":data(bytes)})).unwrap();
+    assert_eq!(s.doc().unwrap().images.len(), 1);
+    s.execute("file.open", &json!({"name":"original-progressive-cmyk.jpg","data":data(bytes)})).unwrap();
+    assert_eq!(s.doc().unwrap().images.len(), 1);
+    assert!(s.doc().unwrap().nodes().any(|n| matches!(n.kind, NodeKind::Rectangle)));
+}

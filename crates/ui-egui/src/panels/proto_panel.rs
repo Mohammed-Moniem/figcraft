@@ -2,6 +2,10 @@
 //! behaviour, overlay settings and prototype settings. Every edit runs a `proto.*` command or
 //! `node.set`.
 
+#[cfg(test)]
+#[path = "proto_key_timing_tests.rs"]
+mod key_timing_tests;
+
 use egui::{Align2, Color32, CornerRadius, Id, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, pos2, vec2};
 use figcraft_color::Paint;
 use figcraft_doc::proto::{
@@ -17,7 +21,7 @@ use crate::i18n::{tr, tr_noop, trf};
 use crate::icons::{self, Icon};
 use crate::proto_editor::{Cx, Slot, set_action};
 use crate::right::{menu_item, menu_popup, row};
-use crate::theme::{ACCENT, Tokens, regular, semibold};
+use crate::theme::{Tokens, regular, semibold};
 use crate::widgets::{self, FIELD_H, FieldEdit, Lead, PAD};
 
 /// The interaction whose editor popover is open: (layer, index).
@@ -26,6 +30,13 @@ fn editor_id() -> Id {
 }
 
 pub fn open_editor(ctx: &egui::Context, target: Option<(NodeId, usize)>) {
+    clear_capture(ctx);
+    clear_hold_field(ctx);
+    ctx.data_mut(|data| {
+        let id = editor_id().with("generation");
+        let generation = data.get_temp::<u64>(id).unwrap_or(0).saturating_add(1);
+        data.insert_temp(id, generation);
+    });
     ctx.data_mut(|d| match target {
         Some(t) => {
             d.insert_temp(editor_id(), t);
@@ -73,12 +84,14 @@ pub fn close_editor(ctx: &egui::Context) -> bool {
     }
 }
 
-const TRIGGERS: [&str; 10] = [
+const TRIGGERS: [&str; 12] = [
     tr_noop("On click"),
     tr_noop("On drag"),
     tr_noop("While hovering"),
     tr_noop("While pressing"),
     tr_noop("Key/Gamepad"),
+    tr_noop("Key down"),
+    tr_noop("Key up"),
     tr_noop("Mouse enter"),
     tr_noop("Mouse leave"),
     tr_noop("Mouse down"),
@@ -93,6 +106,8 @@ fn trigger_kind(t: &Trigger) -> &'static str {
         Trigger::OnHover => "While hovering",
         Trigger::OnPress => "While pressing",
         Trigger::KeyPress { .. } => "Key/Gamepad",
+        Trigger::KeyDown { .. } => "Key down",
+        Trigger::KeyUp { .. } => "Key up",
         Trigger::MouseEnter => "Mouse enter",
         Trigger::MouseLeave => "Mouse leave",
         Trigger::MouseDown => "Mouse down",
@@ -106,10 +121,9 @@ fn trigger_of(kind: &str, cur: &Trigger) -> Trigger {
         "On drag" => Trigger::OnDrag,
         "While hovering" => Trigger::OnHover,
         "While pressing" => Trigger::OnPress,
-        "Key/Gamepad" => match cur {
-            Trigger::KeyPress { key } => Trigger::KeyPress { key: key.clone() },
-            _ => Trigger::KeyPress { key: String::new() },
-        },
+        "Key/Gamepad" => Trigger::KeyPress { key: cur.key().unwrap_or_default().into() },
+        "Key down" => Trigger::KeyDown { key: cur.key().unwrap_or_default().into(), ms: cur.minimum_hold_ms() },
+        "Key up" => Trigger::KeyUp { key: cur.key().unwrap_or_default().into(), ms: cur.minimum_hold_ms() },
         "Mouse enter" => Trigger::MouseEnter,
         "Mouse leave" => Trigger::MouseLeave,
         "Mouse down" => Trigger::MouseDown,
@@ -129,6 +143,8 @@ fn trigger_summary(t: &Trigger) -> String {
         // A controller button names itself ("Gamepad A").
         Trigger::KeyPress { key } if is_gamepad_button(key) => key.clone(),
         Trigger::KeyPress { key } => trf("Key/Gamepad {key}", &[("key", key)]),
+        Trigger::KeyDown { key, ms } => trf("Key down {key} ({ms}ms minimum)", &[("key", key), ("ms", ms)]),
+        Trigger::KeyUp { key, ms } => trf("Key up {key} ({ms}ms minimum)", &[("key", key), ("ms", ms)]),
         Trigger::AfterDelay { ms } => trf("After delay {ms}ms", &[("ms", ms)]),
         other => tr(trigger_kind(other)).into(),
     }
@@ -618,8 +634,8 @@ fn interactions(app: &mut FigApp, ui: &mut Ui, doc: &Document, page: NodeId, nod
         }
         // A small connection glyph.
         let g = pos2(body.min.x + 14.0, body.center().y);
-        ui.painter().circle_stroke(g, 5.0, Stroke::new(1.2, ACCENT));
-        ui.painter().circle_filled(g, 2.0, ACCENT);
+        ui.painter().circle_stroke(g, 5.0, Stroke::new(1.2, crate::theme::accent(ui.ctx())));
+        ui.painter().circle_filled(g, 2.0, crate::theme::accent(ui.ctx()));
         let tx = body.min.x + 28.0;
         let clip = ui.painter().with_clip_rect(body);
         clip.text(pos2(tx, body.center().y - 7.0), Align2::LEFT_CENTER, trigger_summary(&it.trigger), semibold(11.0), t.text);
@@ -719,38 +735,165 @@ fn animates(a: &Action) -> bool {
     )
 }
 
-/// Stable egui id for the prototype key-capture flag.
+/// One capture belongs to this document, viewport and interaction source. Opening an editor
+/// again, replacing its node or missing a panel frame retires that unfinished input.
+#[derive(Clone)]
+struct KeyCapture {
+    owner: Id,
+    source: std::sync::Arc<Node>,
+    frame: u64,
+}
+
+#[derive(Clone)]
+struct HoldField {
+    owner: Id,
+    source: std::sync::Arc<Node>,
+    id: Id,
+}
+
+fn hold_owner_id(ctx: &egui::Context) -> Id {
+    Id::unique(("proto_hold_owner", ctx.viewport_id()))
+}
+
+fn clear_hold_field(ctx: &egui::Context) {
+    let owner = hold_owner_id(ctx);
+    let previous = ctx.data_mut(|data| {
+        let previous = data.get_temp::<HoldField>(owner);
+        data.remove::<HoldField>(owner);
+        previous
+    });
+    if let Some(previous) = previous {
+        ctx.memory_mut(|memory| memory.surrender_focus(previous.id.with("te")));
+    }
+}
+
+fn minimum_hold_id(app: &FigApp, ctx: &egui::Context, owner: Id, node: NodeId) -> Option<Id> {
+    let source = app.session.doc().ok()?.node_arc(node)?.clone();
+    let slot = hold_owner_id(ctx);
+    let previous = ctx.data(|data| data.get_temp::<HoldField>(slot));
+    if let Some(previous) = &previous
+        && previous.owner == owner
+        && std::sync::Arc::ptr_eq(&previous.source, &source)
+    {
+        return Some(previous.id);
+    }
+    clear_hold_field(ctx);
+    // Keep one source snapshot per viewport, and a monotonic field identity. Replacing an
+    // interaction cannot make its old numeric draft commit through a reused node/index/phase.
+    ctx.data_mut(|data| {
+        let epoch_id = slot.with("epoch");
+        let epoch = data.get_temp::<u64>(epoch_id).unwrap_or(0).checked_add(1)?;
+        let id = owner.with(("minimum_hold", epoch));
+        data.insert_temp(epoch_id, epoch);
+        data.insert_temp(slot, HoldField { owner, source, id });
+        Some(id)
+    })
+}
+
+fn accept_hold_source(app: &FigApp, ctx: &egui::Context, owner: Id, node: NodeId) {
+    let Some(source) = app.session.doc().ok().and_then(|doc| doc.node_arc(node)).cloned() else { return };
+    let slot = hold_owner_id(ctx);
+    ctx.data_mut(|data| {
+        if let Some(mut field) = data.get_temp::<HoldField>(slot)
+            && field.owner == owner
+        {
+            // The field's own accepted step keeps its identity, so typing, arrows and the
+            // focused wheel continue normally. Only another source change retires its draft.
+            field.source = source;
+            data.insert_temp(slot, field);
+        }
+    });
+}
+
 fn capture_id() -> Id {
     Id::unique("proto_key_capture")
 }
 
 fn capturing(ctx: &egui::Context) -> bool {
-    ctx.data(|d| d.get_temp::<bool>(capture_id())).unwrap_or(false)
+    let capture = ctx.data(|d| d.get_temp::<KeyCapture>(capture_id()));
+    let fresh = ctx.input(|input| input.focused) && capture.is_some_and(|capture| ctx.cumulative_frame_nr() <= capture.frame.saturating_add(1));
+    if !fresh {
+        clear_capture(ctx);
+    }
+    fresh
+}
+
+fn clear_capture(ctx: &egui::Context) {
+    let capture = ctx.data_mut(|data| {
+        let capture = data.get_temp::<KeyCapture>(capture_id());
+        data.remove::<KeyCapture>(capture_id());
+        capture
+    });
+    if let Some(capture) = capture {
+        ctx.memory_mut(|memory| memory.surrender_focus(capture.owner.with("key")));
+    }
+}
+
+fn start_capture(app: &FigApp, ctx: &egui::Context, owner: Id, node: NodeId) {
+    clear_capture(ctx);
+    if let Some(source) = app.session.doc().ok().and_then(|doc| doc.node_arc(node)).cloned() {
+        let frame = ctx.cumulative_frame_nr();
+        ctx.data_mut(|data| data.insert_temp(capture_id(), KeyCapture { owner, source, frame }));
+    }
+}
+
+fn capture_owned(app: &FigApp, ctx: &egui::Context, owner: Id, node: NodeId) -> bool {
+    let Some(mut capture) = ctx.data(|data| data.get_temp::<KeyCapture>(capture_id())) else { return false };
+    let same_source = app.session.doc().ok().and_then(|doc| doc.node_arc(node)).is_some_and(|source| std::sync::Arc::ptr_eq(source, &capture.source));
+    if !capturing(ctx) || capture.owner != owner || !same_source {
+        clear_capture(ctx);
+        return false;
+    }
+    capture.frame = ctx.cumulative_frame_nr();
+    ctx.data_mut(|data| data.insert_temp(capture_id(), capture));
+    true
+}
+
+fn keyed(trigger: &Trigger, key: String) -> Trigger {
+    match trigger {
+        Trigger::KeyDown { ms, .. } => Trigger::KeyDown { key, ms: *ms },
+        Trigger::KeyUp { ms, .. } => Trigger::KeyUp { key, ms: *ms },
+        _ => Trigger::KeyPress { key },
+    }
+}
+
+fn key_owner(app: &FigApp, ctx: &egui::Context, node: NodeId, index: usize) -> Id {
+    let uid = app.session.ds().map_or(0, |ds| ds.uid);
+    let generation = ctx.data(|data| data.get_temp::<u64>(editor_id().with("generation"))).unwrap_or(0);
+    Id::unique(("proto_key_owner", uid, ctx.viewport_id(), node, index, generation))
 }
 
 /// Draw an interaction's trigger controls: trigger picker, mouse/delay fields, key capture
 /// and controller-button selection, patching the interaction.
 fn trigger_rows(app: &mut FigApp, ui: &mut Ui, node: NodeId, k: usize, it: &Interaction) {
     let t = Tokens::get(ui.ctx());
+    let owner = key_owner(app, ui.ctx(), node, k);
+    let cap = capture_owned(app, ui.ctx(), owner, node);
+    let mut changed = false;
     widgets::sublabels(ui, tr("Trigger"), None);
     row(ui, 32.0, |ui| {
         let resp = widgets::dropdown(ui, tr(trigger_kind(&it.trigger)), ui.available_width(), None);
         menu_popup(&resp).show(|ui| {
             for (i, l) in TRIGGERS.iter().enumerate() {
-                if i == 4 || i == 5 || i == 9 {
+                if i == 4 || i == 7 || i == 11 {
                     ui.separator();
                 }
                 if menu_item(ui, tr(l), "") {
                     let next = trigger_of(l, &it.trigger);
                     patch(app, node, k, json!({"trigger": next}));
-                    if matches!(next, Trigger::KeyPress { ref key } if key.is_empty()) {
-                        ui.ctx().data_mut(|d| d.insert_temp(capture_id(), true));
+                    changed = true;
+                    clear_capture(ui.ctx());
+                    if next.key().is_some_and(str::is_empty) {
+                        start_capture(app, ui.ctx(), owner, node);
                     }
                     ui.close();
                 }
             }
         });
     });
+    if changed {
+        return;
+    }
     match &it.trigger {
         Trigger::MouseEnter | Trigger::MouseLeave | Trigger::MouseDown | Trigger::MouseUp => {
             row(ui, 32.0, |ui| {
@@ -775,9 +918,8 @@ fn trigger_rows(app: &mut FigApp, ui: &mut Ui, node: NodeId, k: usize, it: &Inte
                 }
             });
         }
-        Trigger::KeyPress { key } => {
+        Trigger::KeyPress { key } | Trigger::KeyDown { key, .. } | Trigger::KeyUp { key, .. } => {
             row(ui, 32.0, |ui| {
-                let cap = capturing(ui.ctx());
                 let label = if cap {
                     tr("Press a key…").to_string()
                 } else if key.is_empty() {
@@ -787,26 +929,33 @@ fn trigger_rows(app: &mut FigApp, ui: &mut Ui, node: NodeId, k: usize, it: &Inte
                 };
                 // The key field, and a menu of controller buttons beside it.
                 let w = (ui.available_width() - PAD_MENU_W - ui.spacing().item_spacing.x).max(40.0);
-                let (r, resp) = ui.allocate_exact_size(vec2(w, FIELD_H), Sense::click());
-                let id = capture_id().with("field");
+                let (r, _) = ui.allocate_exact_size(vec2(w, FIELD_H), Sense::hover());
+                let id = owner.with("key");
+                let resp = ui.interact(r, id, Sense::click());
+                crate::a11y::button(&resp, tr("Record key"));
+                let mut cap = cap;
+                if cap && ui.input(|input| input.pointer.any_pressed() && input.pointer.interact_pos().is_none_or(|point| !r.contains(point))) {
+                    clear_capture(ui.ctx());
+                    cap = false;
+                }
                 ui.painter().rect_filled(r, CornerRadius::same(5), t.field);
                 if cap {
-                    ui.painter().rect_stroke(r, CornerRadius::same(5), Stroke::new(1.0, ACCENT), StrokeKind::Inside);
+                    ui.painter().rect_stroke(r, CornerRadius::same(5), Stroke::new(1.0, crate::theme::accent(ui.ctx())), StrokeKind::Inside);
                     ui.memory_mut(|m| m.request_focus(id));
-                    let _ = ui.interact(r, id, Sense::focusable_noninteractive());
                     let pressed = ui.input(|i| {
                         i.events.iter().find_map(|e| match e {
-                            egui::Event::Key { key, pressed: true, modifiers, .. } => Some((*key, *modifiers)),
+                            egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. } => Some((*key, *modifiers)),
                             _ => None,
                         })
                     });
                     if let Some((kk, m)) = pressed {
-                        ui.ctx().data_mut(|d| d.remove::<bool>(capture_id()));
+                        clear_capture(ui.ctx());
+                        ui.input_mut(|input| input.events.retain(|event| !matches!(event, egui::Event::Key { key, .. } if *key == kk)));
                         ui.memory_mut(|m| m.surrender_focus(id));
                         if kk != egui::Key::Escape || key.is_empty() {
                             // Held modifiers make it a combination (`Shift+K`).
                             let combo = KeyMods { ctrl: m.ctrl, alt: m.alt, shift: m.shift, cmd: m.mac_cmd }.combo(kk.name());
-                            patch(app, node, k, json!({"trigger": {"type": "keyPress", "key": combo}}));
+                            patch(app, node, k, json!({"trigger": keyed(&it.trigger, combo)}));
                         }
                     }
                 } else if resp.hovered() {
@@ -820,7 +969,7 @@ fn trigger_rows(app: &mut FigApp, ui: &mut Ui, node: NodeId, k: usize, it: &Inte
                     if cap || key.is_empty() { t.text_secondary } else { t.text },
                 );
                 if resp.clicked() && !cap {
-                    ui.ctx().data_mut(|d| d.insert_temp(capture_id(), true));
+                    start_capture(app, ui.ctx(), owner, node);
                 }
                 let pads = widgets::dropdown(ui, tr("Controller"), PAD_MENU_W, None);
                 menu_popup(&pads).show(|ui| {
@@ -833,14 +982,34 @@ fn trigger_rows(app: &mut FigApp, ui: &mut Ui, node: NodeId, k: usize, it: &Inte
                                 p.text(at, Align2::RIGHT_CENTER, format!("{playstation} · {switch}"), regular(11.0), t.text_secondary);
                             };
                             if crate::right::menu_item_with(ui, &mark, "", PAD_NAMES_W, names) {
-                                ui.ctx().data_mut(|d| d.remove::<bool>(capture_id()));
-                                patch(app, node, k, json!({"trigger": {"type": "keyPress", "key": b}}));
+                                clear_capture(ui.ctx());
+                                patch(app, node, k, json!({"trigger": keyed(&it.trigger, b.into())}));
                                 ui.close();
                             }
                         }
                     });
                 });
             });
+            if matches!(it.trigger, Trigger::KeyDown { .. } | Trigger::KeyUp { .. }) {
+                let hold_owner = owner.with(trigger_kind(&it.trigger));
+                let Some(hold_id) = minimum_hold_id(app, ui.ctx(), hold_owner, node) else { return };
+                row(ui, 32.0, |ui| {
+                    widgets::label(ui, tr("Minimum hold"), t.text_secondary);
+                    if let Some(FieldEdit::Set(v) | FieldEdit::Scrub(v, true)) =
+                        widgets::number_field(ui, hold_id, Lead::None, Some(f64::from(it.trigger.minimum_hold_ms())), "ms", 96.0, 10.0)
+                        && v.is_finite()
+                    {
+                        let ms = v.clamp(0.0, f64::from(proto::MAX_DELAY_MS)).round() as u32;
+                        let trigger = match &it.trigger {
+                            Trigger::KeyDown { key, .. } => Trigger::KeyDown { key: key.clone(), ms },
+                            Trigger::KeyUp { key, .. } => Trigger::KeyUp { key: key.clone(), ms },
+                            _ => return,
+                        };
+                        patch(app, node, k, json!({"trigger": trigger}));
+                        accept_hold_source(app, ui.ctx(), hold_owner, node);
+                    }
+                });
+            }
         }
         _ => {}
     }
@@ -1212,7 +1381,7 @@ fn animation_rows(app: &mut FigApp, ui: &mut Ui, node: NodeId, k: usize, it: &In
         } else {
             1.0
         };
-        curve(ui.painter(), box_r.shrink2(vec2(10.0, 12.0)), it.easing, ACCENT, Some(phase));
+        curve(ui.painter(), box_r.shrink2(vec2(10.0, 12.0)), it.easing, crate::theme::accent(ui.ctx()), Some(phase));
     }
 }
 

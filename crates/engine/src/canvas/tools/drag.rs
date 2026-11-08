@@ -187,6 +187,47 @@ impl Session {
         Ok(())
     }
 
+    /// Resolve grid/object snapping, then keep the page direction constrained by Shift.
+    fn snapped_move(&self, ev: &PointerEvent, start: Point, targets: &Targets) -> (Vec2, Vec<Guide>) {
+        let mut d = ev.p() - start;
+        let locked = ev.shift.then_some(d.x.abs() > d.y.abs());
+        if let Some(horizontal) = locked {
+            if horizontal {
+                d.y = 0.0;
+            } else {
+                d.x = 0.0;
+            }
+        }
+        // Cmd/Ctrl (and Control on macOS) held while dragging suspends object snapping.
+        let snap_on = self.ds().map(|ds| ds.view.snap_objects).unwrap_or(true) && !ev.cmd && !ev.ctrl;
+        let mut guides = Vec::new();
+        let mut held = [false; 2];
+        if snap_on {
+            let (c, g2, axes) = targets.snap_move_held(d, SNAP_PX / ev.zoom.max(1e-6));
+            held = axes;
+            d += c;
+            guides = g2;
+        }
+        if self.ds().map(|ds| ds.view.snap_pixel).unwrap_or(true) {
+            // Keep free axes on the chosen grid (a rotated parent frame's, inside one).
+            let size = self.ds().map(|d| d.view.pixel_grid_step()).unwrap_or(1.0);
+            d = targets.round_move_on_grid(d, size, held);
+        }
+        // A grid correction in a rotated parent's axes must not move the page axis
+        // constrained by Shift. Constraint wins; guides must describe the final box.
+        if let Some(horizontal) = locked {
+            if horizontal {
+                d.y = 0.0;
+            } else {
+                d.x = 0.0;
+            }
+            if snap_on {
+                guides = targets.move_guides(d);
+            }
+        }
+        (d, guides)
+    }
+
     pub(super) fn drag(&mut self, ev: &PointerEvent) -> Result<()> {
         let mut g = std::mem::take(&mut self.tool.gesture);
         // Alt makes a move a copy whenever it goes down, before the drag or during it, and letting
@@ -214,26 +255,7 @@ impl Session {
             }
             Gesture::Move { start, moved: false, .. } | Gesture::Resize { start, moved: false, .. } if within_slop(ev, *start) => Ok(()),
             Gesture::Move { start, ids, targets, duplicate, .. } => {
-                let mut d = ev.p() - *start;
-                if ev.shift {
-                    if d.x.abs() > d.y.abs() {
-                        d.y = 0.0;
-                    } else {
-                        d.x = 0.0;
-                    }
-                }
-                // Cmd/Ctrl (and Control on macOS) held while dragging suspends snapping.
-                let snap_on = self.ds().map(|ds| ds.view.snap_objects).unwrap_or(true) && !ev.cmd && !ev.ctrl;
-                let mut guides = Vec::new();
-                if snap_on {
-                    let (c, g2) = targets.snap_move(d, SNAP_PX / ev.zoom.max(1e-6));
-                    d += c;
-                    guides = g2;
-                }
-                if self.ds().map(|ds| ds.view.snap_pixel).unwrap_or(true) {
-                    // Keep the box's origin on whole pixels (a rotated parent frame's, inside one).
-                    d = targets.round_move(d);
-                }
+                let (d, guides) = self.snapped_move(ev, *start, targets);
                 let ids = ids.clone();
                 let dup = *duplicate;
                 let page = self.page()?;
@@ -487,8 +509,10 @@ impl Session {
         let targets = if snap { Some(Targets::gather(self.doc()?, page, &ids)) } else { None };
         let mut p = ev.p();
         let mut guides = Vec::new();
+        let mut held = [false; 2];
         if let Some(t) = &targets {
-            let (dx, dy, g) = t.snap_point(p.x, p.y, SNAP_PX / ev.zoom.max(1e-6));
+            let (dx, dy, g, axes) = t.snap_point_held(p.x, p.y, SNAP_PX / ev.zoom.max(1e-6));
+            held = t.held_page_axes(axes);
             p.x += dx;
             p.y += dy;
             guides = g;
@@ -499,7 +523,13 @@ impl Session {
         // The pixel grid: an upright box's dragged sides land on whole pixels (the Scale tool
         // scales by the factor as dragged).
         if !scale_tool && self.ds().map(|d| d.view.snap_pixel).unwrap_or(true) && crate::guides::axis_aligned(frame) {
-            p = Point::new(p.x.round(), p.y.round());
+            let size = self.ds().map(|d| d.view.pixel_grid_step()).unwrap_or(1.0);
+            if !held[0] {
+                p.x = crate::pixel_grid::round(p.x, size);
+            }
+            if !held[1] {
+                p.y = crate::pixel_grid::round(p.y, size);
+            }
         }
         let q = frame.inverse() * p;
         let is_line = r.single && ids.first().and_then(|i| self.doc().ok()?.node(*i).map(|n| matches!(n.kind, NodeKind::Line))).unwrap_or(false);
