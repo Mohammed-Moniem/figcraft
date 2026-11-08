@@ -517,6 +517,21 @@ fn header(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeId]) {
                     ui.close();
                 }
             });
+        } else if cmd == "component.create" && sel.len() > 1 {
+            // Several layers: the button opens a menu, as Figma's does (#2088). One layer keeps the plain click.
+            menu_popup(&bresp).width(220.0).show(|ui| {
+                let multiple = crate::i18n::command("component.createMultiple", "Create multiple components");
+                let set = crate::i18n::command("component.createSet", "Create component set");
+                for (c, label) in
+                    [("component.create", tr("Create component")), ("component.createMultiple", &multiple), ("component.createSet", &set)]
+                {
+                    let key = crate::shortcuts::shortcut_for(app, c).unwrap_or("");
+                    if menu_item(ui, label, key) {
+                        app.run(c, json!({}));
+                        ui.close();
+                    }
+                }
+            });
         } else if bresp.clicked() {
             app.run(cmd, json!({}));
         }

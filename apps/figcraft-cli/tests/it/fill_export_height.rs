@@ -95,32 +95,35 @@ fn output_directory() -> (PathBuf, bool) {
 #[test]
 fn issue_2034_same_fig_json_and_png_agree_after_fill_parent_growth() {
     let (output, keep) = output_directory();
-    for case in ["fill-fixes-parent", "fixed-parent-grows", "restore-hug-after-text", "final-text-first", "hug-font-grows"] {
+    for case in ["hug-follows-text", "fixed-parent-grows", "restore-hug-after-text", "final-text-first", "hug-font-grows"] {
         let (mut session, row, bar, copy) = fixture(if case == "final-text-first" { LONG } else { SHORT });
+        // Cross-axis Fill retains Hug. Fixed-parent controls choose Fixed explicitly.
+        let initially_fixed = matches!(case, "fixed-parent-grows" | "restore-hug-after-text");
+        if initially_fixed {
+            set(&mut session, row, json!({"sizingV":"fixed"}));
+        }
         let initial = session.doc().unwrap().node(row).unwrap().height;
-        assert_eq!(session.doc().unwrap().node(row).unwrap().child_layout.sizing_v, Sizing::Fixed);
+        assert_eq!(session.doc().unwrap().node(row).unwrap().child_layout.sizing_v, if initially_fixed { Sizing::Fixed } else { Sizing::Hug });
+        assert_eq!(session.doc().unwrap().node(bar).unwrap().child_layout.sizing_v, Sizing::Fill);
         match case {
-            "fill-fixes-parent" => {
+            "hug-follows-text" => {
                 set(&mut session, copy, json!({"characters":LONG}));
-                close(session.doc().unwrap().node(row).unwrap().height, initial);
                 assert!(session.doc().unwrap().node(copy).unwrap().height > initial + 10.0);
+                close(session.doc().unwrap().node(row).unwrap().height, session.doc().unwrap().node(copy).unwrap().height);
             }
             "fixed-parent-grows" => set(&mut session, row, json!({"height":initial+57.0})),
             "restore-hug-after-text" => {
                 set(&mut session, copy, json!({"characters":LONG}));
+                close(session.doc().unwrap().node(row).unwrap().height, initial);
+                assert!(session.doc().unwrap().node(copy).unwrap().height > initial + 10.0);
                 set(&mut session, row, json!({"sizingV":"hug"}));
-                assert_eq!(session.doc().unwrap().node(bar).unwrap().child_layout.sizing_v, Sizing::Fixed);
-                close(session.doc().unwrap().node(bar).unwrap().height, initial);
-                // Restoring Hug fixes existing Fill children. Reapplying Fill freezes the
-                // parent at its newly grown size, rather than preserving the old24px size.
-                set(&mut session, bar, json!({"sizingV":"fill"}));
+                assert_eq!(session.doc().unwrap().node(bar).unwrap().child_layout.sizing_v, Sizing::Fill);
+                close(session.doc().unwrap().node(bar).unwrap().height, session.doc().unwrap().node(copy).unwrap().height);
             }
             "hug-font-grows" => {
-                set(&mut session, row, json!({"sizingV":"hug"}));
                 set(&mut session, copy, json!({"fontSize":40}));
-                assert_eq!(session.doc().unwrap().node(bar).unwrap().child_layout.sizing_v, Sizing::Fixed);
-                close(session.doc().unwrap().node(bar).unwrap().height, initial);
-                set(&mut session, bar, json!({"sizingV":"fill"}));
+                assert_eq!(session.doc().unwrap().node(bar).unwrap().child_layout.sizing_v, Sizing::Fill);
+                close(session.doc().unwrap().node(bar).unwrap().height, session.doc().unwrap().node(copy).unwrap().height);
             }
             _ => assert!(initial > 35.0, "the original final text must have multiple lines"),
         }
@@ -128,7 +131,8 @@ fn issue_2034_same_fig_json_and_png_agree_after_fill_parent_growth() {
         let expected = doc.node(row).unwrap().height;
         close(doc.node(bar).unwrap().height, expected);
         assert_eq!(doc.node(bar).unwrap().child_layout.sizing_v, Sizing::Fill);
-        if case != "fill-fixes-parent" && case != "final-text-first" {
+        assert_eq!(doc.node(row).unwrap().child_layout.sizing_v, if case == "fixed-parent-grows" { Sizing::Fixed } else { Sizing::Hug });
+        if case != "final-text-first" {
             assert!(expected > initial + 10.0, "{case}: the parent must actually grow");
         }
         let dir = output.join(case);

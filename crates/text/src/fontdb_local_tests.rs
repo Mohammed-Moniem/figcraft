@@ -72,16 +72,17 @@ fn a_local_font_draws_under_the_name_it_was_offered_with() {
     // The family keeps its other styles waiting.
     let styles = db.styles("Shop Sans");
     assert!(styles.iter().any(|s| s == "Bold") && styles.iter().any(|s| s == "Light Italic"), "{styles:?}");
-    // A family the app has keeps its faces; the computer's styles it lacks wait beside them.
+    // A family the app has retains its faces while a matching installed style is requested.
     let mut db = FontDb::default();
     let Some(mut face) = Face::from_bytes(FontBytes::Shared(Arc::new(bytes)), 0, Some("Brand Sans"), Some("Regular")) else { panic!("not a font") };
     // A variable stand-in's named instances aren't this family's styles.
     face.instances.clear();
     db.add(face);
     assert!(db.add_local(vec![local(5, "Brand Sans", "Regular"), local(6, "Brand Sans", "Bold")]).is_empty(), "not a new family");
-    assert!(db.find("Brand Sans", "Regular").is_some() && db.wanted.is_empty());
+    assert!(db.find("Brand Sans", "Regular").is_some());
+    assert_eq!(db.wanted, [5]);
     db.find("Brand Sans", "Bold");
-    assert_eq!(db.wanted, [6]);
+    assert_eq!(db.wanted, [5, 6]);
 }
 
 #[test]

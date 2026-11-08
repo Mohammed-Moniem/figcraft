@@ -17,6 +17,12 @@ MIT OR Apache-2.0. No third-party icon sets are used.
 | `examples/*.figcraft` | FigCraft contributors | Synthetic demo documents built through FigCraft's command API; invented copy, shapes and vectors drawn from scratch, no images or embedded fonts | MIT OR Apache-2.0 | Text uses Inter (OFL, from craft-fonts or the system); no third-party artwork |
 | `.opencode/skills/figcraft/references/card.json` | FigCraft contributors | Original synthetic command recipe: one auto-layout frame and two solid-color rectangles | MIT OR Apache-2.0 | No fonts, images, third-party skill code or product assets |
 
+## Original SVG regression fixture
+
+| Path | Author | Source | Licence | Notes |
+|---|---|---|---|---|
+| `crates/svg/tests/corpus/stroke_zero_phase.svg` | FigCraft contributors | Original synthetic straight lines and hand-derived pixel probes | MIT OR Apache-2.0 | Omitted and explicit zero SVG dash offset, with explicit offset10 as a separate control; no third-party artwork |
+
 ## Offline spelling dictionary
 
 `crates/engine/src/spelling/english.txt.zlib` is derived from Wordnik's MIT word list,

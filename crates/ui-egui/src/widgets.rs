@@ -114,10 +114,15 @@ fn key_steps(ctx: &egui::Context, suffix: &str, step: f64) -> (f64, f64) {
     }
 }
 
-/// How far a scrub of `dx` points moves a value whose field steps by `step`: 1 step a point, ten
-/// with Shift, a tenth with Alt (fine).
+/// The steps a point of scrubbing moves a field by: half, as measured in Figma (12.2 px moved X
+/// by 6, 61.2 px by 31).
+pub const SCRUB_STEPS_PER_POINT: f64 = 0.5;
+
+/// How far a scrub of `dx` points moves a value whose field steps by `step`: half a step a point
+/// ([`SCRUB_STEPS_PER_POINT`]), ten times that with Shift, a tenth with Alt (fine).
 pub fn scrub_amount(dx: f64, step: f64, shift: bool, alt: bool) -> f64 {
     dx * step
+        * SCRUB_STEPS_PER_POINT
         * match (shift, alt) {
             (true, false) => 10.0,
             (false, true) => 0.1,
@@ -201,6 +206,11 @@ pub fn number_field_exact(ui: &mut Ui, id: Id, lead: Lead, value: Option<f64>, s
 /// edit comes back as one for each layer ([`Edit::Each`]).
 pub fn number_field_mixed(ui: &mut Ui, id: Id, lead: Lead, value: Option<f64>, suffix: &str, width: f32, step: f64) -> Option<Edit> {
     number_field_bindable(ui, id, lead, value, suffix, width, step, None, Empty::Text(tr("Mixed"))).0
+}
+
+/// Exact finite display/editing while retaining relative edits of mixed numeric values.
+pub fn number_field_mixed_exact(ui: &mut Ui, id: Id, lead: Lead, value: Option<f64>, suffix: &str, width: f32, step: f64) -> Option<Edit> {
+    number_field_impl(ui, id, lead, value, suffix, width, step, None, Empty::Text(tr("Mixed")), NumberOptions { exact: true, ..Default::default() }).0
 }
 
 /// [`number_field`] that shows `empty` (dim) for no value instead of "Mixed" (e.g. "Auto"): there

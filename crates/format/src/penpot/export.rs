@@ -1000,6 +1000,9 @@ impl<'a> Exporter<'a> {
     }
 
     fn strokes(&mut self, node: &Node, typ: &str) -> Vec<Value> {
+        if node.stroke.dash_phase.is_some() && !node.stroke.dashes.is_empty() {
+            self.warn("Manual dash phase was left out of the Penpot export; dash placement may differ");
+        }
         if matches_fingerprint(node, "strokes", strokes_fingerprint(node))
             && let Some(Value::Array(source)) = source_value(node, "strokes")
             && !source.iter().any(|s| s.get("strokeImage").is_some())

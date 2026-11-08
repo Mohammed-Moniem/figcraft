@@ -71,6 +71,8 @@ mod blend_preview_tests;
 #[cfg(test)]
 mod branch_ui_tests;
 #[cfg(test)]
+mod canvas_autopan_tests;
+#[cfg(test)]
 mod canvas_double_click_tests;
 #[cfg(test)]
 mod canvas_drag_tests;
@@ -102,6 +104,8 @@ mod component_swap_search_tests;
 mod context_menu_tests;
 #[cfg(test)]
 mod corner_individual_tests;
+#[cfg(test)]
+mod create_multiple_menu_tests;
 #[cfg(test)]
 mod crop_image_tests;
 #[cfg(test)]
@@ -973,3 +977,12 @@ mod pixel_grid_ui_tests;
 
 #[cfg(test)]
 mod text_font_handle_tests;
+
+#[cfg(test)]
+mod variables_bulk_tests;
+
+#[cfg(test)]
+mod annotation_tool_tests;
+
+#[cfg(test)]
+mod detached_preview_tests;

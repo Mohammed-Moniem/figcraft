@@ -145,7 +145,7 @@ fn dashed_pieces(path: BezPath, k: &figcraft_doc::StrokeProps) -> Vec<(String, S
     let list = |v: &[f64]| v.iter().map(|d| num(*d)).collect::<Vec<_>>().join(" ");
     let Some(pattern) = figcraft_pathops::width::dash_pattern(k) else { return vec![(path_d(&path), String::new())] };
     let piece = |sub: BezPath| {
-        let (dashes, offset) = figcraft_pathops::width::subpath_dashes(&sub, &pattern);
+        let (dashes, offset) = figcraft_pathops::width::subpath_dashes_with_phase(&sub, &pattern, k.dash_phase);
         let start = if offset > 0.0 { format!(" stroke-dashoffset=\"{}\"", num(offset)) } else { String::new() };
         (path_d(&sub), format!(" stroke-dasharray=\"{}\"{start}", list(&dashes)))
     };

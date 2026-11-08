@@ -266,6 +266,8 @@ fn cached_stroke_outline(n: &Node, path: &BezPath, closed: bool) -> Arc<BezPath>
         d.to_bits().hash(&mut h);
     }
     props.dashes.len().hash(&mut h);
+    // Automatic fitting and manual zero differ, and a phase edit must invalidate warm outlines.
+    props.dash_phase.map(f64::to_bits).hash(&mut h);
     props.dash_cap.map(|c| c as u8).hash(&mut h);
     // Points' own caps and joins and the fill rule Inside/Outside clip by (vector networks).
     let net = match &n.kind {

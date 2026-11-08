@@ -92,6 +92,10 @@ pub struct StrokeProps {
     pub miter_limit: f64,
     /// Dash pattern (dash, gap, …); empty = solid.
     pub dashes: Vec<f64>,
+    /// Manual offset into the raw repeating dash pattern, in document units. None retains
+    /// automatic open-path fitting and half-dash ends; Some(0) starts with a full raw dash.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dash_phase: Option<f64>,
     /// The cap of every dash, both ends (`None`: dashes take `cap_start` and `cap_end`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dash_cap: Option<StrokeCap>,
@@ -164,6 +168,7 @@ impl Default for StrokeProps {
             join: StrokeJoin::Miter,
             miter_limit: 4.0,
             dashes: Vec::new(),
+            dash_phase: None,
             dash_cap: None,
             width_profile: None,
             brush: None,
@@ -1432,8 +1437,10 @@ pub struct PrintSettings {
     /// is printed this far out, to be trimmed off.
     pub bleed: f64,
     /// Crop marks outside the bleed, at the trim's corners.
+    #[serde(alias = "crop_marks")]
     pub crop_marks: bool,
     /// Bleed marks outside the bleed, at the bleed's corners.
+    #[serde(alias = "bleed_marks")]
     pub bleed_marks: bool,
     /// CMYK colour (converted from RGB) instead of RGB.
     pub cmyk: bool,
@@ -1502,22 +1509,72 @@ pub struct ExportSetting {
     pub print: PrintSettings,
     /// Only the layer itself (on), or every layer that shows in its area (off).
     #[serde(skip_serializing_if = "is_true")]
+    #[serde(alias = "contents_only")]
     pub contents_only: bool,
     /// The layer's own box, cutting off what it paints outside it (shadows, outside strokes).
     #[serde(skip_serializing_if = "is_false")]
+    #[serde(alias = "include_bounding_box")]
     pub include_bounding_box: bool,
     /// SVG: text as outlines (on) or as `<text>` elements (off).
     #[serde(skip_serializing_if = "is_true")]
+    #[serde(alias = "svg_outline_text")]
     pub svg_outline_text: bool,
     /// SVG: layer names as `id` attributes.
     #[serde(skip_serializing_if = "is_false")]
+    #[serde(alias = "svg_id_attribute")]
     pub svg_id_attribute: bool,
     /// SVG: strokes as `stroke` attributes where that's exact (on), else as outlines.
     #[serde(skip_serializing_if = "is_true")]
+    #[serde(alias = "svg_simplify_stroke")]
     pub svg_simplify_stroke: bool,
     /// Android Vector Drawable: what to do with what a drawable can't hold exactly.
     #[serde(skip_serializing_if = "VdCompat::is_default")]
+    #[serde(alias = "vd_compat")]
     pub vd_compat: VdCompat,
+    /// PNG, JPG and WebP: convert pixels without changing the document.
+    #[serde(alias = "color_profile", skip_serializing_if = "ExportColorProfile::is_default")]
+    pub color_profile: ExportColorProfile,
+    /// JPG: encoder quality from 1 to 100; old settings use 90.
+    #[serde(skip_serializing_if = "is_default_quality")]
+    pub quality: u8,
+}
+
+/// The profile of a pixel export. Vector output keeps its existing sRGB/CMYK policy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum ExportColorProfile {
+    #[default]
+    SameAsFile,
+    Srgb,
+    DisplayP3,
+}
+
+impl ExportColorProfile {
+    pub const ALL: [Self; 3] = [Self::SameAsFile, Self::Srgb, Self::DisplayP3];
+
+    fn is_default(&self) -> bool {
+        *self == Self::SameAsFile
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::SameAsFile => "sameAsFile",
+            Self::Srgb => "srgb",
+            Self::DisplayP3 => "displayP3",
+        }
+    }
+
+    pub fn from_key(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|profile| profile.key() == value)
+    }
+
+    pub fn resolve(self, file: figcraft_color::ColorProfile) -> figcraft_color::ColorProfile {
+        match self {
+            Self::SameAsFile => file,
+            Self::Srgb => figcraft_color::ColorProfile::Srgb,
+            Self::DisplayP3 => figcraft_color::ColorProfile::DisplayP3,
+        }
+    }
 }
 
 /// How an Android Vector Drawable export handles what the format can't draw exactly (layer
@@ -1568,6 +1625,8 @@ impl Default for ExportSetting {
             svg_id_attribute: false,
             svg_simplify_stroke: true,
             vd_compat: VdCompat::BestEffort,
+            quality: Self::DEFAULT_QUALITY,
+            color_profile: ExportColorProfile::SameAsFile,
         }
     }
 }
@@ -1580,7 +1639,19 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+fn is_default_quality(quality: &u8) -> bool {
+    *quality == ExportSetting::DEFAULT_QUALITY
+}
+
 impl ExportSetting {
+    /// JPEG quality used by existing settings and the compatibility encoder API.
+    pub const DEFAULT_QUALITY: u8 = 90;
+
+    /// Clamp a stored JPEG quality before encoding, including older or hand-edited files.
+    pub fn quality(&self) -> u8 {
+        self.quality.clamp(1, 100)
+    }
+
     /// The row adding a setting after `last` creates: 1x first, then one scale step up with a
     /// matching "@2x"-style suffix.
     pub fn next_after(last: Option<&ExportSetting>) -> ExportSetting {
@@ -1600,6 +1671,65 @@ impl ExportSetting {
             _ if !self.suffix.is_empty() => self.suffix.clone(),
             ExportSize::Scale { value } if (value - 1.0).abs() > 1e-9 && self.format.is_raster() => format!("@{}", self.size.label()),
             _ => String::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod export_quality_tests {
+    use super::ExportSetting;
+    use serde_json::json;
+
+    #[test]
+    fn old_export_settings_default_to_quality_90_and_every_valid_quality_roundtrips() {
+        let old: ExportSetting = serde_json::from_value(json!({"format": "jpg"})).unwrap();
+        assert!(serde_json::to_value(&old).unwrap().get("quality").is_none(), "the default is omitted for old-file compatibility");
+        for quality in 1..=100 {
+            let input = json!({"format": "jpg", "quality": quality, "contents_only": false, "svg_outline_text": false});
+            let setting: ExportSetting = serde_json::from_value(input).unwrap();
+            let stored = serde_json::to_value(&setting).unwrap();
+            assert_eq!(stored.get("quality").and_then(|v| v.as_u64()).unwrap_or(90), quality, "quality {quality} survives saved settings");
+            assert_eq!(stored.get("quality").is_none(), quality == 90, "only 90 is omitted");
+            assert_eq!(stored["contentsOnly"], false, "legacy aliases still work alongside quality");
+            assert_eq!(stored["svgOutlineText"], false);
+            let restored: ExportSetting = serde_json::from_value(stored.clone()).unwrap();
+            assert_eq!(serde_json::to_value(restored).unwrap(), stored);
+        }
+    }
+
+    #[test]
+    fn stored_quality_rejects_values_that_cannot_be_represented_as_a_byte() {
+        for quality in [json!(-1), json!(256), json!(20.5), json!(true), json!("20"), json!([20]), json!({"quality": 20})] {
+            assert!(serde_json::from_value::<ExportSetting>(json!({"quality": quality})).is_err(), "malformed saved quality: {quality}");
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod export_profile_tests {
+    use super::ExportSetting;
+    use serde_json::json;
+
+    #[test]
+    fn export_profile_defaults_aliases_and_validation_survive_saved_settings() {
+        let default: ExportSetting = serde_json::from_value(json!({"format":"png"})).unwrap();
+        assert!(serde_json::to_value(default).unwrap().get("colorProfile").is_none());
+        for key in ["colorProfile", "color_profile"] {
+            for profile in ["sameAsFile", "srgb", "displayP3"] {
+                let mut input = json!({"format":"png"});
+                input[key] = json!(profile);
+                let setting: ExportSetting = serde_json::from_value(input).unwrap();
+                let stored = serde_json::to_value(setting).unwrap();
+                assert_eq!(stored.get("colorProfile").and_then(|v| v.as_str()).unwrap_or("sameAsFile"), profile);
+                assert!(stored.get("color_profile").is_none());
+                let restored: ExportSetting = serde_json::from_value(stored.clone()).unwrap();
+                assert_eq!(serde_json::to_value(restored).unwrap(), stored);
+            }
+        }
+        for bad in [json!("invalid"), json!(true), json!(42), json!(["srgb"]), json!({})] {
+            assert!(serde_json::from_value::<ExportSetting>(json!({"colorProfile":bad})).is_err(), "{bad}");
         }
     }
 }

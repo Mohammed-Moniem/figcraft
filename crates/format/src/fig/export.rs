@@ -608,6 +608,9 @@ impl<'d> Exporter<'d> {
         if !doc.comments.is_empty() {
             self.warn("comments were left out");
         }
+        if !doc.timelines.is_empty() || doc.nodes().any(|node| !node.motion.is_empty()) {
+            self.warn("Motion keyframes, clips and timeline settings were left out of the .fig export; save a .figcraft copy to preserve editable animation");
+        }
         let mut blobs: Vec<(u32, Vec<u8>)> = std::mem::take(&mut self.blobs).into_iter().map(|(bytes, i)| (i, bytes)).collect();
         blobs.sort_by_key(|x| x.0);
         o(vec![

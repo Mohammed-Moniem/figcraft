@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use base64::Engine as _;
 use figcraft_doc::{
-    BOARD_PAGE, Document, ExportFormat, ExportSetting, ExportSize, FileKind, LineHeight, Node, NodeId, NodeKind, PrintSettings, StyleKind, TextStyle,
-    VdCompat,
+    BOARD_PAGE, Document, ExportColorProfile, ExportFormat, ExportSetting, ExportSize, FileKind, LineHeight, Node, NodeId, NodeKind, PrintSettings,
+    StyleKind, TextStyle, VdCompat,
 };
 use figcraft_format::Version;
 use serde_json::{Value, json};
@@ -16,6 +16,7 @@ use crate::{DocState, EngineError, Result, Session, bad, spec};
 
 mod export;
 mod load;
+mod mobile_export;
 mod open;
 mod printing;
 mod refresh;
@@ -28,7 +29,7 @@ pub(crate) use export::FORBIDDEN_FILE_NAME_CHARS;
 use export::add_member;
 pub(super) use export::export_setting;
 pub use export::{
-    ExportJob, PrintPlan, PrintSheet, copy_png, drawn_layers, export_area, export_bytes, export_bytes_with, export_jobs, export_scale,
+    ExportJob, PrintPlan, PrintSheet, copy_png, drawn_layers, encode_raster, export_area, export_bytes, export_bytes_with, export_jobs, export_scale,
     exportable_layers, fig_bytes, frames_pdf, jobs_for, penpot_bytes, print_plan, print_sheets, printable_frames, safe_file_name,
 };
 use export::{export, export_frames_pdf, export_layers, pdf_bytes, print_dialog};
@@ -37,6 +38,7 @@ pub use load::{MAX_DOCUMENT_FILE, load, load_bytes, load_path};
 #[cfg(test)]
 pub(crate) use load::{installed_family, sketch_line};
 pub(crate) use load::{load_fig, read_capped, recovered, recovered_from, variables_param, write};
+pub use mobile_export::{ExportLayout, MobileExport, MobileExportContent, mobile_export_plan};
 pub use open::MAX_RECENT;
 #[cfg(test)]
 use open::append_pages;
@@ -123,14 +125,14 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!(
             "file.export",
             "Export",
-            "{ids? (default selection, else the page), format? (png|jpg|svg|pdf|webp|xml (an Android Vector Drawable, with `warnings` for what it changed or left out), or fig: the whole file as .fig, experimental, with `warnings` for what was left out; other apps may not open every file; or penpot: the whole file as a Penpot 2.x archive, with warnings for unsupported content), scale? (default 1) | size? (2x|512w|512h or {by: scale|width|height, value}: a scale, or a width or height in pixels), path? (else returns base64 `data`), bleed? (PDF: points, or with a unit: \"3mm\", \"0.125in\", \"9pt\"), cropMarks?, bleedMarks?, cmyk? (PDF print options), contentsOnly? (default true; false also draws the layers that show in their area), includeBoundingBox? (true: only the layers' own boxes, cutting off shadows and outside strokes), svgOutlineText? (default true), svgSimplifyStroke? (default true), svgIdAttribute? (SVG ids, XML android:name), vdCompat? (XML: bestEffort (default: approximate with a warning)|exact (leave out what can't be exact, with a warning)|ignore (no warnings))} Pixel exports use the file's profile: PNG is tagged sRGB or Display P3; JPG embeds ICC for either; WebP embeds ICC for Display P3 only. SVG, XML and RGB PDF use sRGB; PDF with cmyk uses DeviceCMYK without an output intent.",
+            "{ids? (default selection, else the page), format? (png|jpg|svg|pdf|webp|xml (an Android Vector Drawable, with `warnings` for what it changed or left out), or fig: the whole file as .fig, experimental, with `warnings` for what was left out; other apps may not open every file; or penpot: the whole file as a Penpot 2.x archive, with warnings for unsupported content), scale? (default 1) | size? (2x|512w|512h or {by: scale|width|height, value}: a scale, or a width or height in pixels), path? (else returns base64 `data`), bleed? (PDF: points, or with a unit: \"3mm\", \"0.125in\", \"9pt\"), cropMarks?, bleedMarks?, cmyk? (PDF print options), contentsOnly? (default true; false also draws the layers that show in their area), includeBoundingBox? (true: only the layers' own boxes, cutting off shadows and outside strokes), svgOutlineText? (default true), svgSimplifyStroke? (default true), svgIdAttribute? (SVG ids, XML android:name), vdCompat? (XML: bestEffort (default: approximate with a warning)|exact (leave out what can't be exact, with a warning)|ignore (no warnings)), quality? (JPG: whole number 1-100, default 90), colorProfile? (PNG/JPG/WebP: sameAsFile|srgb|displayP3; converts pixels and tags output without changing the document)} Pixel exports use the selected profile (same as the file by default): PNG is tagged sRGB or Display P3; JPG embeds ICC for either; WebP embeds ICC for Display P3 only. SVG, XML and RGB PDF use sRGB; PDF with cmyk uses DeviceCMYK without an output intent.",
             false,
             export
         ),
         spec!(
             "file.exportLayers",
             "Export layers",
-            "{ids? (default the selection, else every layer on the page with export settings), assets? (true: the Inspect tab's assets in and under them instead: layers with export settings, icons as SVG, images as PNG), dir? (folder to write into; else each file comes back as base64 `data`), zip? (no dir: the files come back together as one base64 zip `data` instead), bleed? (PDF: points, or with a unit: \"3mm\", \"0.125in\", \"9pt\"), cropMarks?, bleedMarks?, cmyk? (PDF print options): for every PDF instead of each setting's own, vdCompat? (bestEffort|exact|ignore: for every XML instead of each setting's own)}  every layer once per export setting, named `<layer><suffix>.<format>` (\"@2x\" when a scaled export has no suffix; repeats get \" 2\"; slashes in a layer name make folders). Returns {files: [{name, id, bytes, path | data, warnings (XML only)}], skipped (layers without settings), data? (zip)}",
+            "{ids? (default the selection, else every layer on the page with export settings), layout? (flat|flutter|ios|android; default flat; mobile layouts generate platform density folders, iOS Contents.json, PNG/JPG plus WebP for Flutter/Android or XML for Android; select layer export settings), assets? (true: the Inspect tab's assets in and under them instead: layers with export settings, icons as SVG, images as PNG), dir? (folder to write into; else each file comes back as base64 `data`), zip? (no dir: the files come back together as one base64 zip `data` instead), bleed? (PDF: points, or with a unit: \"3mm\", \"0.125in\", \"9pt\"), cropMarks?, bleedMarks?, cmyk? (PDF print options): for every PDF instead of each setting's own, vdCompat? (bestEffort|exact|ignore: for every XML instead of each setting's own)}  every layer once per export setting, named `<layer><suffix>.<format>` (\"@2x\" when a scaled export has no suffix; repeats get \" 2\"; slashes in a layer name make folders). Returns {files: [{name, id, bytes, path | data, warnings (XML only)}], skipped (layers without settings), data? (zip)}",
             false,
             export_layers
         ),
@@ -435,7 +437,16 @@ pub fn export_file(doc: &Document, ids: &[NodeId], setting: &ExportSetting, scal
         _ => {
             let pix = figcraft_render::render_area(doc, &drawn, area, scale)
                 .ok_or_else(|| EngineError::Other("render failed (empty or too large)".into()))?;
-            Ok((figcraft_render::encode_export(&pix, setting.format, doc.color_profile).map_err(EngineError::Other)?, Vec::new()))
+            Ok((encode_raster(pix, setting, doc.color_profile)?, Vec::new()))
+        }
+    }
+}
+
+fn color_profile_param(cmd: &str, p: &Value) -> Result<Option<ExportColorProfile>> {
+    match get(p, "colorProfile") {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => {
+            value.as_str().and_then(ExportColorProfile::from_key).map(Some).ok_or_else(|| bad(cmd, "colorProfile: sameAsFile|srgb|displayP3"))
         }
     }
 }
@@ -489,3 +500,6 @@ mod thumbnail_tests;
 
 #[cfg(test)]
 mod zip_cap_tests;
+
+#[cfg(test)]
+mod mobile_layout_tests;

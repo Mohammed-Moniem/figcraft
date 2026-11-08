@@ -1,16 +1,42 @@
 //! Headless runs lay text out with the installed fonts, like the desktop app, unless
 //! `--no-system-fonts` or `FIGCRAFT_NO_SYSTEM_FONTS=1` opts out.
 
+use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::{Value, json};
+
+/// Each run owns its directory: both parallel font tests invoke the same script names.
+struct RunDirectory(PathBuf);
+
+impl RunDirectory {
+    fn new() -> Self {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        for _ in 0..1000 {
+            let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!("figcraft-cli-fonts-{}-{sequence}", std::process::id()));
+            match std::fs::create_dir(&path) {
+                Ok(()) => return Self(path),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("fresh CLI font fixture directory: {error}"),
+            }
+        }
+        panic!("could not allocate a fresh CLI font fixture directory");
+    }
+}
+
+impl Drop for RunDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
 
 /// The result of one `figcraft-cli run` step (script file `name`); `opt_out` sets the environment
 /// variable.
 fn run_one(name: &str, step: Value, args: &[&str], opt_out: bool) -> Value {
-    let d = std::env::temp_dir().join(format!("figcraft-cli-fonts-{}", std::process::id()));
-    std::fs::create_dir_all(&d).unwrap();
-    let script = d.join(format!("{name}.json"));
+    let d = RunDirectory::new();
+    let script = d.0.join(format!("{name}.json"));
     std::fs::write(&script, json!([step]).to_string()).unwrap();
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_figcraft-cli"));
     cmd.arg("run").arg(&script).args(args);

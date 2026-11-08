@@ -114,6 +114,7 @@ mod doc_state;
 mod error;
 mod prefs;
 mod session;
+mod variable_scale;
 mod view_state;
 
 pub use derived::{changed_nodes, normalize};
@@ -346,6 +347,8 @@ mod export_bench_tests;
 #[cfg(test)]
 mod export_depth_tests;
 #[cfg(test)]
+mod export_options_tests;
+#[cfg(test)]
 mod extended_chain_tests;
 #[cfg(test)]
 mod eyedropper_create_tests;
@@ -411,6 +414,8 @@ mod inspect_fields_tests;
 mod instance_modes_tests;
 #[cfg(test)]
 mod instance_resizing_tests;
+#[cfg(test)]
+mod instance_variable_scale_tests;
 #[cfg(test)]
 mod interaction_rollback_tests;
 #[cfg(test)]
@@ -672,6 +677,8 @@ mod version_preview_tests;
 #[cfg(test)]
 mod version_tests;
 #[cfg(test)]
+mod view_autopan_tests;
+#[cfg(test)]
 mod view_behaviour_tests;
 #[cfg(test)]
 mod vote_history_tests;
@@ -708,3 +715,12 @@ mod menu_keep_open_tests;
 
 #[cfg(test)]
 mod text_font_handle_tests;
+
+#[cfg(test)]
+mod instance_fill_layout_tests;
+
+#[cfg(test)]
+mod board_obstacle_tests;
+
+#[cfg(test)]
+mod dash_phase_tests;

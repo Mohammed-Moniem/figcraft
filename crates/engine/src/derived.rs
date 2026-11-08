@@ -100,7 +100,8 @@ pub(super) fn normalize_with_capture(doc: &mut Document, before: &Document, capt
     let changed = live(doc, &touched);
     components::sync_after_edit(doc, before, &changed, &touched);
     // Rebuilt copies took their mains' values: their bindings resolve in their own modes.
-    let synced = doc.take_dirty();
+    let mut synced = doc.take_dirty();
+    expand_changed_contexts(doc, before, &mut synced);
     if !synced.is_empty() {
         cmd::styles::apply_bindings_to(doc, Some(&synced));
         style_vars::refresh(doc, Some(before), Some(&synced));
@@ -184,6 +185,16 @@ pub(super) fn normalize_with_capture(doc: &mut Document, before: &Document, capt
     doc.take_dirty();
     // 5. Comment pins follow their layers to other pages and stay put when the layers are deleted.
     cmd::comment::follow_anchors(doc, before);
+}
+
+/// A rebuilt context can change while a bound descendant keeps the same stored value and
+/// Arc. It still resolves again in the new context, even though rebuilding did not dirty it.
+fn expand_changed_contexts(doc: &Document, before: &Document, synced: &mut BTreeSet<NodeId>) {
+    let contexts: Vec<NodeId> =
+        synced.iter().copied().filter(|id| doc.node(*id).zip(before.node(*id)).is_some_and(|(n, b)| n.variable_scale != b.variable_scale)).collect();
+    for id in contexts {
+        synced.extend(doc.subtree(id));
+    }
 }
 
 #[cfg(test)]
@@ -283,7 +294,7 @@ fn binding_scope(doc: &Document, before: &Document, touched: &BTreeSet<NodeId>) 
             continue;
         };
         let modes = b.var_modes != n.var_modes;
-        if modes || b.parent != n.parent || main(b) != main(n) {
+        if modes || b.parent != n.parent || main(b) != main(n) || b.variable_scale != n.variable_scale {
             out.extend(doc.subtree(id));
         } else {
             out.insert(id);

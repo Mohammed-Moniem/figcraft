@@ -202,6 +202,40 @@ fn navigate_view(app: &mut FigApp, resp: &egui::Response, pos: Pos2, mods: egui:
 }
 
 /// The pointer and keys on the canvas. False when a comment pin, guide or handle owns its cursor.
+fn pan_held_drag(app: &mut FigApp, ctx: &egui::Context, mods: &egui::Modifiers) {
+    // A drag held past the edge pans toward it, the layer or box going with the pointer.
+    if super::autopan::wanted(app, ctx)
+        && let Some(at) = ctx.input(|i| i.pointer.latest_pos())
+        && super::autopan::pan(app, ctx, at)
+    {
+        send(app, PointerKind::Move, at, mods);
+    }
+}
+
+/// Apply the existing middle-button or space camera pan at its original input phase.
+fn pan_view(app: &mut FigApp, ctx: &egui::Context, resp: &egui::Response, pos: Pos2) -> bool {
+    // Middle-button / space panning.
+    let middle_down = ctx.input(|i| i.pointer.button_down(egui::PointerButton::Middle));
+    if (middle_down || (app.canvas.space_pan && ctx.input(|i| i.pointer.primary_down()))) && resp.hovered() || app.canvas.middle_pan.is_some() {
+        if let Ok(ds) = app.session.ds_mut() {
+            match app.canvas.middle_pan {
+                None => app.canvas.middle_pan = Some((pos, ds.view.cx, ds.view.cy)),
+                Some((p0, cx, cy)) => {
+                    let z = ds.view.zoom.max(1e-6);
+                    ds.view.cx = cx - f64::from(pos.x - p0.x) / z;
+                    ds.view.cy = cy - f64::from(pos.y - p0.y) / z;
+                    ds.revision += 1;
+                }
+            }
+        }
+        if !middle_down && !ctx.input(|i| i.pointer.primary_down()) {
+            app.canvas.middle_pan = None;
+        }
+        return true;
+    }
+    false
+}
+
 pub(super) fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> bool {
     let gesture = handled_gesture(app, ui, resp);
     if matches!(gesture, touch::Verdict::Swallow) {
@@ -241,6 +275,7 @@ pub(super) fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> boo
                 send(app, PointerKind::Up, at, &mods);
             }
         }
+        pan_held_drag(app, &ctx, &mods);
         // Leaving the canvas: nothing is hovered there any more.
         if !app.canvas.dragging && std::mem::take(&mut app.canvas.hovering) {
             left(app);
@@ -274,23 +309,7 @@ pub(super) fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> boo
     if zoom_tool(app, ui, resp, pos, mods, editing_text || typing_elsewhere) {
         return true;
     }
-    // Middle-button / space panning.
-    let middle_down = ctx.input(|i| i.pointer.button_down(egui::PointerButton::Middle));
-    if (middle_down || (app.canvas.space_pan && ctx.input(|i| i.pointer.primary_down()))) && resp.hovered() || app.canvas.middle_pan.is_some() {
-        if let Ok(ds) = app.session.ds_mut() {
-            match app.canvas.middle_pan {
-                None => app.canvas.middle_pan = Some((pos, ds.view.cx, ds.view.cy)),
-                Some((p0, cx, cy)) => {
-                    let z = ds.view.zoom.max(1e-6);
-                    ds.view.cx = cx - f64::from(pos.x - p0.x) / z;
-                    ds.view.cy = cy - f64::from(pos.y - p0.y) / z;
-                    ds.revision += 1;
-                }
-            }
-        }
-        if !middle_down && !ctx.input(|i| i.pointer.primary_down()) {
-            app.canvas.middle_pan = None;
-        }
+    if pan_view(app, &ctx, resp, pos) {
         return true;
     }
     // A handle drag whose button went up ends first, wherever on the canvas the pointer is: over a
@@ -397,6 +416,11 @@ pub(super) fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> boo
     });
     if force.is_some() {
         app.canvas.pressure = force;
+    }
+    // A drag held near the edge pans before the move goes out, so it lands on the document point
+    // now under the pointer (and the pan goes on while the pointer is still: it asks for frames).
+    if kind == Some(PointerKind::Move) && super::autopan::wanted(app, &ctx) {
+        super::autopan::pan(app, &ctx, pos);
     }
     if let Some(k) = kind {
         let at = if matches!(k, PointerKind::Down) { press_pos.unwrap_or(pos) } else { pos };

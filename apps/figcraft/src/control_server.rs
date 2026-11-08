@@ -5,7 +5,7 @@ use std::io::{BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use figcraft_engine::events::{self, EventLog};
 use figcraft_ui_egui::{ControlReply, ControlRequest, RequestGate, RequestState};
@@ -18,6 +18,8 @@ const MAX_LINE: usize = 4 * 1024 * 1024;
 const MAX_CONNECTIONS: usize = 8;
 const MAX_QUEUED_REQUESTS: usize = 8;
 const TIMEOUT: Duration = Duration::from_secs(60);
+/// Rotate long-lived transport slots; an already admitted request keeps its own bounded wait.
+const SESSION_LIFETIME: Duration = Duration::from_secs(600);
 /// The longest a request's `timeoutMs` can make it wait: a client can raise the wait, never lift it.
 const MAX_TIMEOUT: Duration = Duration::from_secs(600);
 /// How long the accepting thread waits after a failed accept. Accepting can keep failing, for
@@ -360,7 +362,7 @@ fn serve_session(
 }
 
 fn serve_budgeted(
-    mut out: TcpStream,
+    out: TcpStream,
     queue: Queue,
     ctx: CtxSlot,
     events: Arc<EventLog>,
@@ -368,6 +370,57 @@ fn serve_budgeted(
     auth: Option<Arc<crate::control_auth::Lease>>,
     budget: Arc<crate::control_budget::Budget>,
 ) -> std::io::Result<()> {
+    serve_with_policy(out, queue, ctx, events, ConnectionPolicy::new(timeout), auth, budget)
+}
+
+struct ConnectionPolicy {
+    timeout: Duration,
+    started: Instant,
+    lifetime: Duration,
+    #[cfg(test)]
+    clock: Option<(Arc<AtomicU64>, u64)>,
+}
+
+impl ConnectionPolicy {
+    fn new(timeout: Duration) -> Self {
+        Self {
+            timeout,
+            started: Instant::now(),
+            lifetime: SESSION_LIFETIME,
+            #[cfg(test)]
+            clock: None,
+        }
+    }
+
+    fn remaining(&self) -> Duration {
+        let elapsed = self.started.elapsed();
+        #[cfg(test)]
+        let elapsed =
+            self.clock.as_ref().map_or(elapsed, |(clock, began)| Duration::from_millis(clock.load(Ordering::Acquire).saturating_sub(*began)));
+        self.lifetime.saturating_sub(elapsed)
+    }
+}
+
+/// End only the transport lease, using the bounded refusal writer and drain. The current
+/// request's existing wait/result has already settled before the loop reaches this boundary.
+fn session_expired(out: &mut TcpStream, policy: &ConnectionPolicy) -> std::io::Result<bool> {
+    if !policy.remaining().is_zero() {
+        return Ok(false);
+    }
+    crate::control_auth::refuse_control(out, "control session lifetime exceeded; reconnect to continue")?;
+    Ok(true)
+}
+
+fn serve_with_policy(
+    mut out: TcpStream,
+    queue: Queue,
+    ctx: CtxSlot,
+    events: Arc<EventLog>,
+    policy: ConnectionPolicy,
+    auth: Option<Arc<crate::control_auth::Lease>>,
+    budget: Arc<crate::control_budget::Budget>,
+) -> std::io::Result<()> {
+    let timeout = policy.timeout;
     if let Some(auth) = auth.as_ref()
         && !auth.authenticate(&mut out)?
     {
@@ -380,10 +433,29 @@ fn serve_budgeted(
         if auth.as_ref().is_some_and(|a| !a.active()) {
             return Ok(());
         }
+        if session_expired(&mut out, &policy)? {
+            return Ok(());
+        }
         // Reap the bounded native queue before admission: cancelled payloads must not exhaust
         // the very budget a newcomer would need in order to reach the post-parse queue check.
         prune_native_queue(&queue);
-        let (raw, raw_reservation) = match crate::control_budget::read_frame(&mut reader, &budget, MAX_LINE, timeout)? {
+        // Idle/frame activity never refreshes the session clock. A final partial frame also
+        // cannot retain the slot for another full idle timeout after the lease ends.
+        let frame = match crate::control_budget::read_frame(&mut reader, &budget, MAX_LINE, timeout.min(policy.remaining())) {
+            Ok(frame) => frame,
+            Err(error) => {
+                if session_expired(&mut out, &policy)? {
+                    return Ok(());
+                }
+                return Err(error);
+            }
+        };
+        // Bytes may have completed at the deadline, including buffered/pipelined input.
+        // Refuse before parsing or queue admission rather than applying a late command.
+        if session_expired(&mut out, &policy)? {
+            return Ok(());
+        }
+        let (raw, raw_reservation) = match frame {
             crate::control_budget::Frame::Eof => break,
             crate::control_budget::Frame::Ready(line, reservation) => (line, reservation),
             crate::control_budget::Frame::Refused(error) => {
@@ -421,6 +493,9 @@ fn serve_budgeted(
                 };
                 drop(v);
                 if auth.as_ref().is_some_and(|a| !a.active()) {
+                    return Ok(());
+                }
+                if session_expired(&mut out, &policy)? {
                     return Ok(());
                 }
                 // A poll waits on the shared log, not on a frame: it needs no UI thread and no
@@ -496,3 +571,7 @@ mod tests;
 #[cfg(test)]
 #[path = "control_server_budget_tests.rs"]
 mod budget_tests;
+
+#[cfg(test)]
+#[path = "control_session_deadline_tests.rs"]
+mod session_deadline_tests;

@@ -7,6 +7,62 @@ fn bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_figcraft-cli"))
 }
 
+#[test]
+fn pixel_export_and_page_render_take_jpeg_quality() {
+    let dir = tmp("export-quality-options");
+    let input = dir.join("input.figcraft");
+    let mut s = figcraft_engine::Session::new();
+    let r = s.execute("shape.rectangle", &serde_json::json!({"width":200,"height":120})).unwrap()["id"].clone();
+    s.execute("node.set", &serde_json::json!({"id":r,"props":{"fills":[{"type":"linearGradient","stops":["#FF0000","#00FF88","#2040FF"]}]}}))
+        .unwrap();
+    std::fs::write(&input, figcraft_format::save_bytes(s.doc().unwrap(), None).unwrap()).unwrap();
+    for command in ["export", "render"] {
+        let mut outputs = Vec::new();
+        for quality in [20, 90, 100] {
+            let path = dir.join(format!("{command}-{quality}.jpg"));
+            let result = bin().arg(command).arg(&input).arg("-o").arg(&path).arg("--quality").arg(quality.to_string()).output().unwrap();
+            assert!(result.status.success(), "{command}: {}", String::from_utf8_lossy(&result.stderr));
+            let bytes = std::fs::read(path).unwrap();
+            assert!(bytes.starts_with(b"\xFF\xD8\xFF"));
+            let icc = figcraft_doc::Document::new("profile").color_profile.icc();
+            assert!(bytes.windows(icc.len()).any(|window| window == icc));
+            outputs.push(bytes);
+        }
+        assert!(outputs[0].len() < outputs[1].len() && outputs[1].len() < outputs[2].len());
+        let path = dir.join(format!("{command}-bad.jpg"));
+        let result = bin().arg(command).arg(&input).arg("-o").arg(&path).args(["--quality", "0"]).output().unwrap();
+        assert_eq!(result.status.code(), Some(2));
+        assert!(!path.exists());
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn pixel_export_and_page_render_convert_profile_without_changing_the_input() {
+    let dir = tmp("export-profile-options");
+    let input = dir.join("input.figcraft");
+    let mut s = figcraft_engine::Session::new();
+    let r = s.execute("shape.rectangle", &serde_json::json!({"width":100,"height":100})).unwrap()["id"].clone();
+    s.execute("node.set", &serde_json::json!({"id":r,"props":{"fills":["#FF0000"]}})).unwrap();
+    let original = figcraft_format::save_bytes(s.doc().unwrap(), None).unwrap();
+    std::fs::write(&input, &original).unwrap();
+    for command in ["export", "render"] {
+        let path = dir.join(format!("{command}.png"));
+        let result = bin().arg(command).arg(&input).arg("-o").arg(&path).args(["--color-profile", "displayP3"]).output().unwrap();
+        assert!(result.status.success(), "{command}: {}", String::from_utf8_lossy(&result.stderr));
+        let bytes = std::fs::read(path).unwrap();
+        let decoded = figcraft_render::Pixmap::decode_png(&bytes).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (100, 100));
+        let at = (50 * decoded.width() as usize + 50) * 4;
+        let pixel: [u8; 4] = decoded.data()[at..at + 4].try_into().unwrap();
+        assert!(pixel.into_iter().zip([234, 51, 35, 255]).all(|(a, b)| a.abs_diff(b) <= 2), "{pixel:?}");
+        assert!(bytes.windows(4).any(|chunk| chunk == b"iCCP"));
+        assert!(bytes.windows(8).any(|chunk| chunk == b"cICP\x0c\x0d\x00\x01"));
+        assert_eq!(std::fs::read(&input).unwrap(), original);
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 fn tmp(name: &str) -> std::path::PathBuf {
     let d = std::env::temp_dir().join(format!("figcraft-cli-test-{}-{name}", std::process::id()));
     std::fs::create_dir_all(&d).unwrap();
@@ -390,4 +446,55 @@ fn an_unconfined_write_follows_a_symbolic_link() {
     let written = std::fs::read(&target).unwrap();
     assert!(written.starts_with(b"\x89PNG"), "the target holds the render, not the placeholder");
     let _ = std::fs::remove_dir_all(&d);
+}
+
+// Original binary-level composition control. Append to apps/figcraft-cli/tests/it/cli.rs.
+// Uses that module's bin/tmp helpers; no new dependencies or fixtures.
+#[test]
+fn mobile_cli_advertised_quality_and_profile_match_stored_row_engine_bytes() {
+    let directory = tmp("mobile-quality-profile-composition");
+    let input = directory.join("input.figcraft");
+    let mut source = figcraft_engine::Session::new();
+    let id = source.execute("shape.rectangle", &serde_json::json!({"width":200,"height":120})).unwrap()["id"].clone();
+    source.execute("node.set",&serde_json::json!({"ids":[id],"props":{"name":"Original Profile","fills":[{"type":"linearGradient","stops":["#FF0000","#00FF88","#2040FF"]}]}})).unwrap();
+    source.execute("export.add", &serde_json::json!({"ids":[id],"setting":{"format":"png","quality":90,"colorProfile":"srgb"}})).unwrap();
+    let original = figcraft_format::save_bytes(source.doc().unwrap(), None).unwrap();
+    std::fs::write(&input, &original).unwrap();
+    for layout in ["flutter", "ios", "android"] {
+        for format in ["png", "jpg"] {
+            let actual = directory.join(format!("actual-{layout}-{format}"));
+            let expected = directory.join(format!("expected-{layout}-{format}"));
+            let result = bin()
+                .arg("export")
+                .arg(&input)
+                .arg("-o")
+                .arg(&actual)
+                .args(["--layout", layout, "--format", format, "--quality", "21", "--color-profile", "displayP3", "--node"])
+                .arg(id.to_string())
+                .output()
+                .unwrap();
+            assert!(result.status.success(), "{layout}/{format}: {}", String::from_utf8_lossy(&result.stderr));
+            let mut reference = figcraft_engine::Session::with_document(source.doc().unwrap().clone());
+            reference
+                .execute("export.update", &serde_json::json!({"ids":[id],"index":0,"format":format,"quality":21,"colorProfile":"displayP3"}))
+                .unwrap();
+            let files = reference.execute("file.exportLayers", &serde_json::json!({"ids":[id],"layout":layout,"dir":expected})).unwrap();
+            for file in files["files"].as_array().unwrap() {
+                let relative = file["name"].as_str().unwrap();
+                assert_eq!(
+                    std::fs::read(actual.join(relative)).unwrap(),
+                    std::fs::read(expected.join(relative)).unwrap(),
+                    "{layout}/{relative}: CLI Target options must reach every density"
+                );
+            }
+            assert_eq!(std::fs::read(&input).unwrap(), original, "CLI options never rewrite stored input settings");
+        }
+    }
+    for (flag, value) in [("--quality", "0"), ("--color-profile", "invalid")] {
+        let output = directory.join(if flag == "--quality" { "bad-quality" } else { "bad-profile" });
+        let result = bin().arg("export").arg(&input).arg("-o").arg(&output).args(["--layout", "flutter", flag, value]).output().unwrap();
+        assert_eq!(result.status.code(), Some(2));
+        assert!(!output.exists(), "invalid advertised options create no output directory");
+    }
+    std::fs::remove_dir_all(directory).unwrap();
 }

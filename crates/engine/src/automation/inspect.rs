@@ -113,6 +113,9 @@ fn paint_props(n: &Node, o: &mut serde_json::Map<String, Value>, options: &Inspe
         if let Some(cap) = n.stroke.dash_cap {
             insert_prop(o, options, "dashCap", || json!(cap));
         }
+        if let Some(phase) = n.stroke.dash_phase.filter(|p| p.is_finite()) {
+            insert_prop(o, options, "dashPhase", || json!(phase));
+        }
         if n.stroke.join != StrokeJoin::Miter {
             insert_prop(o, options, "strokeJoin", || json!(n.stroke.join));
         } else if n.stroke.miter_limit != 4.0 {
@@ -305,8 +308,13 @@ fn text_props(t: &TextData, o: &mut serde_json::Map<String, Value>, options: &In
     if t.leading_trim != figcraft_doc::LeadingTrim::None {
         insert_prop(o, options, "leadingTrim", || json!(t.leading_trim));
     }
-    if t.wrap_style != figcraft_doc::WrapStyle::Auto {
-        insert_prop(o, options, "wrapStyle", || json!(t.wrap_style));
+    let wraps: Vec<figcraft_doc::WrapStyle> = (0..t.paragraph_count()).map(|p| t.para_wrap_style(p)).collect();
+    if let Some(first) = wraps.first().copied().filter(|w| *w != figcraft_doc::WrapStyle::Auto)
+        && wraps.iter().all(|w| *w == first)
+    {
+        insert_prop(o, options, "wrapStyle", || json!(first));
+    } else if wraps.iter().any(|w| *w != figcraft_doc::WrapStyle::Auto) {
+        insert_prop(o, options, "lineWrapStyles", || wraps.iter().map(|w| json!(w)).collect());
     }
     if !t.runs.is_empty() {
         insert_prop(o, options, "styledRuns", || serde_json::to_value(&t.runs).unwrap_or(Value::Null));

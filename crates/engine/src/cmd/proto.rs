@@ -130,6 +130,13 @@ pub fn specs() -> Vec<CommandSpec> {
             false,
             |s, p| open_player(s, p, "proto.preview", "preview")
         ),
+        spec!(
+            "proto.detachPreview",
+            "Pop out prototype preview",
+            "{start? (frame id; default as proto.present)}  move the current preview to a native companion window where supported; follows this live document UID",
+            false,
+            |s, p| open_player(s, p, "proto.detachPreview", "preview.detach")
+        ),
         spec!("proto.closePreview", "Close prototype preview", "{}", false, |s, _| {
             s.request_ui("preview.close", json!({}));
             ok()
@@ -288,7 +295,12 @@ fn open_player(s: &mut Session, p: &Value, cmd: &str, ui: &str) -> Result<Value>
             .or_else(|| ds.doc.top_frames(ds.page).first().copied())
             .ok_or_else(|| bad(cmd, "no frame to present"))?,
     };
-    s.request_ui(ui, json!({"start": start}));
+    if ui == "preview.detach" {
+        let uid = ds.uid;
+        s.request_ui(ui, json!({"start":start,"sourceDocument":uid}));
+    } else {
+        s.request_ui(ui, json!({"start": start}));
+    }
     Ok(json!({"start": start}))
 }
 

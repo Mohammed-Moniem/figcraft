@@ -5,6 +5,7 @@
 //! runs identically on desktop, in tests and in the browser.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod animated_gif;
 pub mod backdrop;
 pub mod blur;
 pub mod boolean;
@@ -490,15 +491,21 @@ pub fn encode_webp(p: &Pixmap) -> Result<Vec<u8>, String> {
 /// Encode an export in `format` (PNG, JPEG over white, WebP) tagged with the document's colour
 /// `profile`. An sRGB PNG gets an `sRGB` chunk; a Display P3 PNG gets the profile as `iCCP` plus
 /// `cICP` code points; JPEG always embeds ICC and WebP embeds it for Display P3 (sRGB WebP is
-/// untagged). SVG, PDF and Vector Drawable are not pixel formats: an error.
+/// untagged). JPEG uses quality 90. SVG, PDF and Vector Drawable are not pixel formats: an error.
 pub fn encode_export(p: &Pixmap, format: ExportFormat, profile: ColorProfile) -> Result<Vec<u8>, String> {
+    encode_export_with(p, format, profile, figcraft_doc::ExportSetting::DEFAULT_QUALITY)
+}
+
+/// [`encode_export`] with a JPEG `quality` from 1 to 100. Values outside that range are
+/// clamped; other formats ignore quality. Colour tagging follows [`encode_export`].
+pub fn encode_export_with(p: &Pixmap, format: ExportFormat, profile: ColorProfile, quality: u8) -> Result<Vec<u8>, String> {
     let icc = (!profile.is_srgb()).then(|| profile.icc());
     match format {
         ExportFormat::Png => {
             let png = png_with(p, icc)?;
             Ok(if profile.is_srgb() { png_insert_chunk(png, b"sRGB", &[0]) } else { png_insert_chunk(png, b"cICP", &profile.cicp()) })
         }
-        ExportFormat::Jpg => jpeg_with(p, Color::WHITE, 90, Some(profile.icc())),
+        ExportFormat::Jpg => jpeg_with(p, Color::WHITE, quality, Some(profile.icc())),
         ExportFormat::Webp => webp_with(p, icc),
         ExportFormat::Svg | ExportFormat::Pdf | ExportFormat::VectorDrawable => Err(format!("{} is not a pixel format", format.label())),
     }

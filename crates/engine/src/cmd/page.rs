@@ -170,6 +170,12 @@ pub fn specs() -> Vec<CommandSpec> {
                 if s.doc()?.is_divider(id) {
                     return Err(bad("page.setOpening", "a divider isn't a page to open on"));
                 }
+                let doc = s.doc()?;
+                if doc.opening_page == Some(id) && doc.current_page == Some(id) {
+                    // Only an existing explicit choice is a no-op; a legacy current page
+                    // still needs its first durable opening-page choice.
+                    return ok();
+                }
                 let doc = s.doc_mut()?;
                 doc.current_page = Some(id);
                 doc.opening_page = Some(id);

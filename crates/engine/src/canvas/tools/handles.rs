@@ -61,8 +61,13 @@ const HANDLE_PX: f64 = 5.0;
 
 const ROTATE_PX: f64 = 18.0;
 
-/// Snap distance in screen pixels.
-pub(crate) const SNAP_PX: f64 = 5.0;
+/// Object snap distance in screen pixels: measured in Figma, where an edge snaps at a gap of 4.4
+/// screen px and not at 4.6, at 100% and at 200% zoom.
+pub(crate) const SNAP_PX: f64 = 4.5;
+
+/// Snap distance in screen pixels for ruler guides and the rotation origin, not measured against
+/// Figma.
+pub(crate) const UNMEASURED_SNAP_PX: f64 = 5.0;
 
 /// Screen pixels the pointer travels after a press before a move or resize starts: a click or a
 /// double-click made with an unsteady hand doesn't drag what it lands on.
@@ -122,22 +127,67 @@ pub fn selection_frame(doc: &Document, sel: &[NodeId]) -> Option<(Affine, f64, f
     Some((rot * Affine::translate((b.x0, b.y0)), b.width(), b.height()))
 }
 
-/// The rotation (radians) every layer in `ids` shares, unless it's a multiple of 90 degrees (the
+/// The shared displayed rotation (degrees, counter-clockwise positive) when every selected
+/// layer's parent has a positive conformal world linear. Then a rigid world turn changes every
+/// local panel angle by the same amount. Reflected or nonuniform parent frames retain the legacy
+/// shared world-angle base: their local increments reverse or depend on direction, so no common
+/// local 15-degree grid is claimed. This is a panel-consistency policy, not a measured nested
+/// Figma comparison. Mixed angles keep a zero base; a common local near-axis residual stays part of the snap base.
+pub fn shared_rotation_degrees(doc: &Document, ids: &[NodeId]) -> f64 {
+    let local = ids
+        .iter()
+        .all(|id| doc.node(*id).is_some_and(|n| n.parent.is_none_or(|p| doc.node(p).is_some() && positive_conformal(doc.world_transform(p)))));
+    let angle = if local {
+        shared_rotation_from(
+            ids.iter().map(|id| {
+                let c = doc.node(*id).map_or(Affine::IDENTITY, |n| n.transform).as_coeffs();
+                c[1].atan2(c[0])
+            }),
+            false,
+        )
+    } else {
+        shared_rotation(doc, ids)
+    };
+    angle.map_or(0.0, |a| -a.to_degrees())
+}
+
+/// Positive uniform scale plus rotation. Normalize first so finite very large/small scales
+/// cannot overflow/underflow the determinant test; translation does not affect angle increments.
+fn positive_conformal(transform: Affine) -> bool {
+    let [a, b, c, d, ..] = transform.as_coeffs();
+    let scale = a.abs().max(b.abs()).max(c.abs()).max(d.abs());
+    if ![a, b, c, d].iter().all(|v| v.is_finite()) || scale <= 0.0 {
+        return false;
+    }
+    let (a, b, c, d) = (a / scale, b / scale, c / scale, d / scale);
+    a * d - b * c > 0.0 && (a - d).abs() <= 1e-9 && (b + c).abs() <= 1e-9
+}
+
+/// The rotation (radians) every layer in ids shares, unless it's a multiple of 90 degrees (the
 /// page-aligned box is then the same box). Flipped layers count by their axis, not its direction.
+/// Selection-box orientation and the nonconformal fallback retain this world-angle rule.
 fn shared_rotation(doc: &Document, ids: &[NodeId]) -> Option<f64> {
+    shared_rotation_from(
+        ids.iter().map(|i| {
+            let c = doc.world_transform(*i).as_coeffs();
+            c[1].atan2(c[0])
+        }),
+        true,
+    )
+}
+
+/// Geometry and legacy world fallback suppress near-axis orientations; local snapping retains
+/// the actual common angle so even a small residual reaches the absolute 15-degree grid.
+fn shared_rotation_from(mut angles: impl Iterator<Item = f64>, suppress_axis_aligned: bool) -> Option<f64> {
     use std::f64::consts::{FRAC_PI_2, PI};
     const EPS: f64 = 1e-4;
-    let mut angles = ids.iter().map(|i| {
-        let c = doc.world_transform(*i).as_coeffs();
-        c[1].atan2(c[0])
-    });
     let a = angles.next()?;
     let same = |b: f64| {
         let d = (b - a).rem_euclid(PI);
         d.min(PI - d) < EPS
     };
     let axis_aligned = (a - (a / FRAC_PI_2).round() * FRAC_PI_2).abs() < EPS;
-    (a.is_finite() && !axis_aligned && angles.all(same)).then_some(a)
+    (a.is_finite() && (!suppress_axis_aligned || !axis_aligned) && angles.all(same)).then_some(a)
 }
 
 /// Whether layer `id` is locked or inside a locked layer: it can be selected in the layers panel

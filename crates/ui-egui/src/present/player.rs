@@ -55,12 +55,12 @@ pub(super) fn player(p: &mut Presenter, ui: &mut Ui, rect: Rect, now: f64, chrom
         ctx.request_repaint();
     }
     let resp = ui.interact(area, ui.scope_id().with("present_area"), Sense::click_and_drag());
-    let over = resp.contains_pointer();
+    let over = resp.contains_pointer() && chrome.interactive;
     if let Some(l) = layout(p, area, chrome) {
         // The pane only takes the keyboard while the pointer is over it. While a link notice shows
         // the prototype takes neither keys nor the pointer (Escape there cancels the notice).
-        let controls = p.widget_input.is_none() && chrome.keys && p.link_notice.is_none();
-        let keys = controls && (!chrome.pane || over);
+        let controls = chrome.interactive && p.widget_input.is_none() && chrome.keys && p.link_notice.is_none();
+        let keys = controls && (!chrome.pane || chrome.detached || over);
         // A controller keeps its existing pointer-independent scope in the floating preview.
         input(p, &ctx, &l, InputMode { over_area: over && p.link_notice.is_none(), keys_on: keys, controller_on: controls, pane: chrome.pane, now });
     } else {
@@ -77,7 +77,9 @@ pub(super) fn player(p: &mut Presenter, ui: &mut Ui, rect: Rect, now: f64, chrom
         painter.rect_filled(l.screen, CornerRadius::ZERO, bg);
     }
     draw(p, &painter, &ctx, &l, now);
-    widget_extras(p, ui, &resp, &l);
+    if chrome.interactive {
+        widget_extras(p, ui, &resp, &l);
+    }
     if p.view.inspect && !chrome.pane {
         inspect_hover(p, &painter, &ctx, &l, area);
     }
@@ -146,11 +148,14 @@ fn top_bar(p: &mut Presenter, ui: &mut Ui, bar: Rect, now: f64, chrome: Chrome) 
     let device = settings.device();
     let mut action = None;
     // Right: the buttons, right to left (English labels key their ids; shown translated).
-    let buttons: &[(BarAction, &str, Icon)] = if chrome.pane {
+    let buttons: &[(BarAction, &str, Icon)] = if chrome.detached {
+        &[(BarAction::Close, tr_noop("Close preview"), Icon::Close), (BarAction::Restart, tr_noop("Restart"), Icon::Reset)]
+    } else if chrome.pane {
         &[
             (BarAction::Close, tr_noop("Close preview"), Icon::Close),
             (BarAction::Present, tr_noop("Present"), Icon::Play),
             (BarAction::Restart, tr_noop("Restart"), Icon::Reset),
+            (BarAction::Detach, tr_noop("Pop out preview"), Icon::WinRestore),
         ]
     } else {
         &[
@@ -167,7 +172,12 @@ fn top_bar(p: &mut Presenter, ui: &mut Ui, bar: Rect, now: f64, chrome: Chrome) 
         let w = if chrome.pane { 24.0 } else { ui.painter().layout_no_wrap(shown.to_string(), regular(11.5), text).size().x + 16.0 };
         let br = Rect::from_min_size(pos2(x - w, bar.center().y - 12.0), vec2(w, 24.0));
         x = br.min.x - if chrome.pane { 2.0 } else { 4.0 };
-        let mut resp = ui.interact(br, ui.scope_id().with(("pbar", *label)), Sense::click());
+        let disabled_reason = (*act == BarAction::Detach).then(|| crate::windows::preview::unavailable(ui.ctx())).flatten();
+        let button_id = ui.scope_id().with(("pbar", *label));
+        let mut resp = ui.add_enabled_ui(chrome.interactive && disabled_reason.is_none(), |ui| ui.interact(br, button_id, Sense::click())).inner;
+        if let Some(reason) = disabled_reason {
+            resp = resp.on_disabled_hover_text(reason);
+        }
         if chrome.pane {
             resp = resp.tip(shown);
         }

@@ -23,6 +23,10 @@ use crate::right::{menu_check, menu_item};
 use crate::theme::{Tokens, regular, semibold};
 use crate::widgets::{self, FieldEdit, Lead};
 
+mod bulk;
+#[cfg(test)]
+mod figma_mode_tests;
+
 const SIDEBAR_W: f32 = 264.0;
 static NEXT_DRAFT_EPOCH: AtomicU64 = AtomicU64::new(1);
 /// How far the sidebar's edge drags, and the table's column edges.
@@ -290,9 +294,10 @@ pub struct Editor {
     /// The collections list's share of the sidebar's body (0..1); the groups list takes the rest.
     /// The divider between them drags it, so the two can trade height.
     pub(crate) sidebar_split: f32,
-    /// The row clicked last. It only decides where a paste goes (under it, else at the end of the
-    /// table), so it lives as long as the editor is open.
+    /// The primary selected row, also the paste anchor. The shared selection is in `bulk`.
     pub(crate) selected: Option<String>,
+    /// Selection and captured shared editor belong to this document/collection only.
+    bulk: bulk::Selection,
     /// The variable copied here (Cmd/Ctrl+C), waiting for a paste.
     pub(crate) copied: Option<CopiedVariable>,
     /// A copy asked for from the keyboard, run by the next frame that has the shown rows (the
@@ -337,6 +342,7 @@ impl Default for Editor {
             group_order: std::collections::BTreeMap::new(),
             sidebar_split: 0.5,
             selected: None,
+            bulk: Default::default(),
             copied: None,
             copy_request: false,
             paste_request: false,
@@ -466,12 +472,13 @@ pub fn keys(app: &mut FigApp, ctx: &Context) {
         return;
     }
     // Escape lets the row go (a drag cancels itself): a paste then lands at the end of the table.
-    let letting_go = app.ui.variables.as_ref().is_some_and(|st| st.selected.is_some() && st.drag.is_none() && st.mode_drag.is_none())
-        && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+    let letting_go =
+        app.ui.variables.as_ref().is_some_and(|st| (st.selected.is_some() || st.bulk.open()) && st.drag.is_none() && st.mode_drag.is_none())
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
     // A press anywhere else lets it go too: the row is the table's selection, and a click on the
     // canvas is about the canvas (Ctrl+C there copies layers, not the row). A press in the details
     // window or the colour picker it opened is still about that row.
-    let elsewhere = app.ui.picker.is_none() && app.ui.variables.as_ref().is_some_and(|st| st.details.is_none());
+    let elsewhere = app.ui.picker.is_none() && app.ui.variables.as_ref().is_some_and(|st| st.details.is_none() && !st.bulk.open());
     let away = elsewhere
         && app
             .ui
@@ -480,8 +487,10 @@ pub fn keys(app: &mut FigApp, ctx: &Context) {
             .and_then(|st| st.panel.zip(ctx.input(|i| i.pointer.press_origin())))
             .is_some_and(|(panel, p)| !panel.contains(p));
     if letting_go || away {
-        if let Some(st) = app.ui.variables.as_mut() {
-            st.selected = None;
+        if let Some(st) = app.ui.variables.as_mut()
+            && (!letting_go || !st.bulk.dismiss())
+        {
+            st.bulk.clear(&mut st.selected);
         }
         ctx.request_repaint();
     }
@@ -707,6 +716,7 @@ fn editor(app: &mut FigApp, ui: &mut Ui, st: &mut Editor, g: Geom, open: &mut bo
     }
     drag_and_drop(app, ui, st, &slots);
     details(app, ui.ctx(), &doc.variables, st);
+    bulk::show(app, ui.ctx(), &doc.variables, st);
 }
 
 fn header(app: &mut FigApp, ui: &mut Ui, st: &mut Editor, g: Geom, open: &mut bool) {
@@ -908,6 +918,78 @@ fn import_dialog(app: &mut FigApp) {
             msg = format!("{msg} {}", trn("({n} warnings: some entries were skipped)", skipped, &[]));
         }
         app.toast(msg);
+    });
+}
+
+/// Picker callbacks are tied to the originating live document, collection and mode. Native
+/// copies may carry the same variable IDs, so IDs alone are insufficient authority.
+fn figma_mode_params(session: &figcraft_engine::Session, owner: u64, collection: &str, mode: &str, export: bool) -> Option<Value> {
+    if session.ds().ok()?.uid != owner {
+        return None;
+    }
+    let doc = session.doc().ok()?;
+    let coll = doc.variables.collection_by_id(collection)?;
+    if coll.extends.is_some() || library::is_remote_collection(doc, collection) {
+        return None;
+    }
+    let mode = coll.modes.iter().find(|m| m.id == mode)?;
+    Some(if export {
+        json!({"format":"figma","collections":[coll.id],"mode":mode.id})
+    } else {
+        json!({"format":"figma","collection":coll.id,"mode":mode.name})
+    })
+}
+
+fn figma_warning_suffix(result: &Value) -> String {
+    let count = result["warnings"].as_array().map_or(0, Vec::len);
+    if count == 0 { String::new() } else { format!(" {}", trn("({n} compatibility warnings)", count, &[])) }
+}
+
+fn import_figma_mode(app: &mut FigApp, collection: &str, mode: &str) {
+    let Some(owner) = app.session.ds().ok().map(|d| d.uid) else { return };
+    let (collection, mode) = (collection.to_owned(), mode.to_owned());
+    app.pick_file(tr("Import Figma mode…"), &["json"], true, move |app, file| {
+        let Some(mut params) = figma_mode_params(&app.session, owner, &collection, &mode, false) else { return };
+        params["variables"] = match import_input(&file) {
+            Ok(input) => json!(input),
+            Err(why) => {
+                app.show_error(why);
+                return;
+            }
+        };
+        let Some(result) = app.run("variable.import", params) else { return };
+        let (added, updated) = (result["variables"].as_u64().unwrap_or(0), result["updated"].as_u64().unwrap_or(0));
+        app.toast(format!(
+            "{}{}",
+            trn("Imported {n} new variables, updated {updated}", added as usize, &[("updated", &updated)]),
+            figma_warning_suffix(&result)
+        ));
+    });
+}
+
+fn export_figma_mode(app: &mut FigApp, collection: &str, mode: &str) {
+    let Some(owner) = app.session.ds().ok().map(|d| d.uid) else { return };
+    let Some(params) = figma_mode_params(&app.session, owner, collection, mode, true) else { return };
+    let name = "variables.tokens.json";
+    if app.services.downloads() {
+        let Some(result) = app.run("variable.export", params) else { return };
+        if let Some(text) = result["text"].as_str() {
+            if app.services.download(name, text.as_bytes()) {
+                app.toast(format!("{}{}", trf("Exported {file}", &[("file", &name)]), figma_warning_suffix(&result)));
+            } else {
+                app.toast(tr("Couldn't download the variables"));
+            }
+        }
+        return;
+    }
+    let (collection, mode) = (collection.to_owned(), mode.to_owned());
+    app.pick_save(tr("Export Figma mode…"), name, &["json"], move |app, path| {
+        let Some(mut params) = figma_mode_params(&app.session, owner, &collection, &mode, true) else { return };
+        params["path"] = json!(path.to_string_lossy());
+        if let Some(result) = app.run("variable.export", params) {
+            let file = path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+            app.toast(format!("{}{}", trf("Exported {file}", &[("file", &file)]), figma_warning_suffix(&result)));
+        }
     });
 }
 
@@ -1271,6 +1353,10 @@ fn group_rows(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st:
                 start_rename(st, target.clone());
                 ui.close();
             }
+            if menu_item(ui, tr("Duplicate group"), "") {
+                duplicate_group(app, &members, &list, &coll.id, g, st);
+                ui.close();
+            }
             if menu_item(ui, tr("Delete group"), "") {
                 let steps: Vec<serde_json::Value> = members
                     .iter()
@@ -1318,6 +1404,35 @@ fn rename_group(app: &mut FigApp, members: &[&Variable], g: &str, new: &str, st:
         && st.group.as_deref().is_some_and(|s| s == g || s.starts_with(&prefix))
     {
         st.group = st.group.as_ref().map(|s| format!("{renamed}{}", &s[g.len()..]));
+    }
+}
+
+/// Copy group `g` (its variables `members`, every mode, scope and setting) as the group named
+/// after it plus " 2" (the next free number among the collection's groups `list`), in one undo
+/// step. Each copy is `variable.duplicate` then a rename; an alias keeps pointing at its target.
+fn duplicate_group(app: &mut FigApp, members: &[&Variable], list: &[String], collection: &str, g: &str, st: &mut Editor) {
+    let (parent, leaf) = g.rsplit_once('/').map_or(("", g), |(p, l)| (p, l));
+    let leaf = unique(leaf, |n| {
+        let full = if parent.is_empty() { n.to_string() } else { format!("{parent}/{n}") };
+        full == g || list.contains(&full) || members.iter().any(|v| v.name.starts_with(&format!("{full}/")))
+    });
+    let copy = if parent.is_empty() { leaf } else { format!("{parent}/{leaf}") };
+    let prefix = format!("{g}/");
+    let mut steps: Vec<serde_json::Value> = Vec::new();
+    for (k, v) in members.iter().filter(|v| v.name.starts_with(&prefix)).enumerate() {
+        let tag = format!("copy{k}");
+        steps.push(json!({"command": "variable.duplicate", "params": {"variable": v.id}, "as": tag}));
+        steps.push(
+            json!({"command": "variable.update", "params": {"variable": {"$ref": tag}, "name": format!("{copy}/{}", &v.name[prefix.len()..])}}),
+        );
+    }
+    if app.run("command.batch", json!({"label": "Duplicate group", "commands": steps})).is_some() {
+        // Respect the local custom order: place the copied subtree after the source subtree.
+        let mut ordered = list.to_vec();
+        let at = ordered.iter().rposition(|name| name == g || name.starts_with(&prefix)).map_or(ordered.len(), |i| i + 1);
+        let copied = list.iter().filter(|name| name.as_str() == g || name.starts_with(&prefix)).map(|name| format!("{copy}{}", &name[g.len()..]));
+        ordered.splice(at..at, copied);
+        st.group_order.insert(collection.to_string(), ordered);
     }
 }
 
@@ -1388,7 +1503,11 @@ fn table(app: &mut FigApp, ui: &mut Ui, view: &View, st: &mut Editor, slots: &mu
             (None, None) => ga.cmp(gb),
         }
     });
-    if copying && let Some(v) = st.selected.as_deref().and_then(|id| view.vars.get(id)) {
+    st.bulk.sync(view, &coll.id, &list, &mut st.selected);
+    if copying
+        && !st.bulk.multiple()
+        && let Some(v) = st.selected.as_deref().and_then(|id| view.vars.get(id))
+    {
         st.copied = Some(CopiedVariable::of(v, coll));
     }
     if pasting && view.editable() {
@@ -1527,7 +1646,7 @@ fn paste(app: &mut FigApp, view: &View, coll: &Collection, st: &mut Editor, list
     let Some(made) = app.run("command.batch", params) else { return };
     // The pasted row is the selected one now, so a second paste lands under it.
     if let Some(id) = made.get(0).and_then(|r| r.get("id")).and_then(Value::as_str) {
-        st.selected = Some(id.to_string());
+        st.bulk.single(id, &mut st.selected);
     }
 }
 
@@ -1785,6 +1904,14 @@ fn header_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, st:
             start_rename(st, target.clone());
         }
         crate::right::context_popup(&resp).show(|ui| {
+            if menu_item(ui, tr("Import Figma mode…"), "") {
+                import_figma_mode(app, &coll.id, &m.id);
+                ui.close();
+            }
+            if menu_item(ui, tr("Export Figma mode…"), "") {
+                export_figma_mode(app, &coll.id, &m.id);
+                ui.close();
+            }
             if menu_item(ui, tr("Rename mode"), "") {
                 start_rename(st, target.clone());
                 ui.close();
@@ -1925,14 +2052,14 @@ fn var_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, v: &Va
     slots.push(Slot::var(r, v.id.clone()));
     // The row clicked last: where a paste goes. Clicking a value inside the row leaves its own
     // widget the click, so only the row's own parts (its name, the gaps) select it.
-    let selected = st.selected.as_deref() == Some(v.id.as_str());
+    let selected = st.bulk.contains(&v.id, st.selected.as_deref());
     if selected {
         ui.painter().rect_filled(r, CornerRadius::ZERO, t.selected_row);
     } else if resp.hovered() || (editable && st.details.as_deref() == Some(v.id.as_str())) {
         ui.painter().rect_filled(r, CornerRadius::ZERO, t.hover);
     }
     if resp.clicked() || (editable && resp.secondary_clicked()) {
-        st.selected = Some(v.id.clone());
+        st.bulk.click(&v.id, &mut st.selected, ui.input(|i| i.modifiers), resp.secondary_clicked());
     }
     // The name column: it stays put while the modes scroll beside it.
     let name_r = cols.name_rect(r);
@@ -1944,7 +2071,7 @@ fn var_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, v: &Va
     // Dragged by its name column: the row carries the drag and the double-click that renames it
     // both (the values keep their own drags: scrubbing a number, selecting a hex field). An
     // inherited variable's place is the collection it extends's to give.
-    if editable && !inherited {
+    if editable && !inherited && !st.bulk.multiple() {
         let on_name = |ui: &Ui| ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| p.x < text_r.max.x);
         if resp.drag_started() && ui.input(|i| i.pointer.press_origin()).is_some_and(|p| p.x < text_r.max.x) {
             st.drag = Some(v.id.clone());
@@ -1990,20 +2117,40 @@ fn var_row(app: &mut FigApp, ui: &mut Ui, view: &View, coll: &Collection, v: &Va
     if editable {
         // The row's own button, under the add-mode column's heading: the variable's details (the
         // same as "Edit variable" in its context menu).
-        if widgets::icon_button_at(
-            ui,
-            Id::unique(("vars_row_edit", st.owner, st.draft_epoch, &v.id)),
-            Rect::from_center_size(add_r.center(), vec2(40.0, 40.0)),
-            Icon::Adjust,
-            tr("Edit variable"),
-        ) {
-            st.selected = Some(v.id.clone());
-            st.details = Some(v.id.clone());
+        let edit = ui
+            .add_enabled_ui(!st.bulk.multiple() || !selected || st.bulk.can_edit(view.vars, &coll.id), |ui| {
+                widgets::icon_button_at(
+                    ui,
+                    Id::unique(("vars_row_edit", st.owner, st.draft_epoch, &v.id)),
+                    Rect::from_center_size(add_r.center(), vec2(40.0, 40.0)),
+                    Icon::Adjust,
+                    if st.bulk.multiple() && selected { tr("Edit variables") } else { tr("Edit variable") },
+                )
+            })
+            .inner;
+        if edit {
+            if st.bulk.multiple() && selected {
+                st.details = None;
+                st.bulk.begin(view.vars, st.owner, &coll.id);
+            } else {
+                st.bulk.single(&v.id, &mut st.selected);
+                st.details = Some(v.id.clone());
+            }
         }
-        if !inherited && resp.double_clicked() && ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| p.x < text_r.max.x) {
+        if !inherited && !st.bulk.multiple() && resp.double_clicked() && ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| p.x < text_r.max.x) {
             start_rename(st, target.clone());
         }
         crate::right::context_popup(&resp).show(|ui| {
+            if st.bulk.multiple() {
+                ui.add_enabled_ui(st.bulk.can_edit(view.vars, &coll.id), |ui| {
+                    if menu_item(ui, tr("Edit variables"), "") {
+                        st.details = None;
+                        st.bulk.begin(view.vars, st.owner, &coll.id);
+                        ui.close();
+                    }
+                });
+                return;
+            }
             if menu_item(ui, tr("Edit variable"), "") {
                 st.selected = Some(v.id.clone());
                 st.details = Some(v.id.clone());

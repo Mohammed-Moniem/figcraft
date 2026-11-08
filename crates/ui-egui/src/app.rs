@@ -33,6 +33,11 @@ impl FigApp {
         session.observe_document_changes();
         // The main window's panels open as wide as they were left.
         let (left_width, right_width) = session.prefs.panel_widths;
+        // Clamp stored widths from older limits before they reach UI state.
+        let within = |width: f32, range: std::ops::RangeInclusive<f32>| {
+            if width.is_finite() { width.clamp(*range.start(), *range.end()) } else { PANEL_DEFAULT }
+        };
+        let (left_width, right_width) = (within(left_width, LEFT_PANEL), within(right_width, RIGHT_PANEL));
         let pages_height = session.prefs.pages_height;
         Self {
             ui: UiState { left_width, right_width, pages_height, ..UiState::default() },
@@ -263,6 +268,7 @@ impl FigApp {
     pub(crate) fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         variable_ui::sync_owner(self, &ctx);
+        crate::dev_mode::annotation_tool::sync(self, &ctx);
         crate::number_wheel::sync(self, &ctx);
         // The recorder owns this batch before fields, IME, clipboard, navigation or the canvas.
         crate::shortcuts_panel::capture_input(self, &ctx);
@@ -303,6 +309,10 @@ impl FigApp {
         tabs::tab_bar(self, ui);
         variable_ui::sync_owner(self, &ctx);
         crate::number_wheel::sync(self, &ctx);
+        // Retire its own picker before an empty/home/presentation view can discard Motion state.
+        if self.ui.present.is_some() || !self.has_files() || self.ui.home {
+            motion::export::retire(self, &ctx);
+        }
         motion::sync_owner(self);
         // Control/window work and this pass's physical tab click may have replaced the owner.
         // A shared field ID in that replacement must never consume the old commit marker.
@@ -374,6 +384,9 @@ impl FigApp {
                 .resizable(false)
                 .frame(egui::Frame::NONE.fill(t.panel))
                 .show(ui, |ui| motion::timeline::panel(self, ui));
+        } else {
+            // Hidden, narrow and full-variable views cannot leave an invisible input owner.
+            motion::export::retire(self, &ctx);
         }
         // A right-to-left UI language mirrors the window: the "left" rail and panel go on the
         // right, the "right" (Design) panel on the left. Their ids and widths stay as they are.
@@ -520,6 +533,7 @@ impl FigApp {
         }
         a11y::end(self, &ctx);
         self.field_focus = a11y::field_focused(&ctx);
+        crate::dev_mode::annotation_tool::end_frame(self, &ctx);
         windows::requests(self, &ctx);
         variable_ui::sync_owner(self, &ctx);
         // Your pointer, selection and view to the others in each live session (when they

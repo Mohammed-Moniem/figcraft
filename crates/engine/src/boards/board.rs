@@ -25,6 +25,7 @@ mod connectors;
 mod derived;
 mod edit;
 mod items;
+mod obstacles;
 mod reshape;
 mod tools;
 

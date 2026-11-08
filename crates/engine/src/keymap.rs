@@ -194,6 +194,7 @@ pub static KEYS: &[Binding] = &[
     k(Tools, "tool.pen", &["P"]),
     k(Tools, "tool.pencil", &["Shift+P"]),
     k(Tools, "tool.text", &["T"]),
+    k(Tools, "tool.annotation", &["Shift+T"]),
     k(Tools, "tool.comment", &["C"]),
     k(Tools, "tool.shapeBuilder", &["Shift+M"]),
     // Board tools (on boards only), on keys nothing else uses.

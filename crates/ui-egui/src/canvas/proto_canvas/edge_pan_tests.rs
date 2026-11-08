@@ -125,7 +125,8 @@ fn connection_edge_pan_no_gesture_center_and_sidebar_controls_keep_the_camera_an
     assert_eq!(camera(&u), camera_before, "the center is outside the pan margin");
     let sidebar = pos2(canvas.right() + 20.0, canvas.center().y);
     u.frames(8, || vec![Event::PointerMoved(sidebar)]);
-    assert_eq!(camera(&u), camera_before, "a sidebar is not a canvas edge");
+    assert!(camera(&u).0 > camera_before.0, "the owned drag pans beyond the canvas edge");
+    assert_eq!(camera(&u).1, camera_before.1);
     u.button(sidebar, false);
     assert_eq!(u.app.session.doc().unwrap(), &before);
     assert_eq!(u.app.session.undo_depth(), history);

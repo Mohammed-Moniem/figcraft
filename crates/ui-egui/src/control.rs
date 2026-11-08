@@ -1568,6 +1568,12 @@ fn front_only(session: &Session, front: Option<u64>, method: &str, p: &Value) ->
 
 /// Handle one control method (also used by tests and the headless snapshot tool).
 pub fn handle(app: &mut FigApp, ctx: &Context, method: &str, p: &Value) -> Result<Value, String> {
+    let target = p.get("window").and_then(Value::as_u64).unwrap_or(app.windows.current);
+    if app.windows.is_preview(target)
+        && !matches!(method, "window.list" | "window.focus" | "engine.commands" | "events.poll" | "ui.inspect" | "ui.input" | "ui.screenshot")
+    {
+        return Err("a prototype preview accepts ui.input, ui.inspect and ui.screenshot; target an editor window for design commands".into());
+    }
     if !DOCUMENT_METHODS.contains(&method) {
         front_only(&app.session, app.session.ds().ok().map(|d| d.uid), method, p)?;
     }

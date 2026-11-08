@@ -30,6 +30,7 @@ fn style(s: &mut Session, p: &Value, f: impl Fn(&mut TextStyle)) -> Result<Value
             }
         }
         super::styles::detach_edited(doc, &bound);
+        crate::variable_scale::retire_changed(doc, &before);
         crate::normalize(doc, &before);
         return ok();
     }
@@ -62,6 +63,7 @@ fn para(s: &mut Session, p: &Value, f: impl Fn(&mut TextData)) -> Result<Value> 
             }
         }
     }
+    crate::variable_scale::retire_changed(doc, &before);
     crate::normalize(doc, &before);
     ok()
 }
@@ -89,6 +91,15 @@ fn set_list(s: &mut Session, p: &Value, l: ListStyle, toggle: bool) -> Result<Va
     });
     let l = if toggle && all { ListStyle::None } else { l };
     para_range(s, p, |t, a, b| t.set_para_lists(a, b, |pl| pl.list = l))
+}
+
+/// The wrap style of the targeted texts: the edited paragraphs while editing (the paragraph
+/// level), else the whole layer (the layer level: every paragraph, overrides included).
+fn set_wrap_style(s: &mut Session, p: &Value, w: figcraft_doc::WrapStyle) -> Result<Value> {
+    match textedit::selected_range(s) {
+        Some((_, a, b)) => para(s, p, |t| t.set_para_wrap_styles(a, b, w)),
+        None => para(s, p, |t| t.set_wrap_style(w)),
+    }
 }
 
 /// Whether every targeted char has `pred` (to decide toggle direction).
@@ -336,12 +347,12 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!(
             "text.wrapStyle",
             "Wrap style",
-            "{style: auto|balance|pretty, ids?}  where lines break when the text wraps: Auto fits as many words as fit on each line, Balance makes the lines close to the same length, Pretty keeps lines full but leaves no one word alone on the last",
+            "{style: auto|balance|pretty, ids?}  where lines break when the text wraps (while editing: selected paragraphs; otherwise the whole layer): Auto fits as many words as fit on each line, Balance makes the lines close to the same length, Pretty keeps lines full but leaves no one word alone on the last",
             true,
             |s, p| {
                 let w: figcraft_doc::WrapStyle =
                     get(p, "style").and_then(super::props::enum_of).ok_or_else(|| bad("text.wrapStyle", "`style`: auto|balance|pretty"))?;
-                para(s, p, |t| t.wrap_style = w)
+                set_wrap_style(s, p, w)
             }
         ),
         spec!("text.paragraphIndent", "Paragraph indent", "{indent (px), ids?}", true, |s, p| {

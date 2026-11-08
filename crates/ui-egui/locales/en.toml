@@ -8,6 +8,25 @@
 name = "English"
 
 [ui]
+"Import Figma mode…" = "Import Figma mode…"
+"Export Figma mode…" = "Export Figma mode…"
+"({n} compatibility warnings)" = { one = "({n} compatibility warning)", other = "({n} compatibility warnings)" }
+"Add a visible top-level frame to export animation." = "Add a visible top-level frame to export animation."
+"Animation export cancelled because the document or page changed." = "Animation export cancelled because the document or page changed."
+"Export GIF…" = "Export GIF…"
+"Export animation" = "Export animation"
+"Frame rate" = "Frame rate"
+"GIF uses 256 colours per frame, binary transparency and 10 ms timing. Export keeps the frame's viewport fixed." = "GIF uses 256 colours per frame, binary transparency and 10 ms timing. Export keeps the frame's viewport fixed."
+"Playback" = "Playback"
+"Asset layout" = "Asset layout"
+"Flat" = "Flat"
+"Manual dash phase" = "Manual dash phase"
+"Phase" = "Phase"
+"Pop out preview" = "Pop out preview"
+"Separate preview windows are unavailable in this host" = "Separate preview windows are unavailable in this host"
+"Separate preview windows are unavailable while a screen reader is active" = "Separate preview windows are unavailable while a screen reader is active"
+"At most eight separate preview windows can be open" = "At most eight separate preview windows can be open"
+"No more window identities are available" = "No more window identities are available"
 "Key down" = "Key down"
 "Key up" = "Key up"
 "Key down {key} ({ms}ms minimum)" = "Key down {key} ({ms}ms minimum)"
@@ -537,6 +556,7 @@ name = "English"
 "Duo" = "Duo"
 "Duplicate" = "Duplicate"
 "Duplicate by dragging" = "Duplicate by dragging"
+"Duplicate group" = "Duplicate group"
 "Duplicate mode" = "Duplicate mode"
 "Duplicate page" = "Duplicate page"
 "Edit" = "Edit"
@@ -2453,3 +2473,24 @@ name = "English"
 "Selection outline opacity" = "Selection outline opacity"
 "Fade selection outlines, handles and labels without changing the artwork." = "Fade selection outlines, handles and labels without changing the artwork."
 "Reset selection outline opacity" = "Reset selection outline opacity"
+
+"Edit variables" = "Edit variables"
+"Scope" = "Scope"
+"No shared scope properties" = "No shared scope properties"
+"Same as file" = "Same as file"
+
+"sRGB" = "sRGB"
+
+"Display P3" = "Display P3"
+
+# Optional .fig import history
+"invalid or over-budget optional .fig scale provenance was omitted" = "invalid or over-budget optional .fig scale provenance was omitted"
+"optional .fig scale provenance could not reserve bounded storage and was omitted" = "optional .fig scale provenance could not reserve bounded storage and was omitted"
+"optional .fig scale provenance exceeded its schema or storage limits and was omitted" = "optional .fig scale provenance exceeded its schema or storage limits and was omitted"
+"Annotation" = "Annotation"
+
+"Annotation note" = "Annotation note"
+
+"Add annotation" = "Add annotation"
+
+"Annotation category" = "Annotation category"

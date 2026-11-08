@@ -176,6 +176,10 @@ pub(super) fn layout(p: &mut Presenter, area: Rect, chrome: Chrome) -> Option<La
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Chrome {
     pub(super) pane: bool,
+    /// Whether this surface owns input this frame; rendering continues while it does not.
+    pub(super) interactive: bool,
+    /// A compact player in its own native viewport takes keys by focus instead of hover.
+    pub(super) detached: bool,
     pub(super) bar_h: f32,
     /// Space kept around the device or frame.
     pub(super) pad: f32,
@@ -186,4 +190,4 @@ pub(super) struct Chrome {
     pub(super) keys: bool,
 }
 
-pub(super) const FULL: Chrome = Chrome { pane: false, bar_h: 40.0, pad: 32.0, round: 0, keys: true };
+pub(super) const FULL: Chrome = Chrome { pane: false, interactive: true, detached: false, bar_h: 40.0, pad: 32.0, round: 0, keys: true };

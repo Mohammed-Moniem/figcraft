@@ -9,6 +9,7 @@ use super::{
 /// What the player's top bar asked for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum BarAction {
+    Detach,
     Close,
     Restart,
     /// Present full-window (from the pane).
@@ -104,7 +105,7 @@ pub fn show(app: &mut FigApp, ui: &mut Ui) {
         app.ui.comments.close();
     }
     finish(app, &mut pres);
-    link_notice(app, &mut pres, &ctx, Id::unique("present_link_notice"));
+    link_notice(app, &mut pres, &ctx, Id::unique("present_link_notice"), true);
     // The options carry over to the next presentation.
     app.ui.present_view = pres.view;
     if live && let Some(BarAction::Responsive(on)) = action {
@@ -303,11 +304,11 @@ fn goes_to_a_website(url: &str) -> bool {
 /// The notice before a link leaves the prototype — for a website, or for the mail app: the link,
 /// "Don't show this again" for a link the viewer fired (saved with the preferences when Open link
 /// is pressed), Open link and Cancel. Escape or the close button cancels.
-fn link_notice(app: &mut FigApp, p: &mut Presenter, ctx: &egui::Context, id: Id) {
+fn link_notice(app: &mut FigApp, p: &mut Presenter, ctx: &egui::Context, id: Id, interactive: bool) {
     let Some((url, skip, _)) = p.link_notice.as_mut() else { return };
     let t = Tokens::get(ctx);
     let (mut open, mut go, mut cancel) = (true, false, false);
-    crate::dialogs::window(tr("Leaving the prototype"), ctx).id(id).open(&mut open).show(ctx, |ui| {
+    crate::dialogs::window(tr("Leaving the prototype"), ctx).id(id).open(&mut open).enabled(interactive).show(ctx, |ui| {
         ui.set_width(340.0);
         let what = if goes_to_a_website(url) {
             tr("This link opens a website outside the prototype:")
@@ -328,6 +329,11 @@ fn link_notice(app: &mut FigApp, p: &mut Presenter, ctx: &egui::Context, id: Id)
             cancel = widgets::button(ui, tr("Cancel"), false, true).clicked();
         });
     });
+    // A detached surface that lost focus may paint the notice, but no old button,
+    // checkbox or Escape event may retain authority over the reacquired owner.
+    if !interactive {
+        return;
+    }
     cancel |= !open || ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
     if go {
         let Some((url, skip, new_tab)) = p.link_notice.take() else { return };
@@ -397,6 +403,18 @@ impl Pane {
         let (doc_uid, selected) = session.ds().map(|ds| (ds.uid, selected_frame(ds))).unwrap_or((0, None));
         Pane { player: Presenter::new(start), doc_uid, selected }
     }
+
+    pub(crate) fn source_uid(&self) -> u64 {
+        self.doc_uid
+    }
+
+    pub(crate) fn shows_source(&self, doc: &std::sync::Arc<Document>) -> bool {
+        self.player.source.as_ref().is_some_and(|source| std::sync::Arc::ptr_eq(source, doc))
+    }
+
+    pub(crate) fn for_document(start: NodeId, ds: &figcraft_engine::DocState) -> Self {
+        Self { player: Presenter::new(start), doc_uid: ds.uid, selected: selected_frame(ds) }
+    }
 }
 
 /// The preview pane's window id (its position and size persist under it).
@@ -426,7 +444,15 @@ pub fn show_pane(app: &mut FigApp, ctx: &egui::Context) {
     let canvas = app.canvas.rect;
     let style = ctx.global_style();
     let typing = ds.text_edit.is_some() || crate::a11y::field_focused(ctx);
-    let chrome = Chrome { pane: true, bar_h: 36.0, pad: 12.0, round: style.visuals.window_corner_radius.nw, keys: !typing };
+    let chrome = Chrome {
+        pane: true,
+        interactive: true,
+        detached: false,
+        bar_h: 36.0,
+        pad: 12.0,
+        round: style.visuals.window_corner_radius.nw,
+        keys: !typing,
+    };
     poll_pads(app, &mut pane.player, ctx);
     let mut action = None;
     egui::Window::new(tr("Prototype preview"))
@@ -444,9 +470,14 @@ pub fn show_pane(app: &mut FigApp, ctx: &egui::Context) {
             action = player(&mut pane.player, ui, rect, now, chrome);
         });
     finish(app, &mut pane.player);
-    link_notice(app, &mut pane.player, ctx, pane_id().with("link_notice"));
+    link_notice(app, &mut pane.player, ctx, pane_id().with("link_notice"), true);
     match action {
         Some(BarAction::Close) => {}
+        Some(BarAction::Detach) => {
+            let start = pane.player.current;
+            app.ui.preview = Some(pane);
+            app.run("proto.detachPreview", json!({"start":start}));
+        }
         Some(BarAction::Present) => {
             let start = pane.player.current;
             app.ui.preview = Some(pane);
@@ -454,4 +485,41 @@ pub fn show_pane(app: &mut FigApp, ctx: &egui::Context) {
         }
         _ => app.ui.preview = Some(pane),
     }
+}
+
+/// The compact player in an independent native viewport. It follows its captured source UID,
+/// never editor selection; its private navigation and variables survive source-tab switches.
+pub fn show_detached(app: &mut FigApp, ui: &mut Ui, generation: u64) -> bool {
+    let ctx = ui.ctx().clone();
+    let Some(mut pane) = app.ui.preview.take() else { return false };
+    let Ok(ds) = app.session.ds() else { return false };
+    if ds.uid != pane.doc_uid {
+        return false;
+    }
+    let now = ctx.input(|i| i.time);
+    pane.player.sync(&ds.without_widget_hover().clone(), now);
+    // A coalesced loss/regain still ends the old gesture. Discard that frame's input rather
+    // than granting its release (or pre-loss derived pointer press) new focus authority.
+    let focused = ctx.input(|i| i.focused && !i.raw.events.iter().any(|e| matches!(e, egui::Event::WindowFocused(false))));
+    if !focused {
+        pane.player.release_surface_input(now, app.services.gamepad_held());
+    }
+    poll_pads(app, &mut pane.player, &ctx);
+    let chrome = Chrome {
+        pane: true,
+        interactive: focused,
+        detached: true,
+        bar_h: 36.0,
+        pad: 12.0,
+        round: 0,
+        keys: focused && !crate::a11y::field_focused(&ctx),
+    };
+    let action = player(&mut pane.player, ui, ui.max_rect(), now, chrome);
+    finish(app, &mut pane.player);
+    link_notice(app, &mut pane.player, &ctx, pane_id().with(("detached", pane.doc_uid, generation, ctx.viewport_id())), focused);
+    if action == Some(BarAction::Close) {
+        return false;
+    }
+    app.ui.preview = Some(pane);
+    true
 }

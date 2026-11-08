@@ -1,6 +1,6 @@
 //! Arrange: align, distribute, tidy, z-order, flips, rotations and numeric transforms.
 
-use figcraft_doc::{Document, EffectKind, LetterSpacing, LineHeight, Node, NodeId, NodeKind, Sizing, TextAutoResize, TextStyle};
+use figcraft_doc::{Document, Node, NodeId, NodeKind, Sizing, TextAutoResize};
 use figcraft_geom::{Affine, Point, Rect};
 use serde_json::{Value, json};
 
@@ -404,35 +404,36 @@ fn turn_pivot(s: &Session, ids: &[NodeId]) -> Result<Option<Point>> {
 /// layout grids, ruler guides, tiled images and text sizes.
 pub fn scale_node(doc: &mut Document, id: NodeId, k: f64) -> Result<()> {
     let k = if k.is_finite() && k > 0.0 { k } else { return Ok(()) };
+    if k == 1.0 {
+        return Ok(());
+    }
+    let next = crate::variable_scale::context(doc.get(id)?.variable_scale) * k;
     let sub = doc.subtree(id);
+    if sub.iter().any(|i| doc.node(*i).and_then(|n| n.stroke.dash_phase).is_some_and(|phase| !(phase * k).is_finite())) {
+        return Err(bad("transform.scale", "the scaled dash phase is outside the finite range"));
+    }
+    let finite = sub.iter().all(|id| crate::variable_scale::factor(doc, *id).map(|factor| factor * k).is_some_and(|x| x.is_finite() && x > 0.0));
+    if !next.is_finite() || next <= 0.0 || !finite || !crate::style_vars::can_scale(doc, &sub, k) {
+        return Err(bad("transform.scale", "the accumulated scale or linked style value is outside the finite range"));
+    }
+    // Record only the selected root: each descendant inherits this multiplication once.
+    doc.get_mut(id)?.variable_scale = Some(next);
     // The layers below `id` scale whatever their constraints, so where they are layers of an
     // instance their new size and place are overrides. The edit's own diff takes geometry that
     // changed with an ancestor's size for what constraints give, so the next rebuild of the
     // instance would put them back at their main's size (#922).
     let in_instance: Vec<bool> = sub.iter().enumerate().map(|(depth, i)| depth > 0 && crate::components::inside_instance(doc, *i)).collect();
-    let tiles = |paints: &mut Vec<figcraft_color::Paint>| {
-        for p in paints {
-            if let figcraft_color::PaintKind::Image(img) = &mut p.kind
-                && img.scale_mode == figcraft_color::ImageScaleMode::Tile
-            {
-                img.scale *= k;
-            }
-        }
-    };
     for (depth, i) in sub.iter().enumerate() {
+        let was = doc.node_arc(*i).cloned();
         let n = doc.get_mut(*i)?;
         let (w0, h0, t0) = (n.width, n.height, n.transform);
-        tiles(&mut n.fills);
-        tiles(&mut n.strokes);
+        crate::style_vars::scale_paints(&mut n.fills, k);
+        crate::style_vars::scale_paints(&mut n.strokes, k);
         let cl = &mut n.child_layout;
         for v in [&mut cl.min_w, &mut cl.max_w, &mut cl.min_h, &mut cl.max_h].into_iter().flatten() {
             *v *= k;
         }
-        for g in &mut n.grids {
-            g.size *= k;
-            g.gutter *= k;
-            g.offset *= k;
-        }
+        crate::style_vars::scale_grids(&mut n.grids, k);
         for g in &mut n.guides {
             g.offset *= k;
         }
@@ -445,31 +446,11 @@ pub fn scale_node(doc: &mut Document, id: NodeId, k: f64) -> Result<()> {
         for d in &mut n.stroke.dashes {
             *d *= k;
         }
-        n.corners.radii = n.corners.radii.map(|r| r * k);
-        for e in &mut n.effects {
-            match &mut e.kind {
-                EffectKind::DropShadow(sh) | EffectKind::InnerShadow(sh) => {
-                    sh.radius *= k;
-                    sh.spread *= k;
-                    sh.offset = (sh.offset.0 * k, sh.offset.1 * k);
-                }
-                EffectKind::LayerBlur(b) | EffectKind::BackgroundBlur(b) => *b = b.scaled(k),
-                EffectKind::Noise(nz) => {
-                    nz.size *= k;
-                    nz.size_y = nz.size_y.map(|v| v * k);
-                }
-                EffectKind::Texture(t) => {
-                    t.size *= k;
-                    t.size_y = t.size_y.map(|v| v * k);
-                    t.radius *= k;
-                }
-                EffectKind::Glass(g) => {
-                    g.depth *= k;
-                    // From the frost it draws with (an older file's past 100 draws at 100).
-                    g.frost = (g.sanitized().frost * k).min(figcraft_doc::Glass::MAX_FROST);
-                }
-            }
+        if let Some(phase) = &mut n.stroke.dash_phase {
+            *phase *= k;
         }
+        n.corners.radii = n.corners.radii.map(|r| r * k);
+        crate::style_vars::scale_effects(&mut n.effects, k);
         if let Some(l) = n.layout.as_mut() {
             l.gap *= k;
             l.cross_gap *= k;
@@ -479,25 +460,9 @@ pub fn scale_node(doc: &mut Document, id: NodeId, k: f64) -> Result<()> {
             }
         }
         if let NodeKind::Text(t) = &mut n.kind {
-            let scale = |st: &mut TextStyle| {
-                st.font_size *= k;
-                if let LineHeight::Pixels(v) = &mut st.line_height {
-                    *v *= k;
-                }
-                if let LetterSpacing::Pixels(v) = &mut st.letter_spacing {
-                    *v *= k;
-                }
-                st.set_look(|l| {
-                    for m in [&mut l.thickness, &mut l.offset] {
-                        if let LineHeight::Pixels(v) = m {
-                            *v *= k;
-                        }
-                    }
-                });
-            };
-            scale(&mut t.style);
+            crate::style_vars::scale_text(&mut t.style, k);
             for r in &mut t.runs {
-                scale(&mut r.style);
+                crate::style_vars::scale_text(&mut r.style, k);
             }
             t.paragraph_spacing *= k;
             t.paragraph_indent *= k;
@@ -524,6 +489,16 @@ pub fn scale_node(doc: &mut Document, id: NodeId, k: f64) -> Result<()> {
             }
             if n.transform != t0 {
                 n.overrides.insert("position".into());
+            }
+        }
+        if n.source.is_some()
+            && let Some(was) = was
+        {
+            for group in crate::components::diff_groups(&was, n).into_iter().filter(|g| crate::variable_scale::dimensional_group(g)) {
+                if !was.overrides.contains(group) || was.scale_derived_overrides.contains(group) {
+                    n.scale_derived_overrides.insert(group.to_string());
+                    n.overrides.insert(group.to_string());
+                }
             }
         }
     }

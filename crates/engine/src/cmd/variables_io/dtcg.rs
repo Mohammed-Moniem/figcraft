@@ -18,7 +18,7 @@ fn error(path: &str, why: &str) -> crate::EngineError {
 }
 
 /// Bound object inputs too: they need not have passed the file reader or JSON recursion limit.
-fn bounded(root: &Value) -> Result<()> {
+pub(super) fn bounded(root: &Value) -> Result<()> {
     let mut pending = vec![(root, 0)];
     let (mut count, mut text) = (0usize, 0usize);
     while let Some((v, depth)) = pending.pop() {
@@ -157,6 +157,12 @@ pub(super) fn export(doc: &Document, colls: &[&Collection], p: &Value) -> Result
                         json!(text)
                     }
                     Some(VariableValue::Number(n)) if n.is_finite() && ty == "dimension" => json!({"value":n,"unit":"px"}),
+                    Some(VariableValue::Number(n)) if n.is_finite() && ty == "duration" => {
+                        if n < 0.0 {
+                            return Err(error(&v.name, "duration must be nonnegative"));
+                        }
+                        json!({"value":n,"unit":"s"})
+                    }
                     Some(VariableValue::Number(n)) if n.is_finite() => json!(n),
                     _ => return Err(error(&v.name, "value cannot be resolved in the selected mode")),
                 }
@@ -369,6 +375,18 @@ fn literal(kind: &str, value: &Value, profile: ColorProfile, rem: f64, path: &st
                 return Err(error(path, "dimension conversion overflow"));
             }
             VariableValue::Number(n)
+        }
+        "duration" => {
+            let n = number(&value["value"], path)?;
+            if n < 0.0 {
+                return Err(error(path, "duration must be nonnegative"));
+            }
+            let seconds = match value["unit"].as_str() {
+                Some("s") => n,
+                Some("ms") => n / 1000.0,
+                _ => return Err(error(path, "duration unit must be s or ms")),
+            };
+            VariableValue::Number(seconds)
         }
         "fontFamily" => {
             VariableValue::String(value.as_str().ok_or_else(|| error(path, "fontFamily arrays cannot be represented by a string variable"))?.into())

@@ -135,6 +135,9 @@ impl<'d> Exporter<'d> {
         ]);
         if !sp.dashes.is_empty() {
             f.push(("dashPattern", arr(sp.dashes.iter().map(|d| fl(*d)).collect())));
+            if sp.dash_phase.is_some() {
+                self.warn("manual dash phase was left out of the .fig export");
+            }
         }
         if let Some([t, r, bo, l]) = sp.sides {
             f.extend([

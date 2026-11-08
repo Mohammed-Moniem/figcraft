@@ -6,8 +6,8 @@
 //!   gap, padding and alignment; each child is Fixed, Hug (its own content) or Fill (shares the
 //!   free space), within its min/max size. A Hug container sizes to its children. Absolute
 //!   children (ignoring auto layout) are not placed; they follow their constraints instead.
-//! - [`coherent_sizing`]: Fill and Hug only where they can apply (Fill in an auto layout flow on an
-//!   axis the parent doesn't hug; Hug on auto layout frames and text), else Fixed.
+//! - [`coherent_sizing`]: Fill and Hug only where they can apply (Fill in an auto layout flow,
+//!   including a linear parent's hugging cross axis; Hug on auto layout frames and text), else Fixed.
 //! - [`apply_constraints`]: children of a regular frame follow their constraints when it resizes.
 //! - [`grid_lines`]: the column/row rectangles of a layout grid, for drawing and snapping.
 //!
@@ -167,12 +167,18 @@ pub fn flow_children(doc: &Document, frame: NodeId) -> Vec<NodeId> {
     f.children.iter().copied().filter(|c| doc.node(*c).is_some_and(|n| n.visible && !n.child_layout.absolute)).collect()
 }
 
-/// Make a layer's sizing coherent with where it sits (after an edit). Fill needs room to fill: a
-/// layer that isn't in an auto layout flow (no auto layout parent, or ignoring auto layout), or
-/// whose parent hugs that axis, gets Fixed at its current size instead. Hug needs auto layout or
-/// text; otherwise it is Fixed too. A text hugs what its resize mode grows. The same applies to the
-/// layer's own children, so a frame that starts to hug (or loses auto layout) fixes the children
-/// that filled it. Returns whether anything changed.
+/// Whether an axis runs across a frame's linear flow. A Fill child may stretch to its line's
+/// cross size even when the parent hugs that axis; a grid has no such linear cross axis.
+pub fn is_cross_axis(parent: &figcraft_doc::Node, horizontal: bool) -> bool {
+    parent.kind.is_frame_like()
+        && parent.layout.as_ref().is_some_and(|al| matches!((al.mode, horizontal), (LayoutMode::Horizontal, false) | (LayoutMode::Vertical, true)))
+}
+
+/// Make a layer's sizing coherent with where it sits (after an edit). Fill needs an auto layout
+/// flow and, on the main axis or in a grid, a parent that doesn't hug that axis. A linear cross
+/// axis can stretch to its resolved line while the parent hugs. Hug needs auto layout or text;
+/// otherwise it is Fixed too. A text hugs what its resize mode grows. The same rules apply to the
+/// layer's own children. Returns whether anything changed.
 pub fn coherent_sizing(doc: &mut Document, id: NodeId) -> bool {
     let kids = doc.node(id).map(|n| n.children.clone()).unwrap_or_default();
     let mut changed = coherent_own_sizing(doc, id);
@@ -185,11 +191,15 @@ pub fn coherent_sizing(doc: &mut Document, id: NodeId) -> bool {
 fn coherent_own_sizing(doc: &mut Document, id: NodeId) -> bool {
     let Some(n) = doc.node(id) else { return false };
     let flow_parent = n.parent.and_then(|p| doc.node(p)).filter(|p| p.layout.is_some() && p.kind.is_frame_like() && !n.child_layout.absolute);
-    let parent_hugs =
-        |horizontal: bool| flow_parent.map(|p| if horizontal { p.child_layout.sizing_h } else { p.child_layout.sizing_v } == Sizing::Hug);
+    let can_fill = |horizontal: bool| {
+        flow_parent.is_some_and(|p| {
+            let sizing = if horizontal { p.child_layout.sizing_h } else { p.child_layout.sizing_v };
+            sizing != Sizing::Hug || is_cross_axis(p, horizontal)
+        })
+    };
     let can_hug = (n.layout.is_some() && n.kind.is_frame_like()) || matches!(n.kind, NodeKind::Text(_));
     let coherent = |s: Sizing, horizontal: bool| match s {
-        Sizing::Fill if parent_hugs(horizontal) != Some(false) => Sizing::Fixed,
+        Sizing::Fill if !can_fill(horizontal) => Sizing::Fixed,
         Sizing::Hug if !can_hug => Sizing::Fixed,
         s => s,
     };
@@ -332,6 +342,8 @@ struct Item {
     /// inside stroke): fill children share the free space by their content area, border-box
     /// fashion, so these come on top of each one's share.
     inset_main: f64,
+    /// A fill child's own padding cannot disappear when its parent hugs the cross axis.
+    inset_cross: f64,
     /// Baseline alignment: distance from the item's top to its first baseline.
     baseline: Option<f64>,
     /// Baseline alignment: offset from the line's top (computed per line).
@@ -364,7 +376,7 @@ fn flow_lines(items: &[Item], wraps: bool, gap: f64, inner_main: f64) -> Vec<Vec
 }
 
 /// Resolve each line's main extent and baseline-adjusted cross extent.
-fn flow_line_extents(items: &mut [Item], lines: &[Vec<usize>], gap: f64) -> Vec<(f64, f64)> {
+fn flow_line_extents(items: &mut [Item], lines: &[Vec<usize>], gap: f64, hug_cross: bool) -> Vec<(f64, f64)> {
     let mut extents = Vec::with_capacity(lines.len());
     for line in lines {
         let gaps = gap * line.len().saturating_sub(1) as f64;
@@ -377,7 +389,13 @@ fn flow_line_extents(items: &mut [Item], lines: &[Vec<usize>], gap: f64) -> Vec<
         let in_line = || line.iter().filter_map(|i| items.get(*i));
         let main_used = in_line().map(|item| item.main).sum::<f64>() + gaps;
         let all_fill = in_line().all(|item| item.fill_cross);
-        let cross = in_line().filter(|item| all_fill || !item.fill_cross).map(|item| item.base_off + item.cross).fold(0.0, f64::max);
+        let cross = in_line()
+            .filter(|item| all_fill || !item.fill_cross || hug_cross)
+            .map(|item| {
+                let size = if !all_fill && item.fill_cross { clamp_size(0.0, item.min_cross, None).max(item.inset_cross) } else { item.cross };
+                item.base_off + size
+            })
+            .fold(0.0, f64::max);
         extents.push((main_used, cross));
     }
     extents
@@ -410,7 +428,7 @@ fn align_flow_lines(items: &[Item], extents: &mut [(f64, f64)], al: &AutoLayout,
 }
 
 /// Collect the size and sizing constraints of the children in flow order.
-fn flow_items(doc: &Document, kids: &[NodeId], horizontal: bool, hug_main: bool, hug_cross: bool) -> Vec<Item> {
+fn flow_items(doc: &Document, kids: &[NodeId], horizontal: bool, hug_main: bool) -> Vec<Item> {
     let mut items = Vec::with_capacity(kids.len());
     for child in kids {
         let Some(node) = doc.node(*child) else { continue };
@@ -419,22 +437,23 @@ fn flow_items(doc: &Document, kids: &[NodeId], horizontal: bool, hug_main: bool,
         let (sm, sc) = if horizontal { (cl.sizing_h, cl.sizing_v) } else { (cl.sizing_v, cl.sizing_h) };
         let (min_main, max_main, min_cross, max_cross) =
             if horizontal { (cl.min_w, cl.max_w, cl.min_h, cl.max_h) } else { (cl.min_h, cl.max_h, cl.min_w, cl.max_w) };
-        let inset_main = node.layout.as_ref().map_or(0.0, |al| {
+        let (inset_main, inset_cross) = node.layout.as_ref().map_or((0.0, 0.0), |al| {
             let (pt, pr, pb, pl) = insets(node, al);
-            if horizontal { pl + pr } else { pt + pb }
+            if horizontal { (pl + pr, pt + pb) } else { (pt + pb, pl + pr) }
         });
         items.push(Item {
             id: *child,
             main: if horizontal { w } else { h },
             cross: if horizontal { h } else { w },
-            // Fill needs room to fill: on an axis the frame hugs it reads as fixed.
+            // Main-axis Fill needs a fixed container; cross-axis Fill uses the resolved line.
             fill_main: sm == Sizing::Fill && !hug_main,
-            fill_cross: sc == Sizing::Fill && !hug_cross,
+            fill_cross: sc == Sizing::Fill,
             min_main,
             max_main,
             min_cross,
             max_cross,
             inset_main,
+            inset_cross,
             baseline: None,
             base_off: 0.0,
         });
@@ -442,9 +461,9 @@ fn flow_items(doc: &Document, kids: &[NodeId], horizontal: bool, hug_main: bool,
     items
 }
 
-/// Position one resolved flow line, resizing wrapped fill children across the line.
+/// Position one resolved flow line, resizing cross fills when their size was deferred.
 fn place_flow_line(doc: &mut Document, items: &[Item], line: &[usize], al: &AutoLayout, m: &dyn Measure, geometry: FlowLineGeometry) {
-    let FlowLineGeometry { horizontal, wraps, main_start, inner_main, cross_pos, line_cross, used, gap } = geometry;
+    let FlowLineGeometry { horizontal, resize_cross, main_start, inner_main, cross_pos, line_cross, used, gap } = geometry;
     let total = used - gap * line.len().saturating_sub(1) as f64;
     let (mut pos, step_gap) = main_offsets(al.main_align, inner_main, total, line.len(), gap);
     pos += main_start;
@@ -458,7 +477,7 @@ fn place_flow_line(doc: &mut Document, items: &[Item], line: &[usize], al: &Auto
             CrossAlign::Center => (line_cross - cross_size) / 2.0,
             CrossAlign::Max => line_cross - cross_size,
         };
-        if it.fill_cross && wraps {
+        if it.fill_cross && resize_cross {
             let (w, h) = if horizontal { (it.main, cross_size) } else { (cross_size, it.main) };
             resize_child(doc, it.id, w, h, m);
         }
@@ -470,13 +489,32 @@ fn place_flow_line(doc: &mut Document, items: &[Item], line: &[usize], al: &Auto
 
 struct FlowLineGeometry {
     horizontal: bool,
-    wraps: bool,
+    resize_cross: bool,
     main_start: f64,
     inner_main: f64,
     cross_pos: f64,
     line_cross: f64,
     used: f64,
     gap: f64,
+}
+
+/// A single hugging cross axis is known once its sibling extents are resolved. Stretch before
+/// measuring the parent's main extent: a card hugging its text can become shorter at a new width.
+fn stretch_hug_cross_line(doc: &mut Document, frame: NodeId, items: &mut [Item], horizontal: bool, cross: f64, m: &dyn Measure) {
+    let Some(f) = doc.node(frame) else { return };
+    let Some(al) = f.layout.as_ref() else { return };
+    let (pt, pr, pb, pl) = insets(f, al);
+    let cl = &f.child_layout;
+    let (inset, min, max) = if horizontal { (pt + pb, cl.min_h, cl.max_h) } else { (pl + pr, cl.min_w, cl.max_w) };
+    let cross = clamp_size(cross + inset, min, max).max(inset) - inset;
+    for it in items.iter_mut().filter(|it| it.fill_cross) {
+        let cross = clamp_size(cross, it.min_cross, it.max_cross);
+        let (w, h) = if horizontal { (it.main, cross) } else { (cross, it.main) };
+        resize_child(doc, it.id, w, h, m);
+        let (w, h) = outer_size(doc, it.id);
+        it.main = if horizontal { w } else { h };
+        it.cross = if horizontal { h } else { w };
+    }
 }
 
 /// Distribute a line's remaining main-axis space among its fill children.
@@ -522,7 +560,7 @@ pub fn layout_frame(doc: &mut Document, frame: NodeId, m: &dyn Measure) {
     let hug_cross = if horizontal { hug_h } else { hug_w };
     let baseline = horizontal && al.cross_align == CrossAlign::Baseline;
 
-    let mut items = flow_items(doc, &kids, horizontal, hug_main, hug_cross);
+    let mut items = flow_items(doc, &kids, horizontal, hug_main);
 
     let gap = finite_or_zero(al.gap);
     let auto_gap = al.main_align.is_auto_gap();
@@ -530,7 +568,7 @@ pub fn layout_frame(doc: &mut Document, frame: NodeId, m: &dyn Measure) {
 
     // Fill across a single line: the size is the frame's inner cross size, known up front. Resize
     // those children first, so text that wraps (or a frame hugging it) reports its final main size.
-    if !wraps {
+    if !wraps && !hug_cross {
         for it in items.iter_mut().filter(|it| it.fill_cross && !it.fill_main) {
             let cross = clamp_size(inner_cross_fixed, it.min_cross, it.max_cross);
             let (w, h) = if horizontal { (it.main, cross) } else { (cross, it.main) };
@@ -548,7 +586,7 @@ pub fn layout_frame(doc: &mut Document, frame: NodeId, m: &dyn Measure) {
     // Fill children take their main size now, so their cross size (wrapped text, a hugging frame)
     // is final before the lines and the frame are sized.
     for it in items.iter_mut().filter(|it| it.fill_main) {
-        let cross = if it.fill_cross && !wraps { clamp_size(inner_cross_fixed, it.min_cross, it.max_cross) } else { it.cross };
+        let cross = if it.fill_cross && !wraps && !hug_cross { clamp_size(inner_cross_fixed, it.min_cross, it.max_cross) } else { it.cross };
         let (w, h) = if horizontal { (it.main, cross) } else { (cross, it.main) };
         resize_child(doc, it.id, w, h, m);
         let (w, h) = outer_size(doc, it.id);
@@ -561,9 +599,15 @@ pub fn layout_frame(doc: &mut Document, frame: NodeId, m: &dyn Measure) {
     }
 
     // Line extents: (main used, cross size).
-    let mut line_extents = flow_line_extents(&mut items, &lines, gap);
+    let mut line_extents = flow_line_extents(&mut items, &lines, gap, hug_cross);
+    if hug_cross && !wraps {
+        let cross = line_extents.first().map_or(0.0, |line| line.1);
+        stretch_hug_cross_line(doc, frame, &mut items, horizontal, cross, m);
+        line_extents = flow_line_extents(&mut items, &lines, gap, hug_cross);
+    }
 
-    // Container size (on a hugging axis fill children can't fill: they count with their own size).
+    // Hug follows the line extents. Cross fills contribute real minima, and an all-Fill line
+    // retains its resolved sizes as the fallback when no non-Fill sibling supplies an extent.
     let content_main = line_extents.iter().map(|l| l.0).fold(0.0, f64::max);
     let cross_gap = finite_or_zero(al.cross_gap);
     let content_cross: f64 = line_extents.iter().map(|l| l.1).sum::<f64>() + cross_gap * lines.len().saturating_sub(1) as f64;
@@ -599,8 +643,16 @@ pub fn layout_frame(doc: &mut Document, frame: NodeId, m: &dyn Measure) {
     for (li, line) in lines.iter().enumerate() {
         let (used, line_cross) = line_extents.get(li).copied().unwrap_or((0.0, 0.0));
         let line_cross = if single { inner_cross } else { line_cross };
-        let geometry =
-            FlowLineGeometry { horizontal, wraps, main_start: if horizontal { pl } else { pt }, inner_main, cross_pos, line_cross, used, gap };
+        let geometry = FlowLineGeometry {
+            horizontal,
+            resize_cross: wraps,
+            main_start: if horizontal { pl } else { pt },
+            inner_main,
+            cross_pos,
+            line_cross,
+            used,
+            gap,
+        };
         place_flow_line(doc, &items, line, &al, m, geometry);
         cross_pos += line_cross + cross_gap;
     }

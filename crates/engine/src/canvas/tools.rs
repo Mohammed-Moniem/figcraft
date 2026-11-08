@@ -35,9 +35,9 @@ use handles::DRAG_SLOP_PX;
 pub(crate) use handles::scale_factor;
 pub use handles::{
     PENCIL_STROKE, SMALL_BOX_PX, anchor_name, anchor_of, box_sides_px, handle_at, handle_at_corners, label_at, locked_in, pencil_stroke,
-    scale_anchor_point, selection_box, selection_frame,
+    scale_anchor_point, selection_box, selection_frame, shared_rotation_degrees,
 };
-pub(crate) use handles::{SNAP_PX, handle_cursor, readable_text_fills, resized_box};
+pub(crate) use handles::{SNAP_PX, UNMEASURED_SNAP_PX, handle_cursor, readable_text_fills, resized_box};
 #[cfg(test)]
 pub(crate) use pen::pressure_profile;
 
@@ -71,10 +71,12 @@ pub enum ToolId {
     Highlighter,
     Eraser,
     Stamp,
+    // Appended: toolbar state stores the earlier tools by ordinal.
+    Annotation,
 }
 
 impl ToolId {
-    pub const ALL: [ToolId; 26] = [
+    pub const ALL: [ToolId; 27] = [
         ToolId::Move,
         ToolId::Scale,
         ToolId::Hand,
@@ -101,6 +103,7 @@ impl ToolId {
         ToolId::Highlighter,
         ToolId::Eraser,
         ToolId::Stamp,
+        ToolId::Annotation,
     ];
     pub fn id(self) -> &'static str {
         match self {
@@ -130,6 +133,7 @@ impl ToolId {
             ToolId::Highlighter => "highlighter",
             ToolId::Eraser => "eraser",
             ToolId::Stamp => "stamp",
+            ToolId::Annotation => "annotation",
         }
     }
     pub fn from_id(s: &str) -> Option<ToolId> {
@@ -163,6 +167,7 @@ impl ToolId {
             ToolId::Highlighter => "Highlighter",
             ToolId::Eraser => "Eraser",
             ToolId::Stamp => "Stamp",
+            ToolId::Annotation => "Annotation",
         }
     }
 
@@ -452,6 +457,8 @@ pub(crate) enum Gesture {
     Rotate {
         center: Point,
         start_angle: f64,
+        /// Shared Design-panel rotation at admission; mixed rotations use the page-aligned box.
+        base: f64,
         ids: Vec<NodeId>,
     },
     Draw {
@@ -610,5 +617,18 @@ pub struct ToolState {
 impl ToolState {
     pub fn busy(&self) -> bool {
         !matches!(self.gesture, Gesture::None)
+    }
+
+    /// Whether the gesture under way pans the canvas when the pointer holds near the viewport's
+    /// edge (#2015): moving layers once past the drag slop, the selection box once it has grown
+    /// past it, and drawing a shape once it exists. Resizing, rotating, panning, text and vector
+    /// edits don't. `zoom`: screen px per page unit.
+    pub fn autopans(&self, zoom: f64) -> bool {
+        match &self.gesture {
+            Gesture::Move { moved, .. } => *moved,
+            Gesture::Marquee { .. } => self.overlay.marquee.is_some_and(|[x0, y0, x1, y1]| ((x1 - x0).hypot(y1 - y0) * zoom) >= DRAG_SLOP_PX),
+            Gesture::Draw { id, .. } => id.is_some(),
+            _ => false,
+        }
     }
 }

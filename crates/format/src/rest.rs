@@ -424,6 +424,7 @@ pub(crate) struct Ctx<'a> {
     /// REST node id → imported node.
     ids: BTreeMap<String, NodeId>,
     fig_sources: Option<fig_sources::Sources<'a>>,
+    scale_provenance_bytes: usize,
     component_meta: BTreeMap<&'a str, &'a Value>,
     set_meta: BTreeMap<&'a str, &'a Value>,
     style_meta: BTreeMap<&'a str, &'a Value>,
@@ -465,6 +466,7 @@ impl<'a> Ctx<'a> {
             count: 0,
             ids: BTreeMap::new(),
             fig_sources: None,
+            scale_provenance_bytes: 0,
             component_meta: BTreeMap::new(),
             set_meta: BTreeMap::new(),
             style_meta: BTreeMap::new(),
@@ -546,6 +548,20 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    fn preserve_scale_provenance(&mut self, id: NodeId, json: &Value, rest_id: &str, primary: bool) {
+        if !primary || self.fig_sources.is_none() {
+            return;
+        }
+        let Some(source) = json.get(FIG_SOURCE_FIELD) else { return };
+        let Some(payload) = source.get(crate::fig_scale_provenance::PRIVATE_FIELD).and_then(Value::as_str) else { return };
+        let kept = source.get("origin").and_then(Value::as_str).zip(self.doc.node_mut(id)).is_some_and(|(origin, node)| {
+            crate::fig_scale_provenance::preserve(node, payload, origin, rest_id, &mut self.scale_provenance_bytes).is_ok()
+        });
+        if !kept {
+            self.warn("invalid or over-budget optional .fig scale provenance was omitted");
+        }
+    }
+
     /// One layer of [`Self::build`]: its node, then its children pushed on `work` (and, when its
     /// bounds follow them, the fit after them).
     fn build_layer(&mut self, layer: Layer<'a>, work: &mut Vec<Build<'a>>) {
@@ -589,6 +605,7 @@ impl<'a> Ctx<'a> {
             if let Some(sources) = &mut self.fig_sources {
                 sources.record(id, j, primary);
             }
+            self.preserve_scale_provenance(id, j, rid, primary);
         }
         match ty {
             "INSTANCE" => self.instances.push((id, j)),

@@ -5,6 +5,7 @@
 
 pub mod clip_popover;
 pub mod easing;
+pub mod export;
 pub mod inspector;
 pub mod timeline;
 
@@ -157,6 +158,9 @@ pub struct Preview {
 /// Timeline state kept between frames.
 #[derive(Default)]
 pub struct MotionUi {
+    pub export: Option<export::ExportUi>,
+    /// Keep a closing exporter's input batch out of the canvas in this viewport only.
+    pub export_input_frame: Option<(egui::ViewportId, u64)>,
     /// Document and page that own transient timeline selections, fields and gestures.
     pub owner: Option<(u64, NodeId)>,
     /// Height of the docked timeline, dragged by its top edge (`timeline::HEIGHT` until then).

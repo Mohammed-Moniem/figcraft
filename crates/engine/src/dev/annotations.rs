@@ -242,8 +242,65 @@ fn existing(cmd: &str, s: &crate::Session, id: NodeId, p: &Value) -> crate::Resu
     Ok(index)
 }
 
+/// Annotation authoring changes layer metadata, so version previews and view-only live files
+/// keep their existing read-only authority even though activating a tool is not an edit.
+pub fn check_authoring(s: &crate::Session) -> crate::Result<()> {
+    if let Some(why) = s.active_read_only() {
+        return Err(crate::EngineError::Disabled("tool.annotation".into(), why.into()));
+    }
+    if s.doc()?.kind == figcraft_doc::FileKind::Board {
+        return Err(crate::EngineError::Disabled("tool.annotation".into(), "Annotations are authored in Design documents".into()));
+    }
+    if s.ds()?.preview.is_some() {
+        return Err(crate::EngineError::Disabled("tool.annotation".into(), "A version preview is read-only".into()));
+    }
+    Ok(())
+}
+
+/// A draft belongs to one editable layer on the active page. No document edit is made here.
+pub fn can_start(s: &crate::Session, id: NodeId) -> bool {
+    check_authoring(s).is_ok()
+        && s.ds().is_ok_and(|d| {
+            d.doc.page_of(id) == Some(d.page)
+                && !d.doc.is_remote(id)
+                && d.doc.node(id).is_some_and(|n| !n.is_page() && n.annotations.len() < MAX_PER_LAYER)
+        })
+}
+
+fn begin(s: &mut crate::Session, id: NodeId) -> crate::Result<Value> {
+    check_authoring(s)?;
+    if !can_start(s, id) {
+        return Err(bad("annotation.new", "choose an editable layer on the current page with room for an annotation"));
+    }
+    s.set_tool(crate::ToolId::Annotation);
+    s.set_selection(vec![id]);
+    s.request_ui("annotation.new", json!({"id": id}));
+    Ok(json!({"id": id}))
+}
+
+/// The ordinary canvas hit walker preserves focus, clipping, paint order and lock policy.
+pub(crate) fn begin_at(s: &mut crate::Session, ev: &crate::tools::PointerEvent) -> crate::Result<()> {
+    check_authoring(s)?;
+    let ds = s.ds()?;
+    let target = s.hit(&ds.doc, ds.page, ev.p(), 2.0 / ev.zoom.max(1e-6));
+    if let Some(id) = target.filter(|id| can_start(s, *id)) {
+        begin(s, id)?;
+    }
+    Ok(())
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
+        spec!(
+            "annotation.new",
+            "Compose annotation",
+            "{id? (default the first selected layer)}  open an owned canvas draft; no document edit",
+            false,
+            |s, p| {
+                let id = layer("annotation.new", s, p)?;
+                begin(s, id)
+            }
+        ),
         spec!(
             "annotation.add",
             "Add annotation",

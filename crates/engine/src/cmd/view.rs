@@ -325,6 +325,9 @@ pub(crate) fn tool(s: &mut Session, t: ToolId) -> Result<Value> {
     if let Some(why) = s.active_read_only().filter(|why| !crate::live::tool_left(why, t)) {
         return Err(EngineError::Disabled(format!("tool.{}", t.id()), why.into()));
     }
+    if t == ToolId::Annotation {
+        crate::annotations::check_authoring(s)?;
+    }
     s.set_tool(t);
     Ok(json!({"tool": t.id()}))
 }
@@ -784,6 +787,10 @@ pub fn specs() -> Vec<CommandSpec> {
             tool(s, ToolId::TextOnPath)
         }),
         spec!("tool.comment", "Comment", "{}", false, |s, _| tool(s, ToolId::Comment)),
+        spec!("tool.annotation", "Annotation", "{}  select a layer on the canvas to compose an annotation", false, |s, _| tool(
+            s,
+            ToolId::Annotation
+        )),
         spec!("tool.shapeBuilder", "Shape builder", "{}", false, |s, _| tool(s, ToolId::ShapeBuilder)),
         // `apply: false` is for the UI colour picker: the eyedropper only samples (into
         // `ToolState::picked`) and the picker writes the colour to the paint it edits.

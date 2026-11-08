@@ -97,6 +97,11 @@ Each may be given more than once, as `--flag DIR` or `--flag=DIR`:
   compared by whole names: `/work2/x` is not inside `/work`. On Windows the case comes from the disk (`C:\WORK\x` is
   inside `C:\work`), `\\?\` and UNC (`\\server\share\…`) paths are resolved like drive-letter ones,
   and new names that are devices (`CON`, `NUL`, `COM1`…) or streams (`a.png:x`) are refused.
+- A request with no eligible root for its read or write access is refused before its target is resolved.
+  On Windows, recognized UNC spellings are also refused before target resolution when all eligible
+  roots are local. Explicit UNC roots keep the final resolved-path check described above. This
+  preflight does not identify mapped drives, local links to network locations or every device alias;
+  nor does it remove the check-then-open race below.
 - **The network:** a confined call reaches no FigCraft or plugin server, so it can't send a
   document anywhere through one. Hosting, joining, publishing and sharing a file (`collab.host`,
   `collab.join`, `collab.publish`, `collab.share` …), team libraries on a server (`library.check`
@@ -279,7 +284,9 @@ Or in a project's `.mcp.json`:
   slightly); `false` keeps the values and reinterprets them. Images are converted from their own colour
   profile into the file's space: an embedded ICC profile (PNG, JPG, WebP, TIFF; RGB or grey), a PNG's
   `sRGB` / `gAMA` / `cHRM` chunks, else sRGB (also for CMYK or damaged profiles); `image.place` reports
-  the profile's name as `imageProfile` (`null`: none usable, taken as sRGB). PNG exports are tagged (`sRGB` chunk, or a Display P3 ICC profile plus
+  the profile's name as `imageProfile` (`null`: none usable, taken as sRGB). Raster exports can select
+  `colorProfile: sameAsFile|srgb|displayP3` without changing the file: channels are converted before
+  tagging (see Raster export quality and colour profiles below). PNG exports are tagged (`sRGB` chunk, or a Display P3 ICC profile plus
   `cICP`), JPG embeds the ICC profile for sRGB and for Display P3, WebP embeds it for Display P3 only (sRGB WebP is untagged), and SVG and PDF export Display P3 files
   converted to sRGB (out-of-gamut colours clip). XML and RGB PDF output also use sRGB; PDF with
   `cmyk` uses DeviceCMYK without an output intent. The app's canvas shows sRGB (P3 colours outside sRGB clip on screen):
@@ -400,7 +407,7 @@ a later step can use `{"$step": 0, "field": "ids/0"}` to target the first match.
 | `inspect_document {depth, allPages, fields?, outline?}` | The document as JSON (its `id`, layer tree, styles, selection, history); `fields` selects layer properties, `outline: true` gives a compact tree (below). The tools that act on a document also take `document` (see Naming the document below). |
 | `get_node {id, depth, fields?, outline?}` | One layer as JSON; takes the same `fields` and `outline` options; `pluginData` (`{key: value}`, values as strings) when the layer or page has layer data written with `set_properties {props: {pluginData}}`. |
 | `select {ids}` | Replace the selection (`[]` deselects). |
-| `export {ids, format, scale \| size, path?, bleed?, cropMarks?, bleedMarks?, cmyk?, contentsOnly?, includeBoundingBox?, svgOutlineText?, svgIdAttribute?, svgSimplifyStroke?, vdCompat?}` | png, jpg, svg, webp, pdf, xml (an Android Vector Drawable: `svgIdAttribute` writes `android:name`, `vdCompat` is `bestEffort` (default: approximated with a warning), `exact` (left out with a warning) or `ignore` (no warnings: overlapping layer opacity dropped, even-odd fills kept as `fillType="evenOdd"`, diamond gradients left out), and the result lists `warnings` for what was changed or left out), or `fig`: the whole file as `.fig`, experimental (see Exporting `.fig` files below); `size` is `2x`, `512w` or `512h`. The image covers what the layers paint (shadows towards their offset, strokes, unclipped children, a mask group's mask; hidden layers take no room; a slice is its area with everything under it, or only the frame or group it sits in while `contentsOnly` is on); `contentsOnly: false` also draws every other layer showing in that area, `includeBoundingBox` exports the layers' own boxes; SVG: `svgOutlineText: false` keeps `<text>`, `svgIdAttribute` writes unique ids from layer names, `svgSimplifyStroke: false` writes every stroke as an outline. The same options go in export settings (`export.add` / `export.update`). PDF: frames one page each (sized in points), anything else together on one page; print options: `bleed` (points or a length like `"3mm"`, `"0.125in"`), crop and bleed marks, CMYK colour (see Exports below), also taken by `file.export`, `file.exportLayers`, `file.exportFramesPdf` and stored per export setting by `export.add` / `export.update`; `run_command` `file.exportFramesPdf {page?, path?}` writes every top-level frame of a page. Without `path`, images come back as MCP image content, SVG as text, XML as text followed by `{format, bytes, warnings}`. Layers' own export settings: `run_command` with `export.add` / `export.update {index, size?, suffix?, format?}` / `export.remove` and `file.exportLayers {ids?, dir?, assets?}` (every layer once per setting, named `<layer><suffix>.<format>`, a slash in a layer name making a folder; `assets: true` exports the Inspect tab's assets instead: icons as SVG, images as PNG). |
+| `export {ids, format, scale \| size, path?, bleed?, cropMarks?, bleedMarks?, cmyk?, contentsOnly?, includeBoundingBox?, svgOutlineText?, svgIdAttribute?, svgSimplifyStroke?, vdCompat?, quality?, colorProfile?}` | png, jpg, svg, webp, pdf, xml (an Android Vector Drawable: `svgIdAttribute` writes `android:name`, `vdCompat` is `bestEffort` (default: approximated with a warning), `exact` (left out with a warning) or `ignore` (no warnings: overlapping layer opacity dropped, even-odd fills kept as `fillType="evenOdd"`, diamond gradients left out), and the result lists `warnings` for what was changed or left out), or `fig`: the whole file as `.fig`, experimental (see Exporting `.fig` files below); `size` is `2x`, `512w` or `512h`. The image covers what the layers paint (shadows towards their offset, strokes, unclipped children, a mask group's mask; hidden layers take no room; a slice is its area with everything under it, or only the frame or group it sits in while `contentsOnly` is on); `contentsOnly: false` also draws every other layer showing in that area, `includeBoundingBox` exports the layers' own boxes; SVG: `svgOutlineText: false` keeps `<text>`, `svgIdAttribute` writes unique ids from layer names, `svgSimplifyStroke: false` writes every stroke as an outline. The same options go in export settings (`export.add` / `export.update`). PDF: frames one page each (sized in points), anything else together on one page; print options: `bleed` (points or a length like `"3mm"`, `"0.125in"`), crop and bleed marks, CMYK colour (see Exports below), also taken by `file.export`, `file.exportLayers`, `file.exportFramesPdf` and stored per export setting by `export.add` / `export.update`; `run_command` `file.exportFramesPdf {page?, path?}` writes every top-level frame of a page. Without `path`, images come back as MCP image content, SVG as text, XML as text followed by `{format, bytes, warnings}`. Layers' own export settings: `run_command` with `export.add` / `export.update {index, size?, suffix?, format?, quality?, colorProfile?}` / `export.remove` and `file.exportLayers {ids?, dir?, assets?}` (every layer once per setting, named `<layer><suffix>.<format>`, a slash in a layer name making a folder; `assets: true` exports the Inspect tab's assets instead: icons as SVG, images as PNG). |
 | `screenshot {ids?, scale?, maxSize?, window?}` | PNG of the page (with background) or of layers, scaled to fit `maxSize` (default 1600). `window: true` captures the app window in front when attached, a window id (see Windows below) that window. |
 | `open_file {path, variables?, reload?}` / `save_file {path?}` | Open `.figcraft`, `.json` (FigCraft JSON or REST API file JSON with its variables, see below), `.fig` or FigJam `.jam` (best effort, see below), `.sketch` (Sketch 48 and newer, best effort), `.svg` (see Importing SVG below) or an image; save as `.figcraft`. `open_file` returns `opened` (for a file opened anew, a `summary` of `name`, `pages`, `layers` and `images`, and `warnings` or `repairs`; a file that was already open gives its `index`, with `stale: true` when the file changed on disk since that tab read or saved it; `reload: true` reads it again into the tab, refused while the tab has unsaved changes) and the document's `document` outline. |
 | `undo` / `redo` | Step through history. |
@@ -1182,6 +1189,40 @@ vector networks (their outlines when the network is missing or damaged); sticky 
 text, connectors, tables and similar layers come in as the closest frames, text layers and
 vectors; set-variable, set-variable-mode and conditional actions come across; video fills are
 skipped. The result's `opened.warnings` list what was approximated or skipped.
+
+### Raster export quality and colour profiles
+
+The `export` tool and `run_command` with `file.export` take `quality` and `colorProfile`:
+
+- `quality` is a whole number from 1 to 100 for JPEG, default 90. Other output formats accept
+  this option without using it. Command inputs outside that range or with invalid types are refused
+  before writing the output.
+- `colorProfile` is `sameAsFile` (default), `srgb` or `displayP3`. PNG, JPG and WebP convert actual
+  rendered channels to the selected profile, then write matching colour metadata. The document
+  profile and authored colours stay unchanged. Display P3 colours outside sRGB clip on conversion
+  to sRGB. PNG has sRGB metadata or Display P3 ICC and `cICP`; JPEG embeds ICC for either profile;
+  WebP embeds Display P3 ICC while sRGB WebP is untagged. JPEG transparency is composited over
+  white in the source profile before conversion.
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"export","arguments":{"ids":[2],"format":"jpg","quality":80,"colorProfile":"srgb"}}}
+```
+
+SVG, XML and RGB PDF retain sRGB output; CMYK PDF retains DeviceCMYK without an output intent.
+The raster profile option does not override these vector policies.
+
+Layer export rows store the same options: `export.add {ids, setting: {format: "jpg", quality: 80,
+colorProfile: "displayP3"}}`, then `export.update {ids, index: 0, quality: 95}`. `get_node` /
+`node.get` returns them in `exports`; `set_properties` / `node.set` can replace that list, and
+`file.exportLayers` uses each saved row for single-file, folder or ZIP output. The Export panel
+edits these settings through the same commands. Options remain when a row changes format; null
+update fields leave them unchanged.
+
+Native `.figcraft` files preserve the settings and Undo restores edits. Older rows default to
+quality 90 and `sameAsFile`; default fields can be omitted in JSON. Serialized settings also
+accept the `color_profile` alias and write the canonical `colorProfile` name. The experimental
+`.fig` exporter warns when nondefault JPEG quality or a per-setting profile is left out; this is
+not an option-preserving roundtrip through that format.
 
 ### Exporting `.fig` files (experimental)
 

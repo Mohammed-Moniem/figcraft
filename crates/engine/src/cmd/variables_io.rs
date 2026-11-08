@@ -16,20 +16,23 @@ use crate::{EngineError, Result, Session, bad, spec};
 mod dtcg;
 #[cfg(test)]
 mod dtcg_tests;
+mod figma;
+#[cfg(test)]
+mod figma_tests;
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         spec!(
             "variable.export",
             "Export variables",
-            "{collections? [ids or names; default every local collection of this file], format? (json|css|tailwind|dart|dtcg; default json), mode? (DTCG visible mode id/name; default first), path? (write it there)} → {text}, or {path} when written. JSON is the native variables response read by variable.import. CSS writes custom properties and Tailwind writes v4 @theme names; numbers use px except unitless roles. Dart writes Flutter constants. These formats flatten color calculations in each mode with other collections in their default modes. DTCG writes supported color/dimension/number/fontFamily/fontWeight tokens and keeps native modes, general strings, booleans and calculations in the documented ai.storyteller.figcraft extension.",
+            "{collections? [ids or names; default every local collection of this file], format? (json|css|tailwind|dart|dtcg|figma; default json), mode? (token mode id/name; default first), path? (write it there)} → {text}, or {path} when written. JSON is native variables JSON. DTCG preserves native modes and native-only values in the documented FigCraft extension. Figma exports one selected collection/mode using its documented string, numeric-boolean, duration and aliasData dialect, with warnings for external references and colour conversion. CSS, Tailwind and Dart flatten calculations in each mode.",
             false,
             export
         ),
         spec!(
             "variable.import",
             "Import variables",
-            "{variables (DTCG tokens or the native variables JSON; an object, JSON text or a path to a regular file of at most 256 MiB), remSize? (DTCG rem-to-px conversion; default 16)} Collections merge by name; values by mode name. New modes and variables are added; a variable of another type is skipped. DTCG refuses a conflicting referenced type before mutation. → {collections (added), variables (added), updated, warnings}",
+            "{variables (tokens or native variables JSON; object, JSON text or path up to256MiB), format? (auto|native|dtcg|figma; default auto), collection?, mode? (Figma destination collection id/name and mode name; defaults Tokens/Default), remSize? (DTCG rem-to-px conversion; default16)} Collections and values merge by name. Auto detects Figma extensions/string tokens; explicit dtcg keeps strict standard semantics. Figma mode imports preserve existing metadata and reject invalid aliases atomically. → {collections (added), variables (added), updated, warnings}",
             true,
             import
         ),
@@ -47,22 +50,33 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
             .collect::<Result<_>>()?,
         Some(_) => return Err(bad(cmd, "collections: [collection ids or names]")),
     };
-    let text = match string(p, "format").as_deref().unwrap_or("json") {
+    let format = string(p, "format").unwrap_or_else(|| "json".into());
+    let mut warnings = Vec::new();
+    let text = match format.as_str() {
         "json" => serde_json::to_string_pretty(&figcraft_format::rest::export_variables(&doc.variables, &colls))
             .map_err(|e| EngineError::Other(e.to_string()))?,
         "css" => css(doc, &colls, false),
         "tailwind" => css(doc, &colls, true),
         "dart" => dart(&doc.variables, &colls),
         "dtcg" => dtcg::export(doc, &colls, p)?,
-        _ => return Err(bad(cmd, "format: json|css|tailwind|dart|dtcg")),
+        "figma" => {
+            let output = figma::export(doc, &colls, p)?;
+            warnings = output.1;
+            output.0
+        }
+        _ => return Err(bad(cmd, "format: json|css|tailwind|dart|dtcg|figma")),
     };
-    match string(p, "path") {
+    let mut result = match string(p, "path") {
         Some(path) => {
             super::file::write(&path, text.as_bytes())?;
-            Ok(json!({"path": path}))
+            json!({"path": path})
         }
-        None => Ok(json!({"text": text})),
+        None => json!({"text": text}),
+    };
+    if format == "figma" {
+        result["warnings"] = json!(warnings);
     }
+    Ok(result)
 }
 
 /// `text` as a CSS comment or quoted string body.
@@ -103,6 +117,12 @@ fn css(doc: &Document, colls: &[&Collection], tailwind: bool) -> String {
                 let flat = v.values.get(&m.id).and_then(|x| flattener.value(v, &m.id, x));
                 let value = match flat.as_ref() {
                     Some(VariableValue::Color(col)) => col.to_css(),
+                    // Native usage and scopes keep their units; Duration supplies only an unknown role's fallback.
+                    Some(VariableValue::Number(x))
+                        if v.design_token_type == Some(figcraft_doc::DesignTokenType::Duration) && roles.known_role(v).is_none() =>
+                    {
+                        format!("{}s", trim_num(*x))
+                    }
                     Some(VariableValue::Number(x)) if roles.role(v) == crate::token_roles::NumberRole::Unitless => trim_num(*x),
                     Some(VariableValue::Number(x)) => format!("{}px", trim_num(*x)),
                     Some(VariableValue::String(t)) => format!("\"{}\"", css_safe(t)),
@@ -258,23 +278,44 @@ fn dart(vars: &Variables, colls: &[&Collection]) -> String {
     out
 }
 
-fn import(s: &mut Session, p: &Value) -> Result<Value> {
+/// Validate the input dialect before creating collections or choosing a target mode.
+fn import_format(p: &Value, v: &Value) -> Result<(bool, bool)> {
     let cmd = "variable.import";
-    let v =
-        super::file::variables_param(cmd, p)?.ok_or_else(|| bad(cmd, "`variables` (the variables JSON: an object, JSON text or a path) required"))?;
-    let native_shape = figcraft_format::rest::is_variables_json(&v);
-    let tokens = dtcg::has_tokens(&v);
+    let native_shape = figcraft_format::rest::is_variables_json(v);
+    let tokens = dtcg::has_tokens(v);
+    let format = match p.get("format") {
+        None | Some(Value::Null) => "auto",
+        Some(Value::String(s)) if matches!(s.as_str(), "auto" | "native" | "dtcg" | "figma") => s.as_str(),
+        _ => return Err(bad(cmd, "format: auto|native|dtcg|figma")),
+    };
+    let is_figma = format == "figma" || format == "auto" && figma::detected(v);
+    if !is_figma && (p.get("collection").is_some() || p.get("mode").is_some()) {
+        return Err(bad(cmd, "collection/mode targets require Figma mode JSON"));
+    }
     if !native_shape && !tokens {
         return Err(bad(
             cmd,
             "variables: expected the local variables JSON (`meta.variableCollections` and `meta.variables`) or DTCG tokens with $value/$ref",
         ));
     }
-    let is_dtcg = !native_shape || tokens;
-    let (src, mut warnings) = if !is_dtcg {
-        figcraft_format::rest::read_variables(&v).ok_or_else(|| bad(cmd, "not a variables JSON"))?
+    let is_dtcg = is_figma || format == "dtcg" || format != "native" && (!native_shape || tokens);
+    Ok((is_figma, is_dtcg))
+}
+
+fn import(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "variable.import";
+    let v =
+        super::file::variables_param(cmd, p)?.ok_or_else(|| bad(cmd, "`variables` (the variables JSON: an object, JSON text or a path) required"))?;
+    let (is_figma, is_dtcg) = import_format(p, &v)?;
+    let (src, mut warnings, external) = if is_figma {
+        let imported = figma::import(&v, p, s.doc()?)?;
+        (imported.variables, imported.warnings, imported.external)
+    } else if !is_dtcg {
+        let (vars, warnings) = figcraft_format::rest::read_variables(&v).ok_or_else(|| bad(cmd, "not a variables JSON"))?;
+        (vars, warnings, BTreeMap::new())
     } else {
-        dtcg::import(&v, p, s.doc()?.color_profile)?
+        let (vars, warnings) = dtcg::import(&v, p, s.doc()?.color_profile)?;
+        (vars, warnings, BTreeMap::new())
     };
     if is_dtcg {
         let doc = s.doc()?;
@@ -365,6 +406,7 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
             }
         }
     }
+    ids.extend(external);
     for v in &src.variables {
         let (Some(local), Some((cid, modes))) = (ids.get(&v.id), colls.get(&v.collection)) else { continue };
         for (m, val) in &v.values {
@@ -376,6 +418,9 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
                     match target.and_then(|t| super::variables::alias_target_by_id(&doc.variables, var, t)) {
                         Ok(t) => VariableValue::Alias(t),
                         Err(e) => {
+                            if is_figma {
+                                return Err(bad(cmd, format!("Figma {}: {e}", v.name)));
+                            }
                             warnings.push(format!("`{}`: {e}", v.name));
                             continue;
                         }
@@ -398,8 +443,10 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
         let all: Vec<ModeId> =
             doc.variables.collections.iter().find(|x| x.id == *cid).map(|x| x.modes.iter().map(|m| m.id.clone()).collect()).unwrap_or_default();
         if let Some(slot) = doc.variables.variables.iter_mut().find(|x| x.id == *local) {
-            slot.design_token_type = v.design_token_type;
-            if is_dtcg {
+            if !is_figma {
+                slot.design_token_type = v.design_token_type;
+            }
+            if is_dtcg && !is_figma {
                 slot.description = v.description.clone();
                 slot.scopes = v.scopes.clone();
                 slot.code_syntax = v.code_syntax.clone();

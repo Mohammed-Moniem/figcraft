@@ -214,3 +214,218 @@ fn a_paste_that_left_something_out_is_reported_like_an_import() {
     // A paste that left nothing out opens no report.
     assert!(Report::from_result("edit.pasteDesignLayers", &json!({}), &json!({"ids": [], "warnings": []})).is_none());
 }
+
+/// Original synthetic content, encoded through the same ZIP/kiwi path as a desktop `.fig`.
+fn reveal_import_fixture() -> Vec<u8> {
+    use figcraft_doc::proto::{Action, Easing, Flow, Interaction, Transition, Trigger};
+    use figcraft_doc::{Document, NodeKind};
+    let mut doc = Document::new("Import reveal fixture");
+    let empty = doc.pages[0];
+    doc.node_mut(empty).unwrap().name = "Empty cover".into();
+    let divider = doc.add_page("- Section");
+    assert!(doc.is_divider(divider));
+    let design = doc.add_page("Design");
+    let next = doc.add_page("Next");
+    let frame = |doc: &mut Document, page, name| doc.create(page, NodeKind::Frame, name, 10000.0, 20000.0, 400.0, 300.0).unwrap();
+    let start = frame(&mut doc, design, "Start");
+    let dest = frame(&mut doc, next, "Destination");
+    doc.node_mut(start).unwrap().interactions.push(Interaction {
+        trigger: Trigger::OnClick,
+        actions: vec![Action::Navigate { dest, preserve_scroll: false }],
+        transition: Transition::Instant,
+        duration_ms: 0,
+        easing: Easing::default(),
+        delay_ms: 0,
+    });
+    if let NodeKind::Page { flows, .. } = &mut doc.node_mut(design).unwrap().kind {
+        flows.push(Flow { name: "Synthetic flow".into(), start, description: String::new() });
+    }
+    figcraft_format::fig::export(&doc, None).unwrap().0
+}
+
+fn assert_import_revealed(app: &FigApp, original: figcraft_doc::NodeId, original_layer: figcraft_doc::NodeId) {
+    use figcraft_doc::NodeKind;
+    use figcraft_doc::proto::Action;
+    let doc = app.session.doc().unwrap();
+    let active = app.session.page().unwrap();
+    assert_ne!(active, original, "the appended design must be visible immediately");
+    assert_eq!(doc.node(active).unwrap().name, "Design");
+    assert!(doc.node(original).unwrap().children.contains(&original_layer));
+    assert_eq!(doc.pages.len(), 5);
+    let start = doc.nodes().find(|n| n.name == "Start").unwrap();
+    let dest = doc.nodes().find(|n| n.name == "Destination").unwrap();
+    assert_eq!(start.interactions[0].actions, [Action::Navigate { dest: dest.id, preserve_scroll: false }]);
+    let NodeKind::Page { flows, .. } = &doc.node(active).unwrap().kind else { panic!() };
+    assert_eq!(flows[0].start, start.id);
+    let ds = app.session.ds().unwrap();
+    assert!(ds.selection.is_empty());
+    assert!((ds.view.cx - 10200.0).abs() < 1.0 && (ds.view.cy - 20150.0).abs() < 1.0, "the imported design is fitted");
+    assert!(ds.view.zoom > 0.0 && ds.view.zoom < 1.0, "fitting reduces the deliberately oversized zoom");
+    let bounds = doc.page_content_bounds(active).unwrap();
+    let screen_x = |x| (x - ds.view.cx) * ds.view.zoom + ds.view.vw / 2.0;
+    let screen_y = |y| (y - ds.view.cy) * ds.view.zoom + ds.view.vh / 2.0;
+    assert!(screen_x(bounds.x0) >= 0.0 && screen_x(bounds.x1) <= ds.view.vw, "all imported content fits horizontally");
+    assert!(screen_y(bounds.y0) >= 0.0 && screen_y(bounds.y1) <= ds.view.vh, "all imported content fits vertically");
+    assert!(app.ui.import_report.as_ref().unwrap().appended);
+    assert_eq!(app.ui.import_report.as_ref().unwrap().uid, ds.uid);
+    if !cfg!(target_arch = "wasm32") {
+        assert!(app.ui.font_checks.contains(&ds.uid), "font checking remains queued behind the import report");
+        assert!(app.ui.missing_fonts.is_none());
+    }
+}
+
+fn reveal_app() -> (FigApp, figcraft_doc::NodeId, figcraft_doc::NodeId) {
+    let mut app = FigApp::new(Session::new(), Box::new(NoServices));
+    let original = app.session.page().unwrap();
+    let original_layer = app.run("shape.rectangle", json!({"x": 0, "y": 0, "width": 20, "height": 30})).unwrap()["id"].as_u64().unwrap();
+    app.run("view.set", json!({"zoom": 8, "cx": 0, "cy": 0, "vw": 320, "vh": 240})).unwrap();
+    (app, original, figcraft_doc::NodeId(original_layer))
+}
+
+#[test]
+fn user_fig_import_from_contents_reveals_first_populated_page_and_preserves_flow_targets() {
+    use base64::Engine as _;
+    let (mut app, original, layer) = reveal_app();
+    let data = base64::engine::general_purpose::STANDARD.encode(reveal_import_fixture());
+    assert!(app.run_user("file.import", json!({"name": "Synthetic.fig", "data": data})).is_some());
+    assert_import_revealed(&app, original, layer);
+}
+
+#[test]
+fn user_fig_import_from_path_reveals_first_populated_page() {
+    let path = std::env::temp_dir().join(format!("figcraft-import-reveal-{}.fig", std::process::id()));
+    std::fs::write(&path, reveal_import_fixture()).unwrap();
+    let (mut app, original, layer) = reveal_app();
+    let result = app.run_user("file.import", json!({"path": path.to_string_lossy()}));
+    std::fs::remove_file(path).unwrap();
+    assert!(result.is_some());
+    assert_import_revealed(&app, original, layer);
+}
+
+#[test]
+fn programmatic_import_preserves_current_page_and_failed_user_import_does_not_switch() {
+    use base64::Engine as _;
+    let (mut app, original, layer) = reveal_app();
+    let data = base64::engine::general_purpose::STANDARD.encode(reveal_import_fixture());
+    assert!(app.run("file.import", json!({"name": "Synthetic.fig", "data": data})).is_some());
+    assert_eq!(app.session.page().unwrap(), original);
+    assert_eq!(app.session.ds().unwrap().selection, [layer]);
+    assert!(app.ui.import_report.is_none());
+    let pages = app.session.doc().unwrap().pages.clone();
+    assert!(app.run_user("file.import", json!({"name": "Broken.fig", "data": "broken"})).is_none());
+    assert_eq!(app.session.page().unwrap(), original);
+    assert_eq!(app.session.doc().unwrap().pages, pages);
+}
+
+#[test]
+fn user_svg_placement_stays_on_the_current_page() {
+    use base64::Engine as _;
+    let (mut app, original, _) = reveal_app();
+    let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="30"><rect width="20" height="30" fill="#ff0000"/></svg>"##;
+    let data = base64::engine::general_purpose::STANDARD.encode(svg);
+    let result = app.run_user("file.import", json!({"name": "Synthetic.svg", "data": data})).unwrap();
+    assert!(result.get("pages").is_none());
+    assert_eq!(app.session.page().unwrap(), original);
+    assert_eq!(app.session.doc().unwrap().pages.len(), 1);
+}
+
+#[test]
+fn user_empty_document_import_reveals_a_valid_empty_page() {
+    use base64::Engine as _;
+    let doc = figcraft_doc::Document::new("Empty imported document");
+    let bytes = figcraft_format::fig::export(&doc, None).unwrap().0;
+    let (mut app, original, _) = reveal_app();
+    let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+    let result = app.run_user("file.import", json!({"name": "Empty.fig", "data": data})).unwrap();
+    let appended = figcraft_engine::params::id_of(&result["pages"][0]).unwrap();
+    assert_ne!(appended, original);
+    assert_eq!(app.session.page().unwrap(), appended);
+}
+
+enum RevealPick {
+    Path(std::path::PathBuf),
+    Contents(Vec<u8>),
+}
+
+impl crate::Services for RevealPick {
+    fn pick_open(&mut self, _: &str, _: &[&str]) -> crate::DialogFuture {
+        let Self::Path(path) = self else { panic!("contents providers must not be asked for a filesystem path") };
+        Box::pin(std::future::ready(Some(path.clone())))
+    }
+
+    fn pick_open_contents(&mut self, _: &str, _: &[&str]) -> Option<crate::ContentsFuture> {
+        let Self::Contents(bytes) = self else { return None };
+        Some(Box::pin(std::future::ready(Some(Ok(("Synthetic.fig".into(), bytes.clone()))))))
+    }
+}
+
+fn assert_dialog_reveal(provider: RevealPick) {
+    let (mut app, original, layer) = reveal_app();
+    app.services = Box::new(provider);
+    let target = app.session.ds().unwrap().uid;
+    app.import_dialog(false);
+    assert_eq!(app.session.doc().unwrap().pages.len(), 1, "no import before the picker is polled");
+    assert!(app.ui.import_report.is_none());
+    // The asynchronous continuation must import into the dialog's original document even after
+    // the user switches tabs, then restore the tab they chose while waiting.
+    app.run("file.new", json!({"name": "Other document"})).unwrap();
+    let other = app.session.ds().unwrap().uid;
+    app.poll_dialog(&egui::Context::default());
+    assert!(app.pending_dialog.is_none());
+    assert_eq!(app.session.ds().unwrap().uid, other);
+    assert_eq!(app.session.doc().unwrap().pages.len(), 1, "the other document is untouched");
+    assert_eq!(app.session.doc().unwrap().nodes().filter(|node| node.name == "Start").count(), 0);
+    app.session.active = app.session.docs.iter().position(|ds| ds.uid == target).unwrap();
+    assert_import_revealed(&app, original, layer);
+}
+
+#[test]
+fn async_import_dialog_reveals_native_path_content_in_its_original_document() {
+    let path = std::env::temp_dir().join(format!("figcraft-dialog-reveal-{}.fig", std::process::id()));
+    std::fs::write(&path, reveal_import_fixture()).unwrap();
+    assert_dialog_reveal(RevealPick::Path(path.clone()));
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn async_import_dialog_reveals_provider_contents_in_its_original_document() {
+    assert_dialog_reveal(RevealPick::Contents(reveal_import_fixture()));
+}
+
+#[test]
+fn user_fig_import_is_one_undo_step_and_redo_preserves_cross_page_flow_targets() {
+    use base64::Engine as _;
+    use figcraft_doc::NodeKind;
+    use figcraft_doc::proto::Action;
+    let (mut app, original, layer) = reveal_app();
+    let before = app.session.ds().unwrap().doc.clone();
+    let undo_count = app.session.ds().unwrap().history.undo.len();
+    let data = base64::engine::general_purpose::STANDARD.encode(reveal_import_fixture());
+    app.run_user("file.import", json!({"name": "Synthetic.fig", "data": data})).unwrap();
+    assert_import_revealed(&app, original, layer);
+    assert_eq!(app.session.ds().unwrap().history.undo.len(), undo_count + 1, "revealing adds no separate Undo step");
+    let imported_pages = app.session.doc().unwrap().pages.clone();
+    let imported_nodes = app.session.doc().unwrap().nodes().count();
+
+    app.run("edit.undo", json!({})).unwrap();
+    assert_eq!(app.session.doc().unwrap(), before.as_ref(), "one Undo restores all original content and removes every appended page");
+    assert_eq!(app.session.page().unwrap(), original);
+    assert!(app.session.doc().unwrap().node(layer).is_some());
+    assert_eq!(app.session.ds().unwrap().history.undo.len(), undo_count);
+
+    app.run("edit.redo", json!({})).unwrap();
+    let doc = app.session.doc().unwrap();
+    assert_eq!(doc.pages, imported_pages);
+    assert_eq!(doc.nodes().count(), imported_nodes);
+    assert!(doc.node(original).unwrap().children.contains(&layer));
+    let start = doc.nodes().find(|node| node.name == "Start").unwrap();
+    let dest = doc.nodes().find(|node| node.name == "Destination").unwrap();
+    assert_ne!(doc.page_of(start.id), doc.page_of(dest.id));
+    assert_eq!(start.interactions[0].actions, [Action::Navigate { dest: dest.id, preserve_scroll: false }]);
+    let design = doc.page_of(start.id).unwrap();
+    let NodeKind::Page { flows, .. } = &doc.node(design).unwrap().kind else { panic!() };
+    assert_eq!(flows[0].start, start.id);
+    assert!(doc.pages.contains(&app.session.page().unwrap()), "Redo keeps a valid active page");
+    assert!(app.session.ds().unwrap().selection.iter().all(|id| doc.contains(*id)), "Redo keeps a valid selection");
+    assert_eq!(app.session.ds().unwrap().history.undo.len(), undo_count + 1);
+}

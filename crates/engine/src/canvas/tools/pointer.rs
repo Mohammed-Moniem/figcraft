@@ -100,7 +100,7 @@ impl Session {
     /// The tool pointer events go to: in Dev Mode every tool but the hand and comments selects.
     fn acting_tool(&self) -> ToolId {
         match self.tool.tool {
-            t if self.tool.dev_mode && !matches!(t, ToolId::Hand | ToolId::Comment) => ToolId::Move,
+            t if self.tool.dev_mode && !matches!(t, ToolId::Hand | ToolId::Comment | ToolId::Annotation) => ToolId::Move,
             t => t,
         }
     }
@@ -164,6 +164,7 @@ impl Session {
                     self.request_ui("comment.new", json!({"x": ev.x, "y": ev.y}));
                     Ok(())
                 }
+                ToolId::Annotation => crate::annotations::begin_at(self, ev),
                 ToolId::Eyedropper => self.eyedrop(ev),
                 t if t.on_boards() => self.board_down(ev),
                 t if t.draws_shape() => self.draw_down(ev),
@@ -171,6 +172,7 @@ impl Session {
             },
             PointerKind::Move => self.drag(ev),
             PointerKind::Up => self.up(ev),
+            PointerKind::DoubleClick if tool == ToolId::Annotation => crate::annotations::begin_at(self, ev),
             PointerKind::DoubleClick => self.double_click(ev),
         }
     }

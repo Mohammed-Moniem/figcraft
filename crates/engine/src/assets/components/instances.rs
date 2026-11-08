@@ -1,10 +1,10 @@
 use super::cycles::{contains_itself_error, would_contain_itself};
-use super::diff::{binding_group, bindings_of};
 use super::sync::{insert_linked, sync_instance_depth};
 use super::{
     Affine, BTreeMap, ChildLayout, DocError, Document, Node, NodeId, NodeKind, Value, default_instance_name, default_props, holds_content, is_slot,
     slot_edited,
 };
+use crate::variable_scale::binding_group;
 
 /// Create an instance of `component` under `parent` at `(x, y)` (parent space).
 pub fn create_instance(doc: &mut Document, component: NodeId, parent: NodeId, x: f64, y: f64) -> Result<NodeId, DocError> {
@@ -82,11 +82,27 @@ pub(super) fn carry_overrides(from: &Node, to: &mut Node, what: Carry) {
             Carry::Geometry if !geo => continue,
             _ => {}
         }
-        copy_group(from, to, g);
+        if from.scale_derived_overrides.contains(g) && crate::variable_scale::dimensional_group(g) {
+            // Keep the scaled physical value while retaining the rebuilt main's bindings.
+            // They will resolve in this copy's context after the entire tree is in place.
+            let inherited: Vec<_> = bindings_of(to, g).map(|(k, v)| (k.clone(), v.clone())).collect();
+            copy_group(from, to, g);
+            to.bound.retain(|k, _| binding_group(k) != Some(g));
+            to.bound.extend(inherited);
+        } else {
+            copy_group(from, to, g);
+        }
     }
     if what != Carry::Geometry {
         to.overrides = from.overrides.clone();
+        to.scale_derived_overrides = from.scale_derived_overrides.intersection(&from.overrides).cloned().collect();
     }
+}
+
+/// Bindings carried with a concrete override include grids, independently of the matching rules
+/// used to decide whether a main component's variable bindings are inherited.
+fn bindings_of<'a>(n: &'a Node, g: &'a str) -> impl Iterator<Item = (&'a String, &'a String)> + 'a {
+    n.bound.iter().filter(move |(k, _)| binding_group(k) == Some(g))
 }
 
 /// An instance switched from variant `was` to `new`: its resizing (sizing and min / max per axis)
@@ -117,6 +133,7 @@ pub(crate) fn copy_group(from: &Node, to: &mut Node, g: &str) {
         to.bound.extend(bindings_of(from, g).map(|(k, v)| (k.clone(), v.clone())));
     }
     match g {
+        "variableScale" => to.variable_scale = from.variable_scale,
         "fills" => {
             to.fills = from.fills.clone();
             to.styles.fill = from.styles.fill.clone();

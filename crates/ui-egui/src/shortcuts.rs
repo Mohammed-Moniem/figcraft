@@ -130,7 +130,7 @@ pub(crate) fn handle_input(
     // Modal widgets route their own keys when drawn later in the frame. The updater's
     // opening flag also covers its first frame, before egui has registered the modal layer.
     // Do not deliver those keys to canvas shortcuts, live text editing or a deferred field save.
-    if app.updates_rt.manual_window_open || ctx.memory(|memory| memory.top_modal_layer().is_some()) {
+    if app.updates_rt.manual_window_open || crate::motion::export::owns_input(app, ctx) || ctx.memory(|memory| memory.top_modal_layer().is_some()) {
         clear_field_save_marker(ctx);
         return;
     }
@@ -199,7 +199,7 @@ pub(crate) fn handle_input(
             Event::Cut => {
                 let m = ctx.input(|i| i.modifiers);
                 if accepts_cut(app, m) {
-                    cut(app);
+                    cut(app, m);
                 }
             }
             Event::Paste(text) if !paste.drop_text => crate::menus::paste(app, Some(text), None),
@@ -223,13 +223,18 @@ fn accepts_cut(app: &FigApp, m: Modifiers) -> bool {
 
 /// Cut: usually the layers. Windows sends Shift+Delete (remove the points and heal the path)
 /// as a cut command and never as a key, so in vector edit mode the selection is points: they are
-/// removed, a heal joining the path through them.
-fn cut(app: &mut FigApp) {
+/// removed, a heal joining the path through them. Ctrl/Cmd+X is the real Cut: with points or
+/// segments selected the engine copies them and removes them, staying in edit mode (#1875).
+fn cut(app: &mut FigApp, modifiers: egui::Modifiers) {
     let Some(ve) = app.session.ds().ok().and_then(|d| d.vector_edit.clone()) else {
         crate::menus::invoke(app, "edit.cut");
         return;
     };
-    if ve.parts().iter().any(|p| !p.vertices.is_empty()) {
+    if modifiers.command {
+        if ve.parts().iter().any(|p| !p.vertices.is_empty() || !p.segments.is_empty()) {
+            crate::menus::invoke(app, "edit.cut");
+        }
+    } else if ve.parts().iter().any(|p| !p.vertices.is_empty()) {
         app.run("vector.deleteHeal", json!({}));
     } else if ve.parts().iter().any(|p| !p.segments.is_empty()) {
         app.run("vector.edit.delete", json!({}));
@@ -294,6 +299,7 @@ pub(crate) fn prepare_field_save(app: &FigApp, ctx: &Context) -> Option<AfterFie
         || app.ui.palette.is_some()
         || app.pending_dialog.is_some()
         || app.updates_rt.manual_window_open
+        || crate::motion::export::owns_input(app, ctx)
         || egui::Popup::is_any_open(ctx)
         || ctx.memory(|m| m.top_modal_layer().is_some())
     {
@@ -425,7 +431,8 @@ pub fn run_binding(app: &mut FigApp, id: &str) {
     // Dev Mode places and edits nothing: Enter selects children.
     let dev = app.ui.right_tab == crate::RightTab::Inspect;
     match id {
-        "edit.cut" => cut(app),
+        // A bound command is the real Cut even when rebound to a chord without Cmd/Ctrl.
+        "edit.cut" => cut(app, Modifiers { command: true, ..Modifiers::NONE }),
         "select.none" => {
             if let Some(ctx) = &app.ui_context
                 && crate::proto_panel::close_editor(ctx)

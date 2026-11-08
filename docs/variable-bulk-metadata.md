@@ -1,0 +1,7 @@
+# Bulk variable metadata
+
+Cmd/Ctrl-click variable names to select several rows. Shift-click selects the visible range from the anchor. Normal click selects one; Escape and clicks outside the panel clear the selection. Filtering or changing collection retires rows no longer shown. This selection belongs to the current document and collection.
+
+For two or more local, non-inherited variables, use **Edit variables** in the context menu or a selected row’s edit button. **Details** changes only **Hide from publishing**. **Scope** shows properties supported by every selected type. A dash means mixed values; clicking it enables the property for every selected variable. A checked box turns it off for all. Individual scope changes preserve each variable’s other enabled scopes; **All supported properties** enables or clears all of each variable’s supported properties. Each change is one Undo step. Number and String share Text content; a selection containing Boolean has no shared scopes.
+
+The shared window captures its targets and closes if their document/collection changes or a target disappears or becomes inherited. Escape closes it first. Library and inherited variables cannot use shared editing. Single-variable names, descriptions, values, code syntax, copying and other existing row actions keep their individual behavior; a multi-selection offers only shared metadata editing. No document schema changes.

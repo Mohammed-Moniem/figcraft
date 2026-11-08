@@ -185,6 +185,8 @@ node_props! {
     Board => board,
     Motion => motion,
     HighlightColor => highlight_color,
+    VariableScale => variable_scale,
+    ScaleDerivedOverrides => scale_derived_overrides,
 }
 
 /// A document-level property. Lists of entries with ids (styles, comments, variable collections,

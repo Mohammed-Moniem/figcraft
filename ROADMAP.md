@@ -21,7 +21,32 @@ independent preference-save requests with immediate name-save coalescing, protot
 edge panning (#2015), scoped CJK justification (#1970), a text font-size handle (#1563), and
 uniform live Boolean-result rounding (#978) are under
 combined validation. See [scope and remaining acceptance](docs/issue-feature-integration-2026-11-08.md).
-The full 185-issue inventory remains in progress; readiness estimates are unchanged.
+The refreshed 197-issue inventory remains in progress; readiness estimates are unchanged.
+
+Runtime regression follow-up: public Undo/Redo restores instance-scale ownership with its saved
+values, and closing a detached preview retires only that viewport's presented-input boundary.
+The original failing controls and matching repaired controls are retained. Combined quality and
+launched acceptance remain separate; the issue inventory is still unfinished.
+
+The next local integration adds [bulk variable metadata](docs/variable-bulk-metadata.md) (#2082),
+[cross-axis Fill/Hug behavior](docs/cross-axis-fill.md) (part of #2090), and a narrower filesystem
+authority preflight (part of #1094). Their producer checks pass; fresh combined validation is pending.
+It also retains and selects [conflicting installed fonts](docs/installed-font-priority.md) (part
+of #2092). Its text producer checks pass; composition with explicitly loaded-font priority and
+fresh combined validation remain pending.
+The same next batch includes [manual dash phase](docs/dash-phase.md) (part of #1681),
+[bounded automatic elbow avoidance](docs/board-obstacle-routing.md) (part of #1707), and
+[mobile asset folder layouts](docs/mobile-export-layout.md) (#1689). Their isolated producer
+checks pass. Center-on-corners, parallel connector spacing, composition with the other export
+changes, and fresh combined native/browser acceptance remain separate work.
+The reviewed [native instance-scale extension](docs/native-instance-scale.md) (part of #2090)
+is also locally merged, with 54 scoped scaling controls and its isolated quality checks passing.
+Combined Fill/Hug, manual-phase and parent text/style behavior still require fresh acceptance.
+
+The same candidate includes [animated GIF export](docs/animated-gif-export.md) from Motion and a
+ten-minute native control-session admission lease (part of #1110), plus a supported
+[variable mode JSON adapter](docs/figma-mode-tokens.md). These additions retain their isolated
+checks and await fresh combined and launched-app acceptance.
 
 **Stage: alpha** · next: beta, ~26 points and ~162–292 h away (one Opus 5.5 agent; ~33–67 h wall-clock with 5 agents)
 

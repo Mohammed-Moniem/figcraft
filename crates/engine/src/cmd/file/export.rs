@@ -1,6 +1,26 @@
 use super::load::{ext, write};
 use super::save::thumbnail;
 use super::*;
+use crate::params::f64_of;
+
+/// Convert an owned raster buffer before tagging it, without changing the source document.
+/// Banded and full rendering share this path.
+pub fn encode_raster(mut pix: figcraft_render::Pixmap, setting: &ExportSetting, source: figcraft_color::ColorProfile) -> Result<Vec<u8>> {
+    let profile = setting.color_profile.resolve(source);
+    let conversion = source.conversion_to(profile);
+    // JPEG composites over white in the source profile before conversion.
+    if setting.format == ExportFormat::Jpg && !conversion.is_identity() {
+        for pixel in pix.data_mut().chunks_exact_mut(4) {
+            let under = 255 - pixel[3];
+            for channel in &mut pixel[..3] {
+                *channel = channel.saturating_add(under);
+            }
+            pixel[3] = 255;
+        }
+    }
+    conversion.apply_pixels(pix.data_mut());
+    figcraft_render::encode_export_with(&pix, setting.format, profile, setting.quality()).map_err(EngineError::Other)
+}
 
 /// Encode `ids` (or the page) in `format` at `scale`.
 pub fn export_bytes(doc: &Document, ids: &[NodeId], format: ExportFormat, scale: f64) -> Result<Vec<u8>> {
@@ -178,6 +198,12 @@ pub(in crate::cmd) fn export_setting(cmd: &str, mut e: ExportSetting, p: &Value)
     if let Some(c) = vd_compat_param(cmd, p)? {
         e.vd_compat = c;
     }
+    if let Some(profile) = color_profile_param(cmd, p)? {
+        e.color_profile = profile;
+    }
+    if let Some(quality) = quality_param(cmd, p)? {
+        e.quality = quality;
+    }
     e.print = print_param(cmd, p, e.print)?;
     for (key, slot) in [
         ("contentsOnly", &mut e.contents_only),
@@ -194,8 +220,17 @@ pub(in crate::cmd) fn export_setting(cmd: &str, mut e: ExportSetting, p: &Value)
     Ok(e)
 }
 
+fn quality_param(cmd: &str, p: &Value) -> Result<Option<u8>> {
+    let Some(value) = get(p, "quality") else { return Ok(None) };
+    let quality = if value.is_boolean() { None } else { f64_of(value) };
+    match quality.filter(|value| value.fract() == 0.0 && (1.0..=100.0).contains(value)) {
+        Some(quality) => Ok(Some(quality as u8)),
+        None => Err(bad(cmd, "quality: a whole number from 1 to 100 (JPG)")),
+    }
+}
+
 /// Whether `p` sets any PDF print option.
-fn has_print_param(p: &Value) -> bool {
+pub(super) fn has_print_param(p: &Value) -> bool {
     ["bleed", "cropMarks", "bleedMarks", "cmyk"].iter().any(|k| get(p, k).is_some_and(|v| !v.is_null()))
 }
 
@@ -235,11 +270,11 @@ fn size_param(cmd: &str, p: &Value) -> Result<Option<ExportSize>> {
 }
 
 /// Most files one `file.exportLayers` writes.
-const MAX_EXPORT_FILES: usize = 1000;
+pub(super) const MAX_EXPORT_FILES: usize = 1000;
 
 /// Most bytes the files of one zip export add up to: the files, the archive and its base64 copy
 /// are all in memory at once (in the browser too).
-const MAX_ZIP_BYTES: usize = 256 << 20;
+pub(super) const MAX_ZIP_BYTES: usize = 256 << 20;
 
 /// Keep `bytes` as zip member `name`, unless the members would pass `limit` bytes together.
 pub(super) fn add_member<'a>(members: &mut Vec<(&'a str, Vec<u8>)>, name: &'a str, bytes: Vec<u8>, limit: usize) -> Result<()> {
@@ -313,6 +348,15 @@ pub fn exportable_layers(doc: &Document, page: NodeId) -> Vec<NodeId> {
 }
 
 pub(super) fn export_layers(s: &mut Session, p: &Value) -> Result<Value> {
+    let layout = match p.get("layout") {
+        None => super::ExportLayout::Flat,
+        Some(value) => {
+            value.as_str().and_then(super::ExportLayout::from_key).ok_or_else(|| bad("file.exportLayers", "layout: flat|flutter|ios|android"))?
+        }
+    };
+    if layout != super::ExportLayout::Flat {
+        return super::mobile_export::export_mobile_layers(s, p, layout);
+    }
     let cmd = "file.exportLayers";
     let doc = s.doc()?;
     let assets = boolean(p, "assets").unwrap_or(false);

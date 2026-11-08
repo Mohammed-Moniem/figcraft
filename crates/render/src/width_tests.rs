@@ -41,6 +41,28 @@ fn changing_the_dash_cap_redraws_the_dashes() {
 }
 
 #[test]
+fn changing_manual_dash_phase_redraws_without_reusing_the_previous_outline() {
+    let (mut d, page) = line_doc(None);
+    let line = d.node(page).unwrap().children[0];
+    let n = d.get_mut(line).unwrap();
+    (n.stroke.weight, n.stroke.dashes) = (4.0, vec![20.0, 20.0]);
+    // Only phase changes: every render must use the current dash start, even with a warm cache.
+    // None fits half-dashes at both ends; explicit zero starts with a complete20-unit dash.
+    for (phase, expected) in [
+        (Some(0.0), [true, true, false]),
+        (Some(10.0), [true, false, false]),
+        (Some(-10.0), [false, true, true]),
+        (None, [true, false, false]),
+        (Some(0.0), [true, true, false]),
+    ] {
+        d.get_mut(line).unwrap().stroke.dash_phase = phase;
+        let pix = render(&d, page);
+        let actual = [dark(&pix, 15, 50), dark(&pix, 25, 50), dark(&pix, 35, 50)];
+        assert_eq!(actual, expected, "phase {phase:?} must not reuse another phase's cached geometry");
+    }
+}
+
+#[test]
 fn wedge_profile_tapers_the_stroke() {
     let (d, p) = line_doc(WidthPreset::Wedge.profile());
     let pix = render(&d, p);

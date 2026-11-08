@@ -50,13 +50,15 @@ pub(crate) fn settle_routes(doc: &mut Document, before: &Document, touched: &BTr
     if !is_board(doc) || touched.is_empty() {
         return;
     }
+    let mut context = super::obstacles::Context::new(doc);
+    let affected = super::obstacles::Affected::new(doc, before, touched, &mut context);
     let hit = |doc: &Document, id: NodeId| touched.contains(&id) || doc.ancestors(id).iter().any(|a| touched.contains(a));
     let (mut connectors, mut labels) = (Vec::new(), Vec::new());
     for n in doc.nodes() {
         match &n.board {
             Some(BoardItem::Connector(c)) => {
                 let ends = [c.from.node(), c.to.node()].into_iter().flatten();
-                if hit(doc, n.id) || ends.into_iter().any(|e| !doc.contains(e) || hit(doc, e)) {
+                if context.refresh(doc, n.id, c, &affected) || hit(doc, n.id) || ends.into_iter().any(|e| !doc.contains(e) || hit(doc, e)) {
                     connectors.push((n.id, c.clone()));
                 }
             }
@@ -70,7 +72,7 @@ pub(crate) fn settle_routes(doc: &mut Document, before: &Document, touched: &BTr
         if changed && let Some(n) = doc.node_mut(id) {
             n.board = Some(BoardItem::Connector(c.clone()));
         }
-        if let Some(pts) = route(doc, &c) {
+        if let Some(pts) = context.route(doc, &c) {
             place_route(doc, id, &pts, c.routing);
         }
     }
@@ -196,9 +198,14 @@ fn carry_free_ends(doc: &Document, before: &Document, touched: &BTreeSet<NodeId>
     if !touched.contains(&id) || b.transform == n.transform || b.board != n.board {
         return false;
     }
-    let Some(expected) = route(doc, c).and_then(|pts| finite_box(&route_path(&pts, c.routing))).map(|b| b.origin()) else { return false };
-    let d = (doc.world_transform(id) * Point::ZERO) - expected;
-    if d.hypot() <= 1e-9 {
+    // A fresh fallback can have a different box from the saved detour. Only the actual
+    // placement delta is a user move; routing bounds must never move a free endpoint.
+    let d = (doc.world_transform(id) * Point::ZERO) - (before.world_transform(id) * Point::ZERO);
+    let finite = [c.from, c.to].into_iter().all(|end| match end {
+        End::Point { x, y } => (x + d.x).is_finite() && (y + d.y).is_finite(),
+        _ => true,
+    });
+    if !d.x.is_finite() || !d.y.is_finite() || !finite || d.hypot() <= 1e-9 {
         return false;
     }
     let mut moved = false;
@@ -310,8 +317,7 @@ pub(super) fn place_route(doc: &mut Document, id: NodeId, pts: &[Point], routing
 /// The page points connector `c` runs through (see [`figcraft_doc::route_points`]): from the
 /// outside the middle of each attached layer's side facing the other end (or the side it names).
 pub fn route(doc: &Document, c: &Connector) -> Option<Vec<Point>> {
-    let (from, to) = route_ends(doc, c)?;
-    figcraft_doc::route_along(from, to, c.routing, c.path.as_ref())
+    super::obstacles::Context::new(doc).route(doc, c)
 }
 
 /// Connector `c`'s ends as they are now.

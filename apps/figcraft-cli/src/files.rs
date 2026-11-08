@@ -4,7 +4,7 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::process::ExitCode;
 
-use figcraft_doc::{Document, ExportFormat, ExportSetting, NodeId, NodeKind, PrintSettings, VdCompat};
+use figcraft_doc::{Document, ExportColorProfile, ExportFormat, ExportSetting, NodeId, NodeKind, PrintSettings, VdCompat};
 use figcraft_engine::{BatchScope, BatchStep, Session};
 use serde_json::{Value, json};
 
@@ -102,10 +102,11 @@ pub fn render_page(doc: &Document, page: NodeId, scale: f64) -> CliResult<figcra
     figcraft_render::render_view(doc, page, &view, &Default::default()).ok_or_else(|| CliError::Failed("render failed".into()))
 }
 
-/// Encode a render as the format extension `e` names, tagged with `doc`'s colour profile.
-fn encode(doc: &Document, pix: &figcraft_render::Pixmap, e: &str) -> CliResult<Vec<u8>> {
+/// Encode a render as `e`, converting from the document profile to the selected output profile.
+fn encode(doc: &Document, pix: figcraft_render::Pixmap, e: &str, quality: u8, color_profile: ExportColorProfile) -> CliResult<Vec<u8>> {
     let format = ExportFormat::from_ext(e).unwrap_or_default();
-    figcraft_render::encode_export(pix, format, doc.color_profile).map_err(CliError::Failed)
+    let setting = ExportSetting { format, quality, color_profile, ..Default::default() };
+    figcraft_engine::cmd::file::encode_raster(pix, &setting, doc.color_profile).map_err(|error| CliError::Failed(error.to_string()))
 }
 
 /// Write `doc` to `out`, choosing the format by extension.
@@ -123,7 +124,9 @@ pub fn write_doc(doc: &Document, page: NodeId, out: &str) -> CliResult<()> {
         "svg" => figcraft_svg::try_export_svg(&doc.in_srgb(), &children(doc, page), &Default::default())
             .map_err(|e| CliError::Failed(e.to_string()))?
             .into_bytes(),
-        "png" | "jpg" | "jpeg" | "webp" => encode(doc, &render_page(doc, page, 1.0)?, &e)?,
+        "png" | "jpg" | "jpeg" | "webp" => {
+            encode(doc, render_page(doc, page, 1.0)?, &e, ExportSetting::DEFAULT_QUALITY, ExportColorProfile::SameAsFile)?
+        }
         "pdf" => page_pdf(doc, page, &PrintSettings::default())?,
         "fig" => fig_bytes(doc)?,
         "penpot" => penpot_bytes(doc)?,
@@ -234,6 +237,7 @@ fn sanitize(name: &str) -> String {
 
 /// What `export` exports and how.
 pub struct Target {
+    pub layout: figcraft_engine::cmd::file::ExportLayout,
     pub format: Option<String>,
     pub scale: f64,
     pub page: Option<String>,
@@ -242,9 +246,22 @@ pub struct Target {
     pub print: PrintSettings,
     /// Android Vector Drawable (XML) only.
     pub vd_compat: VdCompat,
+    pub quality: u8,
+    pub color_profile: ExportColorProfile,
 }
 
 pub fn export(file: &str, out: &str, t: &Target) -> CliResult<ExitCode> {
+    if t.layout != figcraft_engine::cmd::file::ExportLayout::Flat {
+        if t.scale != 1.0 {
+            return Err(CliError::Usage("mobile layouts choose their density scales; omit --scale".into()));
+        }
+        if image_format(&ext(out)).is_some() || matches!(ext(out).as_str(), "fig" | "penpot") {
+            return Err(CliError::Usage("a mobile layout needs an output folder, without an image or document extension".into()));
+        }
+        if t.format.as_deref().is_some_and(|f| matches!(f, "fig" | "penpot")) {
+            return Err(CliError::Usage("mobile layouts export image assets; use flat layout for fig or penpot".into()));
+        }
+    }
     let doc = load(file)?;
     // `.fig`: the whole file.
     if t.format.as_deref().map_or(ext(out) == "fig", |f| f.eq_ignore_ascii_case("fig")) {
@@ -265,9 +282,27 @@ pub fn export(file: &str, out: &str, t: &Target) -> CliResult<ExitCode> {
         None => image_format(&ext(out)).unwrap_or(ExportFormat::Png),
     };
     let target = node.map(|q| find_node(&doc, page, q)).transpose()?;
+    if t.layout != figcraft_engine::cmd::file::ExportLayout::Flat {
+        let ids = match target {
+            Some(id) => vec![id],
+            None => {
+                let kids = children(&doc, page);
+                let frames: Vec<NodeId> = kids.iter().copied().filter(|i| doc.node(*i).is_some_and(|n| n.kind.is_frame_like())).collect();
+                if frames.is_empty() { kids } else { frames }
+            }
+        };
+        return export_mobile(&doc, &ids, out, fmt, t);
+    }
     let single = image_format(&ext(out)).is_some();
     let bytes_of = |ids: &[NodeId]| {
-        let setting = ExportSetting { format: fmt, print: *print, vd_compat: t.vd_compat, ..Default::default() };
+        let setting = ExportSetting {
+            format: fmt,
+            print: *print,
+            vd_compat: t.vd_compat,
+            quality: t.quality,
+            color_profile: t.color_profile,
+            ..Default::default()
+        };
         let (bytes, warnings) = figcraft_engine::cmd::file::export_file(&doc, ids, &setting, scale).map_err(|e| CliError::Failed(e.to_string()))?;
         // What an Android Vector Drawable changed or left out, like the .fig notes.
         for w in warnings {
@@ -356,7 +391,7 @@ pub fn convert(input: &str, out: &str) -> CliResult<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-pub fn render(file: &str, out: &str, scale: f64, page: Option<&str>) -> CliResult<ExitCode> {
+pub fn render(file: &str, out: &str, scale: f64, page: Option<&str>, quality: u8, color_profile: ExportColorProfile) -> CliResult<ExitCode> {
     let doc = load(file)?;
     let page = page_named(&doc, page)?;
     let e = ext(out);
@@ -364,8 +399,9 @@ pub fn render(file: &str, out: &str, scale: f64, page: Option<&str>) -> CliResul
         return Err(CliError::Usage(format!("render writes .png, .jpg or .webp, not `{out}`")));
     }
     let pix = render_page(&doc, page, scale)?;
-    write(out, &encode(&doc, &pix, &e)?)?;
-    println!("{out} ({}×{})", pix.width(), pix.height());
+    let size = (pix.width(), pix.height());
+    write(out, &encode(&doc, pix, &e, quality, color_profile)?)?;
+    println!("{out} ({}×{})", size.0, size.1);
     Ok(ExitCode::SUCCESS)
 }
 
@@ -487,9 +523,120 @@ pub fn connect_publish(file: &str, mappings: &str, dry_run: bool) -> CliResult<E
     Ok(ExitCode::SUCCESS)
 }
 
+/// Write one mobile asset family per layer through the same engine planner as layer export.
+fn export_mobile(doc: &Document, ids: &[NodeId], out: &str, fmt: ExportFormat, t: &Target) -> CliResult<ExitCode> {
+    use figcraft_engine::cmd::file::{MobileExportContent, mobile_export_plan};
+    let setting = ExportSetting {
+        format: fmt,
+        print: t.print,
+        vd_compat: t.vd_compat,
+        quality: t.quality,
+        color_profile: t.color_profile,
+        ..Default::default()
+    };
+    let plan = mobile_export_plan(doc, ids.iter().map(|id| (*id, vec![setting.clone()])), t.layout).map_err(|e| CliError::Usage(e.to_string()))?;
+    if plan.is_empty() {
+        return Err(CliError::Failed("the page is empty: nothing to export".into()));
+    }
+    for job in plan {
+        let bytes = match job.content {
+            MobileExportContent::Manifest(bytes) => bytes,
+            MobileExportContent::Image { setting, scale } => {
+                let (bytes, warnings) =
+                    figcraft_engine::cmd::file::export_file(doc, &[job.id], &setting, scale).map_err(|e| CliError::Failed(e.to_string()))?;
+                for warning in warnings {
+                    eprintln!("note: {warning}");
+                }
+                bytes
+            }
+        };
+        let path = Path::new(out).join(&job.file);
+        if let Some(parent) = path.parent() {
+            figcraft_engine::file_access::create_dir_all(parent).map_err(|e| CliError::Failed(e.to_string()))?;
+        }
+        let path = path.to_string_lossy().into_owned();
+        write(&path, &bytes)?;
+        println!("{path}");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn mobile_target(layout: figcraft_engine::cmd::file::ExportLayout) -> Target {
+        Target {
+            layout,
+            format: Some("png".into()),
+            scale: 1.0,
+            page: None,
+            node: None,
+            print: Default::default(),
+            vd_compat: Default::default(),
+            quality: ExportSetting::DEFAULT_QUALITY,
+            color_profile: ExportColorProfile::SameAsFile,
+        }
+    }
+
+    #[test]
+    fn mobile_layout_cli_writes_the_same_platform_families_as_engine() {
+        use figcraft_engine::cmd::file::ExportLayout;
+        let dir = temp_dir("mobile-layout");
+        let input = dir.join("source.figcraft");
+        let mut s = Session::new();
+        s.execute("frame.create", &json!({"width":12,"height":8,"name":"Clock"})).unwrap();
+        s.execute("file.saveAs", &json!({"path":input.to_string_lossy()})).unwrap();
+        for (layout, expected) in [
+            (ExportLayout::Flutter, vec![("clock.png", 12, 8), ("2.0x/clock.png", 24, 16), ("3.0x/clock.png", 36, 24)]),
+            (
+                ExportLayout::Ios,
+                vec![("Clock.imageset/Clock.png", 12, 8), ("Clock.imageset/Clock@2x.png", 24, 16), ("Clock.imageset/Clock@3x.png", 36, 24)],
+            ),
+            (
+                ExportLayout::Android,
+                vec![
+                    ("drawable-mdpi/clock.png", 12, 8),
+                    ("drawable-hdpi/clock.png", 18, 12),
+                    ("drawable-xhdpi/clock.png", 24, 16),
+                    ("drawable-xxhdpi/clock.png", 36, 24),
+                    ("drawable-xxxhdpi/clock.png", 48, 32),
+                ],
+            ),
+        ] {
+            let out = dir.join(layout.key());
+            assert_eq!(export(input.to_str().unwrap(), out.to_str().unwrap(), &mobile_target(layout)).unwrap(), ExitCode::SUCCESS);
+            for (file, width, height) in expected {
+                let bytes = std::fs::read(out.join(file)).unwrap();
+                assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+                assert_eq!(
+                    (u32::from_be_bytes(bytes[16..20].try_into().unwrap()), u32::from_be_bytes(bytes[20..24].try_into().unwrap())),
+                    (width, height)
+                );
+            }
+            if layout == ExportLayout::Ios {
+                let manifest: Value = serde_json::from_slice(&std::fs::read(out.join("Clock.imageset/Contents.json")).unwrap()).unwrap();
+                assert_eq!(manifest["images"].as_array().unwrap().len(), 3);
+                assert_eq!(manifest["info"], json!({"author":"FigCraft","version":1}));
+            }
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn mobile_layout_cli_rejects_conflicting_scale_and_single_file_output() {
+        use figcraft_engine::cmd::file::ExportLayout;
+        let mut target = mobile_target(ExportLayout::Flutter);
+        target.scale = 2.0;
+        let error = export("absent.figcraft", "absent-out", &target).unwrap_err();
+        assert!(matches!(error,CliError::Usage(s) if s.contains("omit --scale")));
+        target.scale = 1.0;
+        let error = export("absent.figcraft", "absent-out.png", &target).unwrap_err();
+        assert!(matches!(error,CliError::Usage(s) if s.contains("output folder")));
+        target.format = Some("fig".into());
+        let error = export("absent.figcraft", "absent-out", &target).unwrap_err();
+        assert!(matches!(error,CliError::Usage(s) if s.contains("image assets")));
+    }
 
     #[test]
     fn script_formats() {

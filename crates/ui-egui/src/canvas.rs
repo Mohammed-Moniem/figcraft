@@ -19,6 +19,7 @@ use crate::theme::{COMPONENT, Tokens, doc_c32, regular, semibold};
 #[cfg(not(target_arch = "wasm32"))]
 type GpuTexture = (u64, egui::TextureId, (u32, u32), wgpu::FilterMode);
 
+mod autopan;
 mod builder;
 mod input;
 pub(crate) mod locked;
@@ -521,6 +522,7 @@ pub fn show(app: &mut FigApp, ui: &mut Ui, worker: &mut Worker) {
     crate::versions::preview_banner(app, &ctx, rect);
     crate::branch_ui::banner(app, &ctx, rect);
     crate::dev_mode::focus_bar(app, &ctx, rect);
+    crate::dev_mode::annotation_tool::show(app, &ctx);
     // The cursor: the tool's, unless something on the canvas with its own has the pointer.
     app.canvas.cursor = None;
     if let (true, Some(at)) = (own_cursor && resp.hovered(), ctx.input(|i| i.pointer.hover_pos())) {

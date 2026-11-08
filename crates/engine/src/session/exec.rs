@@ -105,6 +105,9 @@ impl Session {
     /// as it was.
     pub fn execute(&mut self, id: &str, params: &Value) -> Result<Value> {
         let spec = find_command(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
+        // Repeat calls the saved command directly. Capture its identity before a repeated batch
+        // can update last_command, so normalization distinguishes K geometry from explicit edits.
+        let normalize_spec = if id == "edit.repeat" { self.last_command.as_ref().and_then(|(id, _)| find_command(id)).unwrap_or(spec) } else { spec };
         crate::cmd::refuse_unknown_params(id, params)?;
         board::refuse_on_board(self, id)?;
         if matches!(id, "doc.list" | "file.printPdf" | "design.audit" | "design.rules" | "design.assert") {
@@ -163,7 +166,7 @@ impl Session {
             // Normalising is part of the command: a panic in it rolls the edit back too (#1085).
             .and_then(|v| {
                 guard::run(id, || {
-                    self.normalize_edit(spec, &before);
+                    self.normalize_edit(normalize_spec, &before);
                     Ok(v)
                 })
             });
@@ -334,6 +337,15 @@ impl Session {
         // Saving may adopt the chosen filename as the document title. The encoded snapshot is
         // already final; normalising it again would detach it from the saved baseline.
         if !Arc::ptr_eq(&ds.doc, bdoc) && !matches!(spec.id, "file.save" | "file.saveAs" | "collab.host" | "collab.share") {
+            // Inner commands retire their own explicit edits. The outer wrapper sees their
+            // already-normalized K geometry and must not turn it into user-owned overrides.
+            // Global style edits propagate cached values/links to every using layer; they
+            // do not turn a copy's K-derived groups into explicit local overrides.
+            // History restores captured ownership together with the physical values. Its
+            // snapshot differences are not fresh explicit local edits.
+            if !matches!(spec.id, "transform.scale" | "command.batch" | "style.update" | "style.bind" | "style.delete" | "edit.undo" | "edit.redo") {
+                crate::variable_scale::retire_changed(ds.doc_mut(), bdoc);
+            }
             normalize(ds.doc_mut(), bdoc);
         }
     }

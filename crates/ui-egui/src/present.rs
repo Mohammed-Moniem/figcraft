@@ -54,7 +54,7 @@ mod transition;
 
 #[cfg(test)]
 use chrome::choose_device;
-pub use chrome::{Pane, PresentTab, pane_id, show, show_pane};
+pub use chrome::{Pane, PresentTab, pane_id, show, show_detached, show_pane};
 pub use layout::Place;
 #[cfg(test)]
 use layout::{FULL, layout};
@@ -416,6 +416,28 @@ impl Presenter {
         self.fling = None;
         self.wheel = None;
         self.drag_scroll = None;
+    }
+
+    /// A surface transfer/focus loss retires held input without restarting navigation, overlays
+    /// or runtime variables. Existing held controllers are adopted rather than replayed.
+    pub(crate) fn release_surface_input(&mut self, now: f64, held: u32) {
+        if self.temp.as_ref().is_some_and(|temp| temp.press) {
+            self.revert(now);
+        }
+        self.key_inputs.clear();
+        self.pads.clear();
+        self.pads_held = held;
+        self.press = None;
+        self.dragged = false;
+        self.drag_scroll = None;
+        self.hovered.clear();
+        self.stop_scrolling();
+        self.waiting.clear();
+        self.widget_events.clear();
+        (self.widget_hover, self.widget_tip, self.widget_input) = (None, None, None);
+        if let Some(anim) = self.anim.as_mut() {
+            anim.follow = None;
+        }
     }
 
     /// Size the prototype another way; the view starts over at its top.

@@ -511,3 +511,114 @@ fn variables_held_group_drag_cannot_reorder_the_native_copys_view() {
     assert_eq!(u.app.session.docs[b].doc, before_b, "group ordering remains a view preference");
     assert_eq!(u.app.session.docs[b].history.undo.len(), undo_b);
 }
+
+/// Exercise the actual group context menu, retaining every stored field in both modes.
+fn pr2087_grouped_window(group: &str) -> Ui {
+    let mut u = variables_window();
+    u.app.session.execute("variable.createCollection", &serde_json::json!({"name": "Theme", "modes": ["Light", "Dark"]})).unwrap();
+    for (leaf, light, dark) in [("sm", 4, 8), ("md", 16, 32)] {
+        let name = format!("{group}/{leaf}");
+        u.app
+            .session
+            .execute("variable.create", &serde_json::json!({"collection": "Theme", "name": name, "type": "number", "value": light}))
+            .unwrap();
+        u.app.session.execute("variable.set", &serde_json::json!({"variable": name, "mode": "Dark", "value": dark})).unwrap();
+        u.app
+            .session
+            .execute(
+                "variable.update",
+                &serde_json::json!({
+                    "variable": name, "scopes": ["GAP"], "description": name, "hiddenFromPublishing": true,
+                    "codeSyntax": {"WEB": format!("var(--{leaf})"), "iOS": leaf, "ANDROID": format!("R.dimen.{leaf}")}
+                }),
+            )
+            .unwrap();
+    }
+    for _ in 0..10 {
+        u.frame(vec![]);
+    }
+    u
+}
+
+fn pr2087_duplicate_group(u: &mut Ui, leaf: &str) {
+    let shapes = flat(&u.frame_output(vec![]).shapes);
+    click_with(u, text_center(&shapes, leaf), PointerButton::Secondary);
+    let menu = flat(&u.frame_output(vec![]).shapes);
+    assert!(has_text(&menu, "Duplicate group"), "the group context menu offers duplication");
+    click_with(u, text_center(&menu, "Duplicate group"), PointerButton::Primary);
+    assert!(u.app.ui.last_error.is_none(), "{:?}", u.app.ui.last_error);
+}
+
+#[test]
+fn duplicate_group_copies_every_field_and_both_modes_in_one_undo_step() {
+    let mut u = pr2087_grouped_window("space");
+    let before = u.app.session.undo_depth();
+    let originals = u.app.session.doc().unwrap().variables.variables.clone();
+    pr2087_duplicate_group(&mut u, "space");
+    let doc = u.app.session.doc().unwrap();
+    assert_eq!(doc.variables.variables.len(), 4);
+    for old in &originals {
+        let name = old.name.replacen("space/", "space 2/", 1);
+        let new = doc.variables.variables.iter().find(|v| v.name == name).expect("copied variable");
+        assert_ne!(new.id, old.id);
+        let mut expected = old.clone();
+        expected.id = new.id.clone();
+        expected.name = name;
+        assert_eq!(new, &expected, "every field, including all mode values and code syntax");
+    }
+    assert_eq!(u.app.session.undo_depth(), (before.0 + 1, 0));
+    assert_eq!(u.app.session.undo_labels(1), ["Duplicate group"]);
+    let shapes = flat(&u.frame_output(vec![]).shapes);
+    assert!(text_center(&shapes, "space 2").y > text_center(&shapes, "space").y);
+    u.app.session.undo().unwrap();
+    assert_eq!(u.app.session.doc().unwrap().variables.variables, originals, "one undo removes the complete copy");
+    u.app.session.redo().unwrap();
+    assert_eq!(u.app.session.doc().unwrap().variables.variables.len(), 4);
+}
+
+#[test]
+fn duplicate_nested_group_uses_next_free_sibling_and_keeps_alias_targets() {
+    let mut u = pr2087_grouped_window("theme/space");
+    u.app
+        .session
+        .execute("variable.create", &serde_json::json!({"collection": "Theme", "name": "theme/space 2/taken", "type": "number", "value": 99}))
+        .unwrap();
+    u.app
+        .session
+        .execute(
+            "variable.create",
+            &serde_json::json!({"collection": "Theme", "name": "theme/space/child/alias", "type": "number", "value": {"alias": "theme/space/sm"}}),
+        )
+        .unwrap();
+    for _ in 0..10 {
+        u.frame(vec![]);
+    }
+    let originals = u.app.session.doc().unwrap().variables.variables.clone();
+    pr2087_duplicate_group(&mut u, "space");
+    let vars = &u.app.session.doc().unwrap().variables.variables;
+    for old in originals.iter().filter(|v| v.name.starts_with("theme/space/")) {
+        let name = old.name.replacen("theme/space/", "theme/space 3/", 1);
+        let new = vars.iter().find(|v| v.name == name).expect("nested copy");
+        assert_eq!(new.values, old.values, "aliases keep their original target IDs");
+    }
+    assert!(vars.iter().all(|v| !v.name.starts_with("space 3/")), "parent path retained");
+    pr2087_duplicate_group(&mut u, "space");
+    assert!(u.app.session.doc().unwrap().variables.variables.iter().any(|v| v.name == "theme/space 4/md"));
+}
+
+#[test]
+fn duplicate_group_preserves_custom_order_and_places_copy_after_source() {
+    let mut u = pr2087_grouped_window("space");
+    for name in ["before/x", "after/x"] {
+        u.app.session.execute("variable.create", &serde_json::json!({"collection": "Theme", "name": name, "type": "number", "value": 1})).unwrap();
+    }
+    let collection = u.app.session.doc().unwrap().variables.collections[0].id.clone();
+    u.app.ui.variables.as_mut().unwrap().group_order.insert(collection, vec!["before".into(), "space".into(), "after".into()]);
+    for _ in 0..10 {
+        u.frame(vec![]);
+    }
+    pr2087_duplicate_group(&mut u, "space");
+    let shapes = flat(&u.frame_output(vec![]).shapes);
+    let ys: Vec<f32> = ["before", "space", "space 2", "after"].iter().map(|name| text_center(&shapes, name).y).collect();
+    assert!(ys.windows(2).all(|w| w[0] < w[1]), "existing custom order plus adjacent copy: {ys:?}");
+}

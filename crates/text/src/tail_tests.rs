@@ -43,11 +43,11 @@ fn starts(l: &TextLayout) -> Vec<(f64, Option<f64>)> {
 }
 
 fn pl(list: ListStyle, indent: u8) -> ParaList {
-    ParaList { list, indent, start_offset: 0 }
+    ParaList { list, indent, start_offset: 0, wrap: None }
 }
 
 fn from(list: ListStyle, indent: u8, start_offset: u32) -> ParaList {
-    ParaList { list, indent, start_offset }
+    ParaList { list, indent, start_offset, wrap: None }
 }
 
 #[test]

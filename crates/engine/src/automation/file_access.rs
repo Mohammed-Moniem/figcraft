@@ -53,29 +53,72 @@ impl Roots {
 
     /// The resolved path to use for `access` to `path`, or why it is refused.
     pub fn check(&self, path: &Path, access: Access) -> std::result::Result<PathBuf, String> {
+        self.check_using(path, access, resolve, inside_as_far_as_it_exists)
+    }
+
+    fn check_using(
+        &self,
+        path: &Path,
+        access: Access,
+        mut resolve_path: impl FnMut(&Path) -> std::result::Result<PathBuf, String>,
+        mut inside_existing: impl FnMut(&Path, &[PathBuf]) -> bool,
+    ) -> std::result::Result<PathBuf, String> {
         let asked = path.display();
         let (roots, what) = match access {
             Access::Read => ([self.read.as_slice(), self.write.as_slice()].concat(), "read"),
             Access::Write => (self.write.clone(), "written"),
         };
-        match resolve(path) {
-            Ok(resolved) if roots.iter().any(|r| resolved.starts_with(r)) => return Ok(resolved),
-            Ok(_) => {}
-            // Why a path can't be resolved says what exists there: only told for paths inside a root.
-            Err(why) if inside_as_far_as_it_exists(path, &roots) => return Err(format!("automation path rejected: {asked}: {why}")),
-            Err(_) => {}
-        }
         if roots.is_empty() {
             return Err(format!("automation path rejected: no folder may be {what} (no root for it was given): {asked}"));
         }
-        let shown: Vec<String> = roots.iter().map(|r| shown(r)).collect();
-        Err(format!("automation path rejected: {asked} is outside the folders that may be {what}: {}", shown.join(", ")))
+        let refused = || {
+            let shown: Vec<String> = roots.iter().map(|r| shown(r)).collect();
+            format!("automation path rejected: {asked} is outside the folders that may be {what}: {}", shown.join(", "))
+        };
+        // Resolving a UNC spelling may contact SMB before the final root check. Explicit
+        // network roots retain their existing resolution policy, separately for each access.
+        #[cfg(windows)]
+        let absolute = match std::path::absolute(path) {
+            Ok(path) if !unc_spelling(&path) || roots.iter().any(|root| unc_spelling(root)) => path,
+            _ => return Err(refused()),
+        };
+        #[cfg(windows)]
+        let checked = absolute.as_path();
+        #[cfg(not(windows))]
+        let checked = path;
+        match resolve_path(checked) {
+            Ok(resolved) if roots.iter().any(|r| resolved.starts_with(r)) => return Ok(resolved),
+            Ok(_) => {}
+            // Why a path can't be resolved says what exists there: only told for paths inside a root.
+            Err(why) if inside_existing(checked, &roots) => return Err(format!("automation path rejected: {asked}: {why}")),
+            Err(_) => {}
+        }
+        Err(refused())
     }
 
     /// The folders as JSON, resolved: `{read: [every folder that may be read], write: [the write roots]}`.
     pub fn to_json(&self) -> serde_json::Value {
         let list = |v: &[PathBuf]| v.iter().map(|p| shown(p)).collect::<Vec<_>>();
         serde_json::json!({"read": list(&[self.read.as_slice(), self.write.as_slice()].concat()), "write": list(&self.write)})
+    }
+}
+
+/// Windows network spellings, without touching their target. Other device namespaces and
+/// mapped drives are not identified here; this is a preflight, not a filesystem sandbox.
+#[cfg(windows)]
+fn unc_spelling(path: &Path) -> bool {
+    use std::path::Prefix;
+
+    match path.components().next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::UNC(..) | Prefix::VerbatimUNC(..) => true,
+            Prefix::DeviceNS(name) | Prefix::Verbatim(name) => name.as_encoded_bytes().eq_ignore_ascii_case(b"UNC"),
+            _ => false,
+        },
+        _ => {
+            let spelling = path.as_os_str().as_encoded_bytes();
+            spelling.starts_with(br"\\") || spelling.starts_with(b"//")
+        }
     }
 }
 

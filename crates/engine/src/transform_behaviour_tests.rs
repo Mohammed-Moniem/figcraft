@@ -369,6 +369,73 @@ fn resizing_and_flipping_one_layer() {
     assert!(near(rotation(&s, t).abs(), 30.0), "Shift: the nearest 15° step: {}", rotation(&s, t));
 }
 
+/// A rotate-handle drag on a layer at `start` degrees, turning it by `turn` degrees in the Design
+/// panel's convention (positive is counter-clockwise on screen); returns the rotation it ends at.
+fn rotate_drag_from(start: f64, turn: f64, m: Mods) -> f64 {
+    let mut s = session();
+    let r = rect(&mut s, 0.0, 200.0, 100.0, 100.0, None);
+    set(&mut s, &[r], json!({"rotation": start}));
+    ex(&mut s, "select.set", json!({"ids": [r]}));
+    // The handle sits just outside the top-left corner of the turned box; the pointer then circles
+    // the centre by `turn` (the page angle runs the other way round, y being down).
+    let world = s.doc().unwrap().world_transform(r);
+    let (c, corner) = (world * Point::new(50.0, 50.0), world * Point::ZERO);
+    let from = corner + (corner - c) * 0.15;
+    let a = (from - c).atan2() - turn.to_radians();
+    let to = c + figcraft_geom::Vec2::from_angle(a) * 80.0;
+    let steps = undo_steps(&s);
+    drag(&mut s, from, to, m);
+    let result = rotation(&s, r);
+    assert_eq!(undo_steps(&s), steps + 1, "one undo step for the rotate gesture");
+    ex(&mut s, "edit.undo", json!({}));
+    assert!(near(rotation(&s, r), start), "undo restores the starting angle");
+    result
+}
+
+#[test]
+fn shift_rotating_lands_on_multiples_of_15_not_steps_from_the_start() {
+    // Upstream PR #2096 reports that a layer at 7° Shift-rotated by its corner ends at 15°, so the
+    // steps are absolute multiples of 15°, not 15° steps from where the drag began.
+    let got = rotate_drag_from(7.0, 37.0, SHIFT);
+    assert!(near(got, 45.0), "7° turned by 37° is 44°, nearest multiple of 15 is 45°: {got}");
+    // Without Shift the turn is free.
+    let got = rotate_drag_from(7.0, 37.0, NONE);
+    assert!(near(got, 44.0), "a free turn: {got}");
+    // A small turn: 7° + 3° = 10°, nearest multiple of 15 is 15° (not 7° or 10°).
+    let got = rotate_drag_from(7.0, 3.0, SHIFT);
+    assert!(near(got, 15.0), "10° rounds to 15°: {got}");
+    let got = rotate_drag_from(-4.27, 2.0, SHIFT);
+    assert!(near(got, 0.0), "-2.27° rounds to 0°: {got}");
+}
+
+#[test]
+fn shared_rotation_snaps_absolutely_but_mixed_and_axis_aligned_selections_keep_their_rule() {
+    for (before, want) in [([7.0, 7.0], [45.0, 45.0]), ([7.0, -4.27], [37.0, 25.73]), ([90.0, 90.0], [120.0, 120.0])] {
+        let mut s = session();
+        let a = rect(&mut s, 0.0, 200.0, 100.0, 100.0, None);
+        let b = rect(&mut s, 300.0, 200.0, 100.0, 100.0, None);
+        set(&mut s, &[a], json!({"rotation":before[0]}));
+        set(&mut s, &[b], json!({"rotation":before[1]}));
+        ex(&mut s, "select.set", json!({"ids":[a,b]}));
+        let box_points = selection_box(s.doc().unwrap(), &[a, b]).unwrap();
+        let center = Point::new(box_points.iter().map(|p| p.x).sum::<f64>() / 4.0, box_points.iter().map(|p| p.y).sum::<f64>() / 4.0);
+        let outward = box_points[0] - center;
+        let from = box_points[0] + outward * (10.0 / outward.hypot());
+        let angle = (from - center).atan2() - 37f64.to_radians();
+        let to = center + figcraft_geom::Vec2::from_angle(angle) * 80.0;
+        let steps = undo_steps(&s);
+        drag(&mut s, from, to, SHIFT);
+        assert!(
+            near(rotation(&s, a), want[0]) && near(rotation(&s, b), want[1]),
+            "start {before:?}, want {want:?}, got {:?}",
+            [rotation(&s, a), rotation(&s, b)]
+        );
+        assert_eq!(undo_steps(&s), steps + 1);
+        ex(&mut s, "edit.undo", json!({}));
+        assert!(near(rotation(&s, a), before[0]) && near(rotation(&s, b), before[1]));
+    }
+}
+
 #[test]
 fn groups_scale_children_keeping_their_rotation_and_flip() {
     let mut s = session();
@@ -626,6 +693,27 @@ fn smart_guides_snap_to_edges_centres_and_equal_spacing() {
 }
 
 #[test]
+fn a_layer_edge_snaps_within_4_5_screen_pixels_at_any_zoom() {
+    // Upstream PR #2086 reports: a dragged edge snaps at a gap of 4.4 screen px and not at 4.6,
+    // at 100% and at 200% zoom.
+    for (zoom, gap_px, snaps) in [(1.0, 4.4, true), (1.0, 4.6, false), (2.0, 4.4, true), (2.0, 4.6, false), (1.0, 4.5, true), (2.0, 4.5, true)] {
+        let mut s = Session::new();
+        ex(&mut s, "view.snapPixel", json!({"on": false}));
+        rect(&mut s, 0.0, 0.0, 100.0, 100.0, None);
+        let b = rect(&mut s, 300.0, 300.0, 100.0, 100.0, None);
+        ex(&mut s, "select.set", json!({"ids": [b]}));
+        let gap = gap_px / zoom;
+        let to = Point::new(350.0 - (200.0 - gap), 350.0);
+        for (kind, p) in [(PointerKind::Down, Point::new(350.0, 350.0)), (PointerKind::Move, to), (PointerKind::Up, to)] {
+            s.pointer(&PointerEvent::at(kind, p.x, p.y, zoom)).unwrap();
+        }
+        let want = if snaps { 100.0 } else { 100.0 + gap };
+        let got = bounds(&s, b).x0;
+        assert!(near(got, want), "zoom {zoom}, gap {gap_px} screen px: left edge at {got}, wanted {want}");
+    }
+}
+
+#[test]
 fn corner_cursors_stay_diagonal_whatever_the_proportions() {
     let mut s = session();
     let mod180 = |a: f64, b: f64| near((a - b).rem_euclid(180.0).min((b - a).rem_euclid(180.0)), 0.0);
@@ -685,4 +773,250 @@ fn the_transform_box_and_its_handles() {
     assert_eq!(bounds(&s, tiny), Rect::new(320.0, 10.0, 340.0, 30.0), "the corner handle just outside resizes it");
     // At a larger zoom the same layer is big enough on screen for its handles inside it.
     assert_eq!(handle_at(s.doc().unwrap(), &[tiny], Point::new(320.2, 10.2), 20.0), Some(Handle::Corner(0)));
+}
+
+// Nested-frame rotation contract inferred from the app's Design-panel angle, not an empirical
+// Figma nested-transform comparison. Public rotate-handle pointer events exercise the gesture.
+
+fn rotation_parent_frame(s: &mut Session, x: f64, angle: f64) -> NodeId {
+    let parent = id(&ex(s, "frame.create", json!({"x": x, "y": 300, "width": 500, "height": 400})));
+    set(s, &[parent], json!({"rotation": angle}));
+    parent
+}
+
+fn rotation_parent_child(s: &mut Session, parent: NodeId, x: f64, angle: f64) -> NodeId {
+    let child = rect(s, x, 100.0, 100.0, 100.0, Some(parent));
+    set(s, &[child], json!({"rotation": angle}));
+    child
+}
+
+/// Actual Down/Move/Up at the selection's rotate zone; records panel-local and page angles.
+/// Every row also proves one-step Undo/Redo, unchanged parents, and preserved dimensions.
+fn rotation_parent_pointer_turn(s: &mut Session, ids: &[NodeId], parents: &[NodeId], turn: f64, mods: Mods) -> (Vec<f64>, Vec<f64>) {
+    ex(s, "select.set", json!({"ids": ids}));
+    let before = s.doc().unwrap().clone();
+    let old_sizes: Vec<_> = ids.iter().map(|i| size(s, *i)).collect();
+    let steps = undo_steps(s);
+    let box_points = selection_box(&before, ids).unwrap();
+    let center = Point::new(box_points.iter().map(|p| p.x).sum::<f64>() / 4.0, box_points.iter().map(|p| p.y).sum::<f64>() / 4.0);
+    let outward = box_points[0] - center;
+    let from = box_points[0] + outward * (10.0 / outward.hypot());
+    assert_eq!(handle_at(&before, ids, from, 1.0), Some(Handle::Rotate(0)), "fixture must begin in the actual rotate-handle zone");
+    let angle = (from - center).atan2() - turn.to_radians();
+    let to = center + figcraft_geom::Vec2::from_angle(angle) * 80.0;
+    drag(s, from, to, mods);
+    let local: Vec<_> = ids.iter().map(|i| rotation(s, *i)).collect();
+    let world: Vec<_> = ids.iter().map(|i| rotation_degrees(s.doc().unwrap().world_transform(*i))).collect();
+    assert_eq!(undo_steps(s), steps + 1, "one Undo entry for the complete pointer gesture");
+    for (i, old) in ids.iter().zip(old_sizes) {
+        let now = size(s, *i);
+        assert!(near(now.0, old.0) && near(now.1, old.1), "rotation may not resize {i:?}");
+    }
+    for parent in parents {
+        assert_eq!(s.doc().unwrap().node(*parent), before.node(*parent), "rotating a child may not mutate its Frame parent");
+    }
+    let after = s.doc().unwrap().clone();
+    ex(s, "edit.undo", json!({}));
+    assert_eq!(s.doc().unwrap(), &before, "Undo restores the complete authored document");
+    ex(s, "edit.redo", json!({}));
+    assert_eq!(s.doc().unwrap(), &after, "Redo restores the exact result");
+    (local, world)
+}
+
+#[test]
+fn rotation_parent_shift_uses_displayed_local_angle_and_is_undoable() {
+    let mut s = session();
+    let parent = rotation_parent_frame(&mut s, 300.0, 11.0);
+    let child = rotation_parent_child(&mut s, parent, 100.0, 7.0);
+    assert!(near(rotation(&s, child), 7.0));
+    assert!(near(rotation_degrees(s.doc().unwrap().world_transform(child)), 18.0));
+    let (local, world) = rotation_parent_pointer_turn(&mut s, &[child], &[parent], 3.0, SHIFT);
+    assert!(near(local[0], 15.0), "the panel's local 7 + 3 rounds to 15, not the page's 18 + 3: local={local:?}, world={world:?}");
+    assert!(near(world[0], 26.0), "11-degree parent + 15-degree local child");
+}
+
+#[test]
+fn rotation_parent_free_drag_tracks_pointer_without_snapping() {
+    let mut s = session();
+    let parent = rotation_parent_frame(&mut s, 300.0, 11.0);
+    let child = rotation_parent_child(&mut s, parent, 100.0, 7.0);
+    let (local, world) = rotation_parent_pointer_turn(&mut s, &[child], &[parent], 3.0, NONE);
+    assert!(near(local[0], 10.0) && near(world[0], 21.0), "free rotation remains unsnapped: local={local:?}, world={world:?}");
+}
+
+#[test]
+fn rotation_parent_shared_local_siblings_snap_to_same_absolute_grid() {
+    let mut s = session();
+    let parent = rotation_parent_frame(&mut s, 300.0, 11.0);
+    let a = rotation_parent_child(&mut s, parent, 70.0, 7.0);
+    let b = rotation_parent_child(&mut s, parent, 260.0, 7.0);
+    let (local, world) = rotation_parent_pointer_turn(&mut s, &[a, b], &[parent], 37.0, SHIFT);
+    assert!(local.iter().all(|a| near(*a, 45.0)), "shared panel angle 7 + 37 rounds to 45: local={local:?}, world={world:?}");
+    assert!(world.iter().all(|a| near(*a, 56.0)));
+}
+
+#[test]
+fn rotation_parent_shared_local_across_rotated_frames_snap_together() {
+    let mut s = session();
+    let p = rotation_parent_frame(&mut s, 300.0, 11.0);
+    let q = rotation_parent_frame(&mut s, 1000.0, 23.0);
+    let a = rotation_parent_child(&mut s, p, 100.0, 7.0);
+    let b = rotation_parent_child(&mut s, q, 100.0, 7.0);
+    let (local, world) = rotation_parent_pointer_turn(&mut s, &[a, b], &[p, q], 37.0, SHIFT);
+    assert!(
+        local.iter().all(|a| near(*a, 45.0)),
+        "equal local panel angles remain shared even when page angles differ: local={local:?}, world={world:?}"
+    );
+    assert!(near(world[0], 56.0) && near(world[1], 68.0));
+}
+
+#[test]
+fn rotation_parent_mixed_local_siblings_keep_zero_base_policy() {
+    let mut s = session();
+    let parent = rotation_parent_frame(&mut s, 300.0, 11.0);
+    let a = rotation_parent_child(&mut s, parent, 70.0, 7.0);
+    let b = rotation_parent_child(&mut s, parent, 260.0, -4.27);
+    let (local, world) = rotation_parent_pointer_turn(&mut s, &[a, b], &[parent], 37.0, SHIFT);
+    assert!(near(local[0], 37.0) && near(local[1], 25.73), "mixed local rotation retains the existing zero-base 30-degree turn: {local:?}");
+    assert!(near(world[0], 48.0) && near(world[1], 36.73));
+}
+
+#[test]
+fn rotation_parent_mixed_local_with_equal_world_axes_keep_zero_base_policy() {
+    let mut s = session();
+    let p = rotation_parent_frame(&mut s, 300.0, 11.0);
+    let q = rotation_parent_frame(&mut s, 1000.0, 22.0);
+    let a = rotation_parent_child(&mut s, p, 100.0, 7.0);
+    let b = rotation_parent_child(&mut s, q, 100.0, -4.0);
+    assert!(near(rotation_degrees(s.doc().unwrap().world_transform(a)), 18.0));
+    assert!(near(rotation_degrees(s.doc().unwrap().world_transform(b)), 18.0));
+    let (local, world) = rotation_parent_pointer_turn(&mut s, &[a, b], &[p, q], 37.0, SHIFT);
+    assert!(
+        near(local[0], 37.0) && near(local[1], 26.0),
+        "equal world axes may not hide the panel's mixed local angles: local={local:?}, world={world:?}"
+    );
+    assert!(world.iter().all(|a| near(*a, 48.0)));
+}
+
+#[test]
+fn rotation_parent_axis_aligned_local_angle_uses_the_same_15_degree_grid() {
+    let mut s = session();
+    let parent = rotation_parent_frame(&mut s, 300.0, 11.0);
+    let child = rotation_parent_child(&mut s, parent, 100.0, 90.0);
+    let (local, world) = rotation_parent_pointer_turn(&mut s, &[child], &[parent], 37.0, SHIFT);
+    assert!(near(local[0], 120.0) && near(world[0], 131.0), "local 90 is already on the grid: local={local:?}, world={world:?}");
+}
+
+#[test]
+fn rotation_parent_mirrored_child_keeps_flip_while_local_angle_snaps() {
+    let mut s = session();
+    let parent = rotation_parent_frame(&mut s, 300.0, 11.0);
+    let child = rotation_parent_child(&mut s, parent, 100.0, 0.0);
+    ex(&mut s, "object.flipH", json!({"ids": [child]}));
+    set(&mut s, &[child], json!({"rotation": 7.0}));
+    assert!(flipped(&s, child) && near(rotation(&s, child), 7.0));
+    let (local, world) = rotation_parent_pointer_turn(&mut s, &[child], &[parent], 3.0, SHIFT);
+    assert!(near(local[0], 15.0) && near(world[0], 26.0), "a flipped child still exposes its local angle: local={local:?}, world={world:?}");
+    assert!(flipped(&s, child), "rotation must preserve the child's reflection");
+}
+
+#[test]
+fn rotation_parent_top_level_shift_grid_is_unchanged_control() {
+    let mut s = session();
+    let child = rect(&mut s, 300.0, 300.0, 100.0, 100.0, None);
+    set(&mut s, &[child], json!({"rotation": 7.0}));
+    let (local, world) = rotation_parent_pointer_turn(&mut s, &[child], &[], 3.0, SHIFT);
+    assert!(near(local[0], 15.0) && near(world[0], 15.0));
+}
+
+#[test]
+fn rotation_parent_reflected_parent_keeps_existing_world_grid_control() {
+    let mut s = session();
+    let parent = rotation_parent_frame(&mut s, 300.0, 11.0);
+    let child = rotation_parent_child(&mut s, parent, 100.0, 7.0);
+    ex(&mut s, "object.flipH", json!({"ids": [parent]}));
+    set(&mut s, &[parent], json!({"rotation": 11.0}));
+    assert!(is_flipped(s.doc().unwrap().world_transform(parent)));
+    assert!(near(rotation(&s, child), 7.0));
+    assert!(near(rotation_degrees(s.doc().unwrap().world_transform(child)), 4.0));
+    // A reflected parent's local angle turns in the opposite direction. Retain the legacy world
+    // grid: world4 + pointer37 rounds to45; local7 - world41 = -34, not a claimed local15 grid.
+    let (local, world) = rotation_parent_pointer_turn(&mut s, &[child], &[parent], 37.0, SHIFT);
+    assert!(
+        near(world[0], 45.0) && near(local[0], -34.0),
+        "reflected-parent fallback must remain the existing world rule: local={local:?}, world={world:?}"
+    );
+    assert!(flipped(&s, child));
+}
+
+#[test]
+fn rotation_parent_nonuniform_parent_keeps_existing_world_grid_control() {
+    use base64::Engine as _;
+    let mut s = session();
+    let parent = rotation_parent_frame(&mut s, 300.0, 11.0);
+    let child = rotation_parent_child(&mut s, parent, 100.0, 7.0);
+    // Actual native documents may contain affine frame matrices. Materialize one through the
+    // existing public native serializer/file.open; a width edit would merely resize the frame
+    // and would not exercise a nonuniform P^-1 R P parent linear.
+    let mut doc = s.doc().unwrap().clone();
+    let parent_matrix = doc.node(parent).unwrap().transform * figcraft_geom::Affine::scale_non_uniform(2.0, 1.0);
+    doc.get_mut(parent).unwrap().transform = parent_matrix;
+    let bytes = figcraft_format::save_bytes(&doc, None).unwrap();
+    ex(&mut s, "file.open", json!({"data": base64::engine::general_purpose::STANDARD.encode(bytes), "name": "Nonuniform Frame.figcraft"}));
+    assert_eq!(s.doc().unwrap().world_transform(parent), parent_matrix, "fixture reload must retain the actual anisotropic matrix");
+    assert!(near(rotation(&s, child), 7.0));
+    let before_world = 11.0 + (7f64.to_radians().tan() / 2.0).atan().to_degrees();
+    assert!(near(rotation_degrees(s.doc().unwrap().world_transform(child)), before_world));
+    // Legacy world grid rounds about14.513 +37 to45. The retained parent inverse maps the world
+    // direction45 back to atan(2*tan(45-11)) locally; it is intentionally not on a local15 grid.
+    let expected_local = (2.0 * 34f64.to_radians().tan()).atan().to_degrees();
+    let (local, world) = rotation_parent_pointer_turn(&mut s, &[child], &[parent], 37.0, SHIFT);
+    assert!(
+        near(world[0], 45.0) && near(local[0], expected_local),
+        "anisotropic-parent fallback must retain world snapping: local={local:?}, world={world:?}"
+    );
+    assert!((local[0] / 15.0 - (local[0] / 15.0).round()).abs() > 0.01, "this control must not falsely imply local-grid coverage");
+}
+
+/// Top-level contract, independent of nested parents: the geometry box's near-axis tolerance
+/// must not erase the real angle used to snap the displayed value to the absolute 15-degree grid.
+fn assert_rotation_near_axis_top_level(start: f64, expected: f64) {
+    let mut s = session();
+    let child = rect(&mut s, 300.0, 300.0, 100.0, 100.0, None);
+    set(&mut s, &[child], json!({"rotation": start}));
+    ex(&mut s, "select.set", json!({"ids": [child]}));
+    assert_eq!(s.doc().unwrap().node(child).unwrap().parent, Some(s.page().unwrap()), "top-level fixture has no Frame parent");
+    let before = s.doc().unwrap().clone();
+    let steps = undo_steps(&s);
+    let corners = selection_box(&before, &[child]).unwrap();
+    let center = Point::new(corners.iter().map(|p| p.x).sum::<f64>() / 4.0, corners.iter().map(|p| p.y).sum::<f64>() / 4.0);
+    let outward = corners[0] - center;
+    let from = corners[0] + outward * (10.0 / outward.hypot());
+    assert_eq!(handle_at(&before, &[child], from, 1.0), Some(Handle::Rotate(0)));
+    let angle = (from - center).atan2() - 3f64.to_radians();
+    let to = center + figcraft_geom::Vec2::from_angle(angle) * 80.0;
+    drag(&mut s, from, to, SHIFT);
+    let (local, world) = (rotation(&s, child), rotation_degrees(s.doc().unwrap().world_transform(child)));
+    // Assert the actual angle first: old production may treat this as a no-op, so its zero Undo
+    // entry must not hide the meaningful off-grid-angle failure.
+    assert!(
+        near(local, expected) && near(world, expected),
+        "top-level start {start} + 3 Shift must land on {expected}; actual local={local}, world={world}"
+    );
+    assert_eq!(undo_steps(&s), steps + 1, "correcting a nonzero near-axis residual is one authored change");
+    let after = s.doc().unwrap().clone();
+    ex(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc().unwrap(), &before);
+    ex(&mut s, "edit.redo", json!({}));
+    assert_eq!(s.doc().unwrap(), &after);
+}
+
+#[test]
+fn rotation_near_axis_top_level_zero_residual_snaps_to_exact_grid() {
+    assert_rotation_near_axis_top_level(0.001, 0.0);
+}
+
+#[test]
+fn rotation_near_axis_top_level_quarter_turn_residual_snaps_to_exact_grid() {
+    assert_rotation_near_axis_top_level(90.001, 90.0);
 }

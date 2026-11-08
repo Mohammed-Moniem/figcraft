@@ -18,7 +18,7 @@ pub const STROKE_SIDES: [&str; 4] = ["strokeTopWeight", "strokeRightWeight", "st
 /// Keys `node.set` understands (documented for agents).
 pub const KEYS: &str = "name, visible, locked, opacity (0-1 or \"50%\"), blend, x, y (relative to the parent frame; groups don't count), width, height, rotation (degrees), \
 fills (paints or colours; gradients as {type: linearGradient|radialGradient|angularGradient|diamondGradient, stops: [\"#hex\", ...], from?, to?} too), fill (colour, {$var: variable id or name}, or \"none\"/null: no fill), strokes, stroke (colour, {$var: variable id or name}, or \"none\"/null: no stroke), strokeWeight, strokeAlign (inside|center|outside), strokeSides [t,r,b,l], strokeTopWeight / strokeRightWeight / strokeBottomWeight / strokeLeftWeight (one side; turns on individual strokes), \
-strokeCap / startCap / endCap, strokeJoin, miterAngle (degrees: sharper joins bevel; or miterLimit as a ratio), dashes [..], dashCap (none|round|square; null: dashes take startCap and endCap), widthProfile (preset uniform|wedge|taper|eye|rounded|pinch, [[t, scale], ...] or null), brush (preset id, {preset, spacing, sizeJitter, rotationJitter, scatter, seed} or null), cornerRadius (n or [tl,tr,br,bl]; Boolean results require uniform values), cornerSmoothing (0-1), effects, \
+strokeCap / startCap / endCap, strokeJoin, miterAngle (degrees: sharper joins bevel; or miterLimit as a ratio), dashes [..], dashPhase (finite signed px offset, or null: automatic), dashCap (none|round|square; null: dashes take startCap and endCap), widthProfile (preset uniform|wedge|taper|eye|rounded|pinch, [[t, scale], ...] or null), brush (preset id, {preset, spacing, sizeJitter, rotationJitter, scatter, seed} or null), cornerRadius (n or [tl,tr,br,bl]; Boolean results require uniform values), cornerSmoothing (0-1), effects, \
 clip, isMask, layout (null|horizontal|vertical|grid|{...}), gap, crossGap, padding (n or [t,r,b,l]), paddingTop/Right/Bottom/Left, \
 mainAlign (min|center|max, or the auto gaps spaceBetween|spaceAround|spaceEvenly), crossAlign (min|center|max|baseline: first text baselines, horizontal layouts), contentAlign (wrapped lines: auto = packed where crossAlign says | spaceBetween), wrap (rows of a horizontal layout, columns of a vertical one), strokesIncluded (the frame's inside stroke takes up space), reverseZ (canvas stacking: true = first on top), \
 columnGap / rowGap (aliases of gap / crossGap), gridColumns, gridRows, columnTracks / rowTracks ([120 | \"1fr\" | \"auto\" | {sizing, value}]), \
@@ -636,6 +636,14 @@ fn apply_look(cmd: &str, doc: &mut Document, id: NodeId, k: &str, v: &Value) -> 
             };
             doc.get_mut(id)?.stroke.dashes = d;
         }
+        "dashPhase" => {
+            let phase = if v.is_null() {
+                None
+            } else {
+                Some(v.as_f64().filter(|value| value.is_finite()).ok_or_else(|| bad(cmd, "dashPhase: a finite number, or null for automatic"))?)
+            };
+            doc.get_mut(id)?.stroke.dash_phase = phase;
+        }
         "dashCap" => {
             let cap = (!v.is_null())
                 .then(|| enum_of(v).filter(|c| StrokeCap::DASH.contains(c)).ok_or_else(|| bad(cmd, "dashCap: none|round|square, or null")))
@@ -971,7 +979,14 @@ fn apply_text(cmd: &str, doc: &mut Document, id: NodeId, props: &Map<String, Val
         }
         "leadingTrim" => text_mut(cmd, doc.get_mut(id)?)?.leading_trim = enum_of(v).ok_or_else(|| bad(cmd, "leadingTrim: none|capHeight"))?,
         "wrapStyle" | "textWrap" => {
-            text_mut(cmd, doc.get_mut(id)?)?.wrap_style = enum_of(v).ok_or_else(|| bad(cmd, "wrapStyle: auto|balance|pretty"))?
+            let w: figcraft_doc::WrapStyle = enum_of(v).ok_or_else(|| bad(cmd, "wrapStyle: auto|balance|pretty"))?;
+            let t = text_mut(cmd, doc.get_mut(id)?)?;
+            if props.contains_key("start") || props.contains_key("end") {
+                let (start, end) = range_of(props, t.char_count());
+                t.set_para_wrap_styles(start, end, w);
+            } else {
+                t.set_wrap_style(w);
+            }
         }
         "maxLines" => {
             let lines = f64_of(v).unwrap_or(0.0).clamp(0.0, 10_000.0) as u32;
@@ -1167,6 +1182,11 @@ pub fn apply(cmd: &str, doc: &mut Document, id: NodeId, props: &Map<String, Valu
     // resizing, export settings and interactions are its own, not overrides).
     let own_root = matches!(doc.get(id)?.kind, NodeKind::Instance { .. }) && !crate::components::inside_instance(doc, id);
     let n = doc.get_mut(id)?;
+    if cmd != "variables" {
+        for key in props.keys() {
+            n.scale_derived_overrides.remove(override_group(key));
+        }
+    }
     if n.source.is_some() {
         for g in
             props.keys().map(|k| override_group(k)).filter(|g| *g != "other" && !(own_root && matches!(*g, "resizing" | "exports" | "interactions")))
@@ -1208,9 +1228,9 @@ fn set_path(cmd: &str, doc: &mut Document, id: NodeId, v: &Value, props: &Map<St
 pub fn override_group(k: &str) -> &'static str {
     match k {
         "fills" | "fill" => "fills",
-        "strokes" | "stroke" | "strokeWeight" | "strokeAlign" | "dashes" | "dashCap" | "strokeCap" | "startCap" | "endCap" | "strokeJoin"
-        | "strokeSides" | "strokeTopWeight" | "strokeRightWeight" | "strokeBottomWeight" | "strokeLeftWeight" | "miterLimit" | "miterAngle"
-        | "widthProfile" | "brush" | "strokeBrush" => "strokes",
+        "strokes" | "stroke" | "strokeWeight" | "strokeAlign" | "dashes" | "dashPhase" | "dashCap" | "strokeCap" | "startCap" | "endCap"
+        | "strokeJoin" | "strokeSides" | "strokeTopWeight" | "strokeRightWeight" | "strokeBottomWeight" | "strokeLeftWeight" | "miterLimit"
+        | "miterAngle" | "widthProfile" | "brush" | "strokeBrush" => "strokes",
         "effects" => "effects",
         "opacity" | "blend" | "blendMode" => "opacity",
         "visible" => "visible",
@@ -1414,11 +1434,11 @@ fn set_sizing(cmd: &str, doc: &mut Document, id: NodeId, s: Sizing, horizontal: 
         }
         _ => {}
     }
-    // A child can't fill an axis its parent hugs: the parent becomes fixed at its current size.
-    // (The other way round, a parent that starts to hug fixes the children that filled it: see
-    // `figcraft_layout::coherent_sizing`, applied after every edit.)
+    // Main-axis Fill (and grid Fill) needs a fixed parent. Linear cross-axis Fill stretches to
+    // its line, so the parent may keep hugging that axis.
     if s == Sizing::Fill
         && let Some(p) = parent
+        && (doc.get(id)?.child_layout.absolute || !figcraft_layout::is_cross_axis(doc.get(p)?, horizontal))
     {
         let cl = &mut doc.get_mut(p)?.child_layout;
         let ps = if horizontal { &mut cl.sizing_h } else { &mut cl.sizing_v };

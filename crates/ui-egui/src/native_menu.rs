@@ -46,25 +46,34 @@ pub fn mac_label(english: &'static str) -> String {
 /// The main menu as a menu bar, with the Mac's shortcuts (a native menu bar is the Mac's).
 /// `windows`: whether the app can open more windows (New window).
 pub fn menu_bar(app: &FigApp, windows: bool) -> craft_menu::MenuBar {
+    menu_bar_for(app, windows, app.windows.is_preview(app.windows.current))
+}
+
+fn menu_bar_for(app: &FigApp, windows: bool, preview: bool) -> craft_menu::MenuBar {
     let mut rows = Vec::new();
     let path = |menu: &str| menu.split('/').map(|p| tr(p).to_string()).collect::<Vec<String>>();
     let row = |path: Vec<String>, id: String, label: String, shortcut: Option<&str>, enabled: bool, checked: Option<bool>| craft_menu::Row {
         path,
         command: craft_menu::CommandRef::new(id),
         label,
-        shortcut: shortcut.and_then(|s| craft_menu::Chord::parse(s).ok()),
-        enabled,
+        // Disabled design accelerators must not shadow native Close Window in a companion.
+        shortcut: if preview { None } else { shortcut.and_then(|s| craft_menu::Chord::parse(s).ok()) },
+        enabled: enabled && !preview,
         kind: checked.map_or(craft_menu::ItemKind::Plain, craft_menu::ItemKind::Check),
     };
     let sep = |path: Vec<String>| row(path, String::new(), "---".into(), None, false, None);
-    plugin_rows(app, &mut rows);
+    if !preview {
+        plugin_rows(app, &mut rows);
+    }
     for m in MENU {
         if m.label == SEP {
             rows.push(sep(path(m.menu)));
             continue;
         }
         if m.id == "file.openRecent" {
-            recent_rows(app, path(&format!("{}/{}", m.menu, i18n::menu_item(m.id, m.label))), &mut rows);
+            if !preview {
+                recent_rows(app, path(&format!("{}/{}", m.menu, i18n::menu_item(m.id, m.label))), &mut rows);
+            }
             continue;
         }
         let enabled = crate::menus::available(m.id) && (m.id != "window.new" || windows);
@@ -176,6 +185,11 @@ fn plugin_rows(app: &FigApp, rows: &mut Vec<craft_menu::Row>) {
 
 /// Run the item `id` chosen in the native menu bar, as the in-window menu would.
 pub fn run(app: &mut FigApp, id: &str) {
+    // Native menu clicks bypass the control dispatcher. A prototype companion never grants
+    // design-edit authority over its source document. System window/quit items remain native.
+    if app.windows.is_preview(app.windows.current) {
+        return;
+    }
     if id == CLEAR_RECENT {
         app.run_user("file.openRecent", json!({"clear": true}));
     } else if let Some(path) = id.strip_prefix(RECENT) {
@@ -200,12 +214,21 @@ pub fn front(app: &FigApp) -> ViewportId {
 /// The menu bar for the window in front (its file, selection and panels).
 pub fn menu_bar_in_front(app: &mut FigApp, windows: bool) -> craft_menu::MenuBar {
     let id = app.windows.focused;
+    // Even a source closed before viewport retirement cannot expose another editor's menu.
+    if app.windows.is_preview(id) {
+        return menu_bar_for(app, windows, true);
+    }
     crate::windows::as_window(app, id, |app| menu_bar(app, windows)).unwrap_or_else(|| menu_bar(app, windows))
 }
 
 /// Run the item `id` chosen in the menu bar in the window in front.
 pub fn run_in_front(app: &mut FigApp, id: &str) {
     let front = app.windows.focused;
+    // Refuse by window kind before the UID swap: a closed source must never fall back
+    // to applying this native-menu action to the root editor.
+    if app.windows.is_preview(front) {
+        return;
+    }
     if windows::as_window(app, front, |app| run(app, id)).is_none() {
         run(app, id);
     }

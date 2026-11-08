@@ -23,6 +23,34 @@ fn covers(p: &BezPath, x: f64, y: f64) -> bool {
 }
 
 #[test]
+fn phase_zero_keeps_the_initial_round_dot_in_automatic_and_manual_strokes() {
+    for dash_phase in [None, Some(0.0)] {
+        let p = StrokeProps {
+            dashes: vec![0.0, 10.0],
+            dash_phase,
+            cap_start: StrokeCap::Round,
+            cap_end: StrokeCap::Round,
+            ..props(4.0, Some(WidthProfile::uniform()))
+        };
+        let out = stroke_outline(&line(100.0), &p, false);
+        assert!(covers(&out, 0.0, 1.0), "zero-length ON dash draws its round dot at the initial point: {dash_phase:?}");
+        assert!(covers(&out, 10.0, 1.0));
+        assert!(!covers(&out, 5.0, 0.0));
+    }
+}
+
+#[test]
+fn phase_tiny_negative_rounding_does_not_erase_a_variable_width_stroke() {
+    let phase = -f64::MIN_POSITIVE;
+    let (_, offset) = line_dashes_with_phase(100.0, false, &[10.0, 10.0], Some(phase));
+    assert!((0.0..20.0).contains(&offset), "the reduced offset stays strictly inside one period: {offset}");
+    let p = StrokeProps { dashes: vec![10.0, 10.0], dash_phase: Some(phase), ..props(4.0, Some(WidthProfile::uniform())) };
+    let out = stroke_outline(&line(100.0), &p, false);
+    assert!(covers(&out, 8.0, 0.0));
+    assert!(!covers(&out, 12.0, 0.0));
+}
+
+#[test]
 fn measures_paths_by_length() {
     let mut p = line(100.0);
     p.move_to((0.0, 50.0));

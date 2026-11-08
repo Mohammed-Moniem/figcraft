@@ -6,6 +6,9 @@ use figcraft_geom::{Point, Rect, Vec2};
 
 use crate::{ConnectorPath, Routing, Side};
 
+mod obstacles;
+pub use obstacles::{RoutingBudget, route_avoiding};
+
 /// One end of a route: a free point, or an object's box and the side the route leaves it by
 /// ([`Side::Auto`]: the side facing the other end).
 #[derive(Clone, Copy, Debug, PartialEq)]

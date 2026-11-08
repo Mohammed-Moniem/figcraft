@@ -109,6 +109,7 @@ static ROWS: &[Row] = &[
     doc(Tools, "Pen tool", &["P"], &[], Bound("tool.pen"), ""),
     doc(Tools, "Pencil tool", &["Shift+P"], &[], Bound("tool.pencil"), ""),
     doc(Tools, "Text tool", &["T"], &[], Bound("tool.text"), ""),
+    doc(Tools, "Annotation tool", &["Shift+T"], &[], Bound("tool.annotation"), "layer-attached notes; Accessibility at Figma"),
     doc(Tools, "Comment mode", &["C"], &[], Bound("tool.comment"), ""),
     doc(Tools, "Hand tool while held", &["Space"], &[], Gesture("Pan the canvas"), "held, not pressed"),
     doc(Tools, "Pan with the arrows when nothing is selected (Shift: farther)", &["ArrowRight"], &[], Gesture("Pan with nothing selected (Shift: farther)"),
@@ -413,7 +414,7 @@ fn counts_match_the_docs() {
     let reserved = documented.iter().filter(|r| !r.reserved.is_empty()).count();
     let pinned = ROWS.len() - documented.len();
     // docs/ui-parity.md quotes these.
-    assert_eq!((documented.len(), bound, moved, missing, reserved, pinned), (134, 133, 1, 0, 2, 57));
+    assert_eq!((documented.len(), bound, moved, missing, reserved, pinned), (135, 134, 1, 0, 2, 57));
 }
 
 #[test]

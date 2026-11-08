@@ -112,7 +112,7 @@ page 1 "Screens": 380 nodes, 4 top-level
   …
 ```
 
-### `export <file> -o <out> [--format png|jpg|svg|webp|pdf|xml|fig|penpot] [--scale N] [--page NAME] [--node ID|NAME] [--bleed LENGTH] [--crop-marks] [--bleed-marks] [--cmyk] [--vd-compat bestEffort|exact|ignore]`
+### `export <file> -o <out> [--format png|jpg|svg|webp|pdf|xml|fig|penpot] [--scale N] [--page NAME] [--node ID|NAME] [--bleed LENGTH] [--crop-marks] [--bleed-marks] [--cmyk] [--vd-compat bestEffort|exact|ignore] [--quality 1..100] [--color-profile sameAsFile|srgb|displayP3]`
 
 - `<out>` is a directory: one file per top-level frame of the page (default the first page), named
   after the frame (`Home.png`, `Settings.png`…); with no frames, one file per top-level layer.
@@ -127,7 +127,8 @@ page 1 "Screens": 380 nodes, 4 top-level
   styles with their layer links. Checked by opening it again in FigCraft and, on the example
   documents and small test files, in other software; other apps may not open every file. What was
   left out (comments, Dev Mode data, some bindings and settings…) is printed as `note:` lines;
-  `docs/file-format-parity.md` lists what was checked and what is unchecked.
+  `docs/file-format-parity.md` lists what was checked and what is unchecked. Nondefault JPEG
+  quality and per-setting output profiles in saved layer exports are also reported when left out.
 - `--format xml` (or an `<out>` ending in `.xml`) writes an Android Vector Drawable, e.g.
   `figcraft-cli export app.figcraft --node Icon -o ic_icon.xml`. What the format can't draw is
   printed as `note:` lines; `--vd-compat` picks how it's handled: `bestEffort` (default:
@@ -143,6 +144,15 @@ page 1 "Screens": 380 nodes, 4 top-level
   `note:` lines.
 - The format comes from `--format`, else `<out>`'s extension, else png. `--scale` (default 1, max 64)
   applies to raster formats.
+- `--quality` is JPEG encoder quality: a whole number from 1 to 100, default 90. PNG and WebP
+  accept the option without using it. Invalid quality is a usage error (exit 2), before a file is written.
+- `--color-profile` selects the pixel output space: `sameAsFile` (default), `srgb` or `displayP3`.
+  PNG, JPG and WebP convert the rendered channel values and tag the selected profile without
+  changing the input document. Display P3 colours outside sRGB clip when converted to sRGB.
+  PNG carries sRGB metadata or Display P3 ICC and `cICP`; JPEG embeds ICC for either profile;
+  WebP embeds Display P3 ICC (sRGB WebP is untagged). JPEG composites transparency over white
+  in the source profile before conversion. SVG, XML and RGB PDF keep their sRGB policy; CMYK
+  PDF keeps DeviceCMYK without an output intent. Raster options do not change those vector policies.
 - SVG/PDF/XML exports with visible descendants more than 256 levels below an exported root fail with
   an error instead of writing an incomplete file. Select an inner layer with `--node` or reduce
   nesting. An existing destination file is kept on this failure.
@@ -164,6 +174,7 @@ figcraft-cli export app.figcraft -o hero.svg --node "Hero"
 figcraft-cli export app.figcraft -o screens.pdf --page "Screens"
 figcraft-cli export app.figcraft -o poster.pdf --node "Poster" --bleed 3mm --crop-marks --cmyk
 figcraft-cli export app.figcraft -o handoff.fig
+figcraft-cli export app.figcraft -o hero.jpg --node "Hero" --quality 80 --color-profile srgb
 ```
 
 ### `convert <in> <out>`
@@ -175,10 +186,19 @@ shapes, text, gradients, masks and effects; `info` lists what it left out as `no
 frames, one page each), `.fig` (the whole file, experimental, as `export --format fig`), `.penpot`
 (the whole file as a Penpot 2.x archive, as `export --format penpot`).
 
-### `render <file> -o <out.png> [--scale N] [--page NAME]`
+### `render <file> -o <out.png> [--scale N] [--page NAME] [--quality 1..100] [--color-profile sameAsFile|srgb|displayP3]`
 
 The whole page (default the first) with its background, as png, jpg or webp. Large pages are scaled
-down to fit 16384 px.
+down to fit 16384 px. JPEG quality and pixel output profiles use the same rules as `export`
+above, including defaults of 90 and `sameAsFile`. For example:
+
+```sh
+figcraft-cli render app.figcraft -o page.jpg --quality 80 --color-profile srgb
+figcraft-cli render app.figcraft -o page-p3.png --color-profile displayP3
+```
+
+`convert` and `run --out` keep default quality and the file profile for pixel output. A command
+script can pass `quality` and `colorProfile` to `file.export` for a selected output.
 
 ### `run <script.json|script.jsonl> [--in <file>] [--out <file>]`
 

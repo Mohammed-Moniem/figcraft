@@ -603,6 +603,7 @@ fn group_label(g: &str) -> String {
         "interactions" => tr("Interactions"),
         "modes" => tr("Variable modes"),
         "size" => tr("Size"),
+        "variableScale" => tr("Scale"),
         "resizing" => tr("Resizing"),
         "position" => tr("Position"),
         "component" => tr("Swapped instance"),

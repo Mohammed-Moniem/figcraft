@@ -58,6 +58,7 @@ impl FigApp {
     pub(crate) fn observe_presentation(&mut self) {
         let window = self.windows.current;
         self.windows.presentation(&self.session, window);
+        crate::dev_mode::annotation_tool::revalidate(self);
     }
 
     /// [`run`](Self::run) for something the user did (a dialog, a drop, a paste, a recent file):
@@ -65,6 +66,29 @@ impl FigApp {
     pub fn run_user(&mut self, id: &str, params: Value) -> Option<Value> {
         let result = self.run(id, params.clone());
         if let Some(result) = &result {
+            // Document imports append pages rather than placing a layer. Reveal their content so
+            // an unchanged, empty current page cannot make a successful import look empty. Keep
+            // this in the user path: scripts may intentionally append without changing their view.
+            if id == "file.import"
+                && let Some(pages) = result.get("pages").and_then(Value::as_array)
+            {
+                let page = self.session.doc().ok().and_then(|doc| {
+                    let valid: Vec<_> = pages
+                        .iter()
+                        .filter_map(figcraft_engine::params::id_of)
+                        .filter(|page| doc.pages.contains(page) && !doc.is_divider(*page))
+                        .collect();
+                    valid
+                        .iter()
+                        .copied()
+                        .find(|page| doc.node(*page).is_some_and(|node| !node.children.is_empty()))
+                        .or_else(|| valid.first().copied())
+                });
+                if let Some(page) = page {
+                    // Page selection clears the previous selection/text edit and fits its content.
+                    self.run("page.select", json!({"id": page}));
+                }
+            }
             import_report::capture(self, id, &params, result);
         }
         missing_fonts::check_later(self, id, result.as_ref());
@@ -246,6 +270,7 @@ impl FigApp {
                         self.ui.preview = Some(present::Pane::new(start, &self.session));
                     }
                 }
+                "preview.detach" => self.window_requests.push(r),
                 "preview.close" => self.ui.preview = None,
                 "open.help" => self.services.open_url("https://getartcraft.com/apps/figcraft"),
                 // A link in text activated while editing (`text.openLink`): the engine checked it
@@ -283,6 +308,11 @@ impl FigApp {
                 "comment.open" => {
                     if let Some(id) = r.data.get("id").and_then(Value::as_u64) {
                         self.ui.comments.show(id);
+                    }
+                }
+                "annotation.new" => {
+                    if let Some(id) = r.data.get("id").and_then(Value::as_u64) {
+                        crate::dev_mode::annotation_tool::start(self, NodeId(id));
                     }
                 }
                 "comment.new" => {
@@ -337,6 +367,7 @@ impl FigApp {
         // Hidden browser tabs run logic without painting. A successful join must be durable
         // there too, rather than waiting for the next visible UI frame.
         self.keep_preferences(ctx);
+        crate::windows::preview::repaint_changed(self, ctx);
         self.logic_ticked = true;
     }
 

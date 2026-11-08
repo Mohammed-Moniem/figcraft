@@ -1,6 +1,10 @@
 //! The command registry. Each area module exposes `specs()`; [`all_commands`] collects them once.
 
+#[cfg(test)]
+mod animation_export_tests;
+
 pub mod animation;
+pub mod animation_export;
 pub mod arrange;
 pub mod comment;
 pub mod component;

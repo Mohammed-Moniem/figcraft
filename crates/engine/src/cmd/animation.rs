@@ -17,6 +17,13 @@ use serde_json::{Value, json};
 pub(crate) fn specs() -> Vec<CommandSpec> {
     vec![
         spec!(
+            "motion.export",
+            "Export animation",
+            "{id?, format?, duration?, fps?, loop?, scale?, path?} (GIF of one selected top-level frame; duration in ms, 1-100 fps, fixed viewport; returns base64 data without path, palette/timing warnings and output dimensions)",
+            false,
+            super::animation_export::export
+        ),
+        spec!(
             "motion.keyframe",
             "Keyframe",
             "{ids?, property?, time?, value?, all?} (adds a keyframe at `time`: `property`'s value there, `value` when given, or every track the layer already animates with `all`)",

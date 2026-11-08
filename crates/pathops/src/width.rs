@@ -188,8 +188,10 @@ fn outline_piece(path: &mut BezPath, pts: &[Point], hw: &[Half], closed: bool, s
 fn dashes(pts: &[Point], hw: &[Half], pattern: &[f64], offset: f64) -> Vec<(Vec<Point>, Vec<Half>)> {
     let mut out = Vec::new();
     let Some(&first) = pattern.first() else { return out };
-    let (mut idx, mut left, mut on) = (0usize, (first - offset).max(0.0), true);
-    let mut cur: (Vec<Point>, Vec<Half>) = (pts.iter().take(1).copied().collect(), hw.iter().take(1).copied().collect());
+    let Some((mut idx, mut left)) = pattern_start(pattern, offset) else { return out };
+    let mut on = idx % 2 == 0;
+    let mut cur: (Vec<Point>, Vec<Half>) =
+        if on { (pts.iter().take(1).copied().collect(), hw.iter().take(1).copied().collect()) } else { (Vec::new(), Vec::new()) };
     for (p, h) in pts.windows(2).zip(hw.windows(2)) {
         let (a, b, ha, hb) = (p[0], p[1], h[0], h[1]);
         let len = (b - a).hypot();
@@ -227,7 +229,8 @@ fn dashes(pts: &[Point], hw: &[Half], pattern: &[f64], offset: f64) -> Vec<(Vec<
 /// The dash pattern a stroke uses (odd lengths repeat twice), or `None` for a solid stroke.
 pub fn dash_pattern(props: &StrokeProps) -> Option<Vec<f64>> {
     let dashes: Vec<f64> = props.dashes.iter().copied().filter(|d| d.is_finite() && *d >= 0.0).collect();
-    if dashes.is_empty() || dashes.iter().sum::<f64>() <= 0.01 {
+    let sum: f64 = dashes.iter().sum();
+    if dashes.is_empty() || !sum.is_finite() || sum <= 0.01 || (dashes.len() % 2 == 1 && !(sum * 2.0).is_finite()) {
         return None;
     }
     Some(if dashes.len() % 2 == 1 { [dashes.clone(), dashes].concat() } else { dashes })
@@ -254,6 +257,38 @@ pub fn line_dashes(len: f64, closed: bool, pattern: &[f64]) -> (Vec<f64>, f64) {
 pub fn subpath_dashes(sub: &BezPath, pattern: &[f64]) -> (Vec<f64>, f64) {
     let closed = matches!(sub.elements().last(), Some(PathEl::ClosePath));
     line_dashes(sub.perimeter(DASH_ACCURACY), closed, pattern)
+}
+
+/// Automatic placement, or a finite manual offset into the raw pattern. A bad saved offset
+/// falls back to automatic. Reducing once avoids walking an unbounded number of periods.
+pub fn line_dashes_with_phase(len: f64, closed: bool, pattern: &[f64], phase: Option<f64>) -> (Vec<f64>, f64) {
+    let Some(phase) = phase.filter(|p| p.is_finite()) else { return line_dashes(len, closed, pattern) };
+    let sum: f64 = pattern.iter().sum();
+    if !(sum.is_finite() && sum > 0.0) {
+        return (Vec::new(), 0.0);
+    }
+    // Floating-point rem_euclid can round a tiny negative remainder up to the divisor.
+    // That is the same start as zero, not an offset beyond the last pattern entry.
+    let offset = phase.rem_euclid(sum);
+    (pattern.to_vec(), if offset >= sum { 0.0 } else { offset })
+}
+
+/// [`line_dashes_with_phase`] for each independently restarting subpath.
+pub fn subpath_dashes_with_phase(sub: &BezPath, pattern: &[f64], phase: Option<f64>) -> (Vec<f64>, f64) {
+    let closed = matches!(sub.elements().last(), Some(PathEl::ClosePath));
+    line_dashes_with_phase(sub.perimeter(DASH_ACCURACY), closed, pattern, phase)
+}
+
+/// Find the first dash/gap in at most one pass over an admitted pattern.
+fn pattern_start(pattern: &[f64], mut offset: f64) -> Option<(usize, f64)> {
+    for (i, length) in pattern.iter().copied().enumerate() {
+        // Preserve an ON dot exactly at this boundary; skipping it loses its round cap.
+        if offset < length || (offset == 0.0 && length == 0.0 && i % 2 == 0) {
+            return Some((i, length - offset));
+        }
+        offset -= length;
+    }
+    None
 }
 
 /// How exactly a subpath is measured to fit its dashes (the stroke's own tolerance).
@@ -319,7 +354,7 @@ pub fn variable_outline(path: &BezPath, width: f64, props: &StrokeProps, profile
             .collect();
         match &pattern {
             Some(pat) if dashes_fit(len, pat) => {
-                let (pat, offset) = line_dashes(len, line.closed, pat);
+                let (pat, offset) = line_dashes_with_phase(len, line.closed, pat, props.dash_phase);
                 for (p, h) in dashes(&pts, &hw, &pat, offset) {
                     outline_piece(&mut out, &p, &h, false, style);
                 }

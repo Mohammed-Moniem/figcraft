@@ -307,10 +307,12 @@ fn text_decls(doc: &Document, n: &Node, tx: &figcraft_doc::TextData, t: &mut Tok
         put("word-break", "keep-all".into());
         put("overflow-wrap", "break-word".into());
     }
-    match tx.wrap_style {
-        figcraft_doc::WrapStyle::Auto => {}
-        figcraft_doc::WrapStyle::Balance => put("text-wrap", "balance".into()),
-        figcraft_doc::WrapStyle::Pretty => put("text-wrap", "pretty".into()),
+    // CSS has one `text-wrap` per element: written when every paragraph has the same one.
+    let wrap = (0..tx.paragraph_count()).map(|p| tx.para_wrap_style(p)).collect::<Vec<_>>();
+    match wrap.first().copied().filter(|w| wrap.iter().all(|x| x == w)) {
+        Some(figcraft_doc::WrapStyle::Balance) => put("text-wrap", "balance".into()),
+        Some(figcraft_doc::WrapStyle::Pretty) => put("text-wrap", "pretty".into()),
+        _ => {}
     }
     match s.case {
         TextCase::Original => {}

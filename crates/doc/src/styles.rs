@@ -81,6 +81,7 @@ pub enum VariableType {
 pub enum DesignTokenType {
     Color,
     Dimension,
+    Duration,
     Number,
     FontFamily,
     FontWeight,
@@ -91,6 +92,7 @@ impl DesignTokenType {
         Some(match name {
             "color" => Self::Color,
             "dimension" => Self::Dimension,
+            "duration" => Self::Duration,
             "number" => Self::Number,
             "fontFamily" => Self::FontFamily,
             "fontWeight" => Self::FontWeight,
@@ -102,6 +104,7 @@ impl DesignTokenType {
         match self {
             Self::Color => "color",
             Self::Dimension => "dimension",
+            Self::Duration => "duration",
             Self::Number => "number",
             Self::FontFamily => "fontFamily",
             Self::FontWeight => "fontWeight",
@@ -112,7 +115,7 @@ impl DesignTokenType {
         match self {
             Self::Color => VariableType::Color,
             Self::FontFamily => VariableType::String,
-            Self::Dimension | Self::Number | Self::FontWeight => VariableType::Number,
+            Self::Dimension | Self::Duration | Self::Number | Self::FontWeight => VariableType::Number,
         }
     }
 }

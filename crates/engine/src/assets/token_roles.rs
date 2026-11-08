@@ -81,9 +81,14 @@ impl Roles {
         Roles(roles)
     }
 
+    /// A role inferred from usage, scopes or metadata, without the unknown-number length default.
+    pub fn known_role(&self, v: &Variable) -> Option<NumberRole> {
+        self.0.get(&v.id).copied()
+    }
+
     /// What `v` measures; a number nothing tells about is a length.
     pub fn role(&self, v: &Variable) -> NumberRole {
-        self.0.get(&v.id).copied().unwrap_or(NumberRole::Length)
+        self.known_role(v).unwrap_or(NumberRole::Length)
     }
 
     /// A number variable's CSS value: pixels for lengths, bare for opacity and font weight.

@@ -361,7 +361,7 @@ pub fn stroke_center(path: &BezPath, width: f64, props: &StrokeProps) -> BezPath
     // Each subpath fits the pattern to its own length.
     let mut out = BezPath::new();
     for sub in figcraft_geom::split_subpaths(path) {
-        let (dashes, offset) = width::subpath_dashes(&sub, &pat);
+        let (dashes, offset) = width::subpath_dashes_with_phase(&sub, &pat, props.dash_phase);
         out.extend(kurbo::stroke(sub.iter(), &style.clone().with_dashes(offset, dashes), &opts, 0.05));
     }
     out

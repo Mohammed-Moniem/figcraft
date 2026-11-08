@@ -8,7 +8,7 @@ use std::ffi::OsString;
 use std::net::{Ipv4Addr, SocketAddr};
 
 use clap::{ArgAction, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
-use figcraft_doc::{PrintSettings, VdCompat};
+use figcraft_doc::{ExportColorProfile, PrintSettings, VdCompat};
 
 /// FigCraft without a window
 ///
@@ -77,8 +77,9 @@ pub struct InfoArgs {
 
 /// Export frames, a layer or the whole file
 ///
-/// <OUT> is a folder: one file per top-level frame of the page. An <OUT> with an image extension,
-/// or --node, writes one file. `fig` (or an <OUT> ending in .fig) writes the whole file as .fig,
+/// Flat layout writes one file per top-level frame into <OUT>. With Flat, an image extension or
+/// --node writes one file. Mobile layouts always write a density family into a folder, including
+/// with --node. `fig` (or an <OUT> ending in .fig) writes the whole file as .fig,
 /// experimental: other apps may not open every file. `penpot` (or an <OUT> ending in .penpot)
 /// writes the whole file as a Penpot 2.x archive. The format comes from --format, else <OUT>'s
 /// extension, else png.
@@ -94,6 +95,8 @@ pub struct ExportArgs {
     #[arg(long, value_name = "FORMAT", value_parser = format)]
     pub format: Option<String>,
     #[command(flatten)]
+    pub raster: RasterOptions,
+    #[command(flatten)]
     pub scale: ScaleArg,
     /// The page to export (default the first)
     #[arg(long, value_name = "NAME")]
@@ -101,6 +104,9 @@ pub struct ExportArgs {
     /// The layer to export, by id (12 or 0:12) or name
     #[arg(long, value_name = "ID|NAME")]
     pub node: Option<String>,
+    /// Asset folders: flat (default), flutter, ios or android. Mobile layouts choose density scales and require a folder.
+    #[arg(long, value_name = "LAYOUT", value_parser = export_layout, default_value = "flat")]
+    pub layout: figcraft_engine::cmd::file::ExportLayout,
     /// PDF: grow each page by this bleed, in points or a length like 3mm or 0.125in (up to 2in)
     #[arg(long, value_name = "LENGTH", value_parser = bleed, default_value = "0")]
     pub bleed: f64,
@@ -121,6 +127,10 @@ pub struct ExportArgs {
     pub roots: RootArgs,
 }
 
+fn export_layout(value: &str) -> Result<figcraft_engine::cmd::file::ExportLayout, String> {
+    figcraft_engine::cmd::file::ExportLayout::from_key(value).ok_or_else(|| "layout: flat|flutter|ios|android".into())
+}
+
 impl ExportArgs {
     /// The PDF print options.
     pub fn print(&self) -> PrintSettings {
@@ -135,6 +145,21 @@ pub struct ScaleArg {
     // allow_negative_numbers makes `--scale -3` an out-of-range value rather than an unexpected argument.
     #[arg(long, value_name = "N", value_parser = scale, default_value = "1", allow_negative_numbers = true)]
     pub scale: f64,
+}
+
+/// Options shared by pixel exports and whole-page rendering.
+#[derive(Args)]
+pub struct RasterOptions {
+    /// JPG quality, 1 to 100 (other formats keep this option without using it)
+    #[arg(long, value_parser = clap::value_parser!(u8).range(1..=100), default_value = "90")]
+    pub quality: u8,
+    /// Pixel output profile: sameAsFile, srgb or displayP3 (converts pixels)
+    #[arg(long, value_parser = export_color_profile, default_value = "sameAsFile")]
+    pub color_profile: ExportColorProfile,
+}
+
+fn export_color_profile(value: &str) -> Result<ExportColorProfile, String> {
+    ExportColorProfile::from_key(value).ok_or_else(|| "color profile: sameAsFile|srgb|displayP3".into())
 }
 
 /// Convert by extension (.figcraft, .json, .svg, .png, .jpg, .webp, .pdf, .fig, .penpot)
@@ -164,6 +189,8 @@ pub struct RenderArgs {
     /// The page to render (default the first)
     #[arg(long, value_name = "NAME")]
     pub page: Option<String>,
+    #[command(flatten)]
+    pub raster: RasterOptions,
     #[command(flatten)]
     pub roots: RootArgs,
 }
@@ -452,6 +479,22 @@ mod tests {
     #[test]
     fn the_definition_is_consistent() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn mobile_layout_cli_parser_preserves_flat_default_and_accepts_platforms() {
+        use figcraft_engine::cmd::file::ExportLayout;
+        let Command::Export(default) = ok(&["export", "a.figcraft", "-o", "assets"]) else {
+            panic!("export");
+        };
+        assert_eq!(default.layout, ExportLayout::Flat);
+        for layout in ExportLayout::ALL {
+            let Command::Export(args) = ok(&["export", "a.figcraft", "-o", "assets", "--layout", layout.key()]) else {
+                panic!("export");
+            };
+            assert_eq!(args.layout, layout);
+        }
+        assert_eq!(kind(&["export", "a.figcraft", "-o", "assets", "--layout", "andriod"]), ErrorKind::ValueValidation);
     }
 
     #[test]

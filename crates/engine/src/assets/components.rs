@@ -51,6 +51,7 @@ mod variants;
 pub use cycles::{
     break_component_cycles, check_component_cycles, component_cycle, contains_itself_error, cycle_text, new_cycle, would_contain_itself,
 };
+pub(crate) use diff::binding_group;
 pub use diff::{diff_groups, property_owners, set_boolean_default, variable_groups};
 pub use guard::{check_override_edit, check_structure_edit, refused_override, unlink_layers};
 pub(crate) use instances::copy_group;
@@ -86,6 +87,7 @@ pub const OVERRIDE_GROUPS: &[&str] = &[
     "exports",
     "interactions",
     "size",
+    "variableScale",
     "resizing",
     "position",
     "modes",

@@ -391,3 +391,129 @@ fn only_resolved_paths_count_as_the_apps_own_folder() {
 fn sizes_read_as_a_person_says_them() {
     assert_eq!((super::size(300), super::size((12 << 20) - 5), super::size(13 << 29)), ("300 bytes".into(), "12 MB".into(), "6.5 GB".into()));
 }
+
+// Original admission probes: every target resolution is a recording callback, never real I/O.
+fn admission_probe(
+    roots: &Roots,
+    path: &Path,
+    access: Access,
+    resolution: std::result::Result<PathBuf, String>,
+) -> (std::result::Result<PathBuf, String>, usize, usize) {
+    let resolved = std::cell::Cell::new(0);
+    let detailed = std::cell::Cell::new(0);
+    let result = roots.check_using(
+        path,
+        access,
+        |_| {
+            resolved.set(resolved.get() + 1);
+            resolution.clone()
+        },
+        |_, _| {
+            detailed.set(detailed.get() + 1);
+            false
+        },
+    );
+    (result, resolved.get(), detailed.get())
+}
+
+#[test]
+fn no_access_roots_refuse_before_any_target_resolution() {
+    let roots = Roots { read: Vec::new(), write: Vec::new() };
+    for access in [Access::Read, Access::Write] {
+        for path in ["original-unread-path", r"\\original-synthetic.invalid\share\file.figcraft", r"\\?\UNC\original-synthetic.invalid\share\file"] {
+            let (result, resolved, detailed) = admission_probe(&roots, Path::new(path), access, Err("original resolver marker".into()));
+            let error = result.unwrap_err();
+            assert!(error.contains("no folder may be"), "{error}");
+            assert!(!error.contains("original resolver marker"), "outside details stay private");
+            assert_eq!((resolved, detailed), (0, 0), "denied access must not resolve even once: {path}");
+        }
+    }
+}
+
+#[test]
+fn read_only_roots_refuse_write_before_any_target_resolution() {
+    let roots = Roots { read: vec![PathBuf::from("original-local-read-root")], write: Vec::new() };
+    let (result, resolved, detailed) =
+        admission_probe(&roots, Path::new(r"\\original-synthetic.invalid\share\file"), Access::Write, Err("original resolver marker".into()));
+    assert!(result.unwrap_err().contains("no folder may be written"));
+    assert_eq!((resolved, detailed), (0, 0), "a read grant must not cause a denied write to probe its target");
+}
+
+#[test]
+fn an_eligible_local_root_still_resolves_and_checks_its_target() {
+    let base = PathBuf::from("original-local-read-root");
+    let target = base.join("original.figcraft");
+    let roots = Roots { read: vec![base], write: Vec::new() };
+    let (result, resolved, detailed) = admission_probe(&roots, &target, Access::Read, Ok(target.clone()));
+    assert_eq!(result.unwrap(), target);
+    assert_eq!((resolved, detailed), (1, 0));
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_local_roots_refuse_unc_spellings_before_any_target_resolution() {
+    let base = PathBuf::from(r"\\?\C:\original-local-root");
+    let roots = Roots { read: vec![base.clone()], write: vec![base] };
+    for access in [Access::Read, Access::Write] {
+        for path in [
+            r"\\original-synthetic.invalid\share\file",
+            "//original-synthetic.invalid/share/file",
+            r"\\?\UNC\original-synthetic.invalid\share\file",
+            r"\\.\UNC\original-synthetic.invalid\share\file",
+            r"\\?\unc\original-synthetic.invalid\share\file",
+            r"\\original-synthetic.invalid",
+        ] {
+            let (result, resolved, detailed) = admission_probe(&roots, Path::new(path), access, Err("original resolver marker".into()));
+            assert!(result.unwrap_err().starts_with("automation path rejected:"));
+            assert_eq!((resolved, detailed), (0, 0), "no target operation for raw UNC outside local-only authority: {path}");
+        }
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_explicit_unc_root_preserves_read_and_write_authority() {
+    let base = PathBuf::from(r"\\?\UNC\original-selected.invalid\share\root");
+    let target = base.join("original.figcraft");
+    for roots in [Roots { read: vec![base.clone()], write: Vec::new() }, Roots { read: Vec::new(), write: vec![base.clone()] }] {
+        let path = Path::new(r"\\original-selected.invalid\share\root\original.figcraft");
+        let (result, resolved, detailed) = admission_probe(&roots, path, Access::Read, Ok(target.clone()));
+        assert_eq!(result.unwrap(), target);
+        assert_eq!((resolved, detailed), (1, 0));
+    }
+    let roots = Roots { read: Vec::new(), write: vec![base] };
+    let path = Path::new(r"\\original-selected.invalid\share\root\new.figcraft");
+    let (result, resolved, detailed) = admission_probe(&roots, path, Access::Write, Ok(target.clone()));
+    assert_eq!(result.unwrap(), target);
+    assert_eq!((resolved, detailed), (1, 0));
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_unc_read_root_does_not_grant_a_unc_write() {
+    let roots = Roots {
+        read: vec![PathBuf::from(r"\\?\UNC\original-selected.invalid\share\root")],
+        write: vec![PathBuf::from(r"\\?\C:\original-local-write-root")],
+    };
+    let path = Path::new(r"\\original-selected.invalid\share\root\original.figcraft");
+    let (result, resolved, detailed) = admission_probe(&roots, path, Access::Write, Err("original resolver marker".into()));
+    assert!(result.unwrap_err().starts_with("automation path rejected:"));
+    assert_eq!((resolved, detailed), (0, 0));
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_network_admission_still_requires_final_root_containment() {
+    let roots = Roots { read: Vec::new(), write: vec![PathBuf::from(r"\\?\UNC\original-selected.invalid\share\root")] };
+    for resolved_path in [r"\\?\UNC\original-selected.invalid\share\root2\outside.figcraft", r"\\?\UNC\original-other.invalid\share\outside.figcraft"]
+    {
+        let (result, resolved, detailed) = admission_probe(
+            &roots,
+            Path::new(r"\\original-selected.invalid\share\root\original.figcraft"),
+            Access::Read,
+            Ok(PathBuf::from(resolved_path)),
+        );
+        assert!(result.unwrap_err().contains("outside the folders"));
+        assert_eq!((resolved, detailed), (1, 0), "an explicit network grant still uses the final component check");
+    }
+}

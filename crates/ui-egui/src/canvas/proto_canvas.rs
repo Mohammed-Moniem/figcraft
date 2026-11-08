@@ -160,30 +160,12 @@ fn plus_handle(painter: &egui::Painter, c: Pos2, hot: bool) {
 /// Move the camera only within the unobstructed canvas edge while its connection owns the press.
 /// Speed is in screen points, with a bounded frame step so a stalled frame cannot jump far.
 fn pan_connection(app: &mut FigApp, ctx: &egui::Context, resp: &egui::Response, pos: Pos2) {
-    let rect = app.canvas.rect;
-    if !pos.is_finite() || !rect.contains(pos) || !resp.contains_pointer() {
+    // The owned connection may continue past the edge. Inside the canvas, keep popovers and
+    // other UI from passing a pointer through; document/page/viewport/focus guards stay in input.
+    if !pos.is_finite() || (app.canvas.rect.contains(pos) && !resp.contains_pointer()) {
         return;
     }
-    let axis = |at: f32, lo: f32, hi: f32| {
-        let margin = 32.0_f32.min((hi - lo) * 0.25);
-        if margin <= 0.0 { 0.0 } else { ((at - (hi - margin)) / margin).clamp(0.0, 1.0) - (((lo + margin) - at) / margin).clamp(0.0, 1.0) }
-    };
-    let velocity = vec2(axis(pos.x, rect.left(), rect.right()), axis(pos.y, rect.top(), rect.bottom()));
-    let velocity = if velocity.length() > 1.0 { velocity.normalized() } else { velocity };
-    let dt = ctx.input(|i| i.stable_dt);
-    if velocity == egui::Vec2::ZERO || !dt.is_finite() || dt <= 0.0 {
-        return;
-    }
-    if let Ok(ds) = app.session.ds_mut() {
-        let scale = 480.0 * f64::from(dt.min(1.0 / 30.0)) / ds.view.zoom.max(1e-6);
-        let cx = ds.view.cx + f64::from(velocity.x) * scale;
-        let cy = ds.view.cy + f64::from(velocity.y) * scale;
-        if cx.is_finite() && cy.is_finite() {
-            ds.view.cx = cx;
-            ds.view.cy = cy;
-            ds.revision += 1;
-        }
-    }
+    super::autopan::pan(app, ctx, pos);
 }
 
 /// Draw connections, handles and a connection being dragged.

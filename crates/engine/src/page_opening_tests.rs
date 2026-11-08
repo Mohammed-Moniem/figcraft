@@ -137,3 +137,74 @@ fn nonexistent_opening_page_is_refused_before_any_document_view_or_history_chang
     assert_eq!(s.doc().unwrap().opening_page, Some(cover));
     assert_eq!(crate::cmd::file::file_bytes(s.ds().unwrap()).unwrap(), bytes);
 }
+
+/// A legacy current page is not an explicit opening choice. Setting the same id must still
+/// author that choice, so a save from another viewed page cannot replace it.
+#[test]
+fn setting_the_legacy_current_page_still_authors_a_durable_opening_choice() {
+    let mut s = Session::new();
+    let first = s.page().unwrap();
+    let other = id_of(&ex(&mut s, "page.add", json!({"name":"Other view"})));
+    assert_eq!(s.doc().unwrap().current_page, Some(first));
+    assert_eq!(s.doc().unwrap().opening_page, None);
+    let before = s.undo_depth();
+    ex(&mut s, "page.setOpening", json!({"id":first}));
+    assert_eq!(s.doc().unwrap().opening_page, Some(first), "the first explicit choice is an edit");
+    assert_eq!(s.undo_depth().0, before.0 + 1);
+    assert_eq!(s.page().unwrap(), other, "the viewer's other page stays open");
+    let bytes = crate::cmd::file::file_bytes(s.ds().unwrap()).unwrap();
+    let (loaded, _) = figcraft_format::load_bytes(&bytes).unwrap();
+    assert_eq!((loaded.opening_page, loaded.current_page), (Some(first), Some(first)));
+    assert_eq!(Session::with_document(loaded).page().unwrap(), first);
+    ex(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc().unwrap().opening_page, None);
+    assert_eq!(s.page().unwrap(), other);
+    let (legacy, _) = figcraft_format::load_bytes(&crate::cmd::file::file_bytes(s.ds().unwrap()).unwrap()).unwrap();
+    assert_eq!((legacy.opening_page, legacy.current_page), (None, Some(other)), "the undone legacy save follows the viewed page");
+    ex(&mut s, "edit.redo", json!({}));
+    assert_eq!(s.doc().unwrap().opening_page, Some(first));
+    assert_eq!(s.page().unwrap(), other);
+}
+
+/// Repeating an explicit choice must preserve authored identity, clean state and history even
+/// when another page is viewed. The next undo still belongs to the preceding real edit.
+#[test]
+fn repeating_an_explicit_opening_choice_preserves_saved_state_and_undo_redo() {
+    let mut s = Session::new();
+    let first = s.page().unwrap();
+    let cover = id_of(&ex(&mut s, "page.add", json!({"name":"Cover"})));
+    ex(&mut s, "page.setOpening", json!({"id":cover}));
+    ex(&mut s, "page.select", json!({"id":first}));
+    let layer = id_of(&ex(&mut s, "shape.rectangle", json!({"width":40,"height":30})));
+    ex(&mut s, "file.markSaved", json!({}));
+    assert!(!s.ds().unwrap().is_dirty());
+    let authored = s.ds().unwrap().doc.clone();
+    let history = s.undo_depth();
+    let selection = s.selection();
+    let bytes = crate::cmd::file::file_bytes(s.ds().unwrap()).unwrap();
+    ex(&mut s, "page.setOpening", json!({"id":cover}));
+    assert!(std::sync::Arc::ptr_eq(&authored, &s.ds().unwrap().doc), "a repeated choice must not detach authored data");
+    assert_eq!(s.undo_depth(), history, "a repeated choice adds no undo step");
+    assert!(!s.ds().unwrap().is_dirty(), "a repeated choice keeps the saved document clean");
+    assert_eq!((s.page().unwrap(), s.selection()), (first, selection));
+    assert_eq!((s.doc().unwrap().opening_page, s.doc().unwrap().current_page), (Some(cover), Some(cover)));
+    assert_eq!(crate::cmd::file::file_bytes(s.ds().unwrap()).unwrap(), bytes);
+    let (loaded, _) = figcraft_format::load_bytes(&bytes).unwrap();
+    assert_eq!(Session::with_document(loaded).page().unwrap(), cover, "the saved choice still opens the file");
+
+    ex(&mut s, "edit.undo", json!({}));
+    assert!(s.doc().unwrap().node(layer).is_none(), "the next undo removes the preceding real edit");
+    assert_eq!(s.doc().unwrap().opening_page, Some(cover));
+    let authored = s.ds().unwrap().doc.clone();
+    let history = s.undo_depth();
+    assert!(history.1 > 0, "there is a real edit to redo");
+    let dirty = s.ds().unwrap().is_dirty();
+    ex(&mut s, "page.setOpening", json!({"id":cover}));
+    assert!(std::sync::Arc::ptr_eq(&authored, &s.ds().unwrap().doc));
+    assert_eq!(s.undo_depth(), history, "a repeated choice must not erase redo");
+    assert_eq!(s.ds().unwrap().is_dirty(), dirty);
+    ex(&mut s, "edit.redo", json!({}));
+    assert!(s.doc().unwrap().node(layer).is_some());
+    assert_eq!(s.doc().unwrap().opening_page, Some(cover));
+    assert_eq!(s.page().unwrap(), first);
+}

@@ -84,6 +84,9 @@ pub fn axis_label(tag: &str) -> &str {
 /// One loaded font face.
 pub struct Face {
     pub id: u32,
+    /// Read from an installed font file or supplied by browser Local Font Access.
+    /// A matching installed face takes precedence over the app's built-in face.
+    pub installed: bool,
     pub family: String,
     pub style: String,
     /// The face's PostScript name ("HelveticaNeue-Bold").
@@ -92,6 +95,9 @@ pub struct Face {
     pub italic: bool,
     pub bytes: FontBytes,
     pub index: u32,
+    /// Explicitly loaded face order: a later load wins among equally matching faces.
+    /// Zero retains the existing built-in/installed ordering.
+    pub loaded: usize,
     pub upem: f64,
     /// Ascent and descent in font units, both positive.
     pub ascent: f64,
@@ -201,12 +207,14 @@ impl Face {
         };
         Some(Face {
             id: NEXT_FACE.fetch_add(1, Ordering::Relaxed),
+            installed: false,
             italic: !matches!(attrs.style, skrifa::attribute::Style::Normal) || style.to_ascii_lowercase().contains("italic"),
             weight,
             postscript: name_string(&f, StringId::POSTSCRIPT_NAME),
             family,
             style,
             index,
+            loaded: 0,
             upem,
             ascent,
             descent,
@@ -435,6 +443,11 @@ fn has_style(f: &Face, style: &str) -> bool {
     norm_style(&f.style) == norm_style(style) || f.instance(style).is_some()
 }
 
+/// Earlier keys win only between equally good style matches. Explicit loads precede installed faces.
+fn source_priority(face: &Face) -> (std::cmp::Reverse<usize>, bool) {
+    (std::cmp::Reverse(face.loaded), !face.installed)
+}
+
 /// A style name's weight before its file is read: the usual names, and Hiragino's "W3" (300).
 fn pending_weight(style: &str) -> i32 {
     let w = norm_style(style).strip_prefix('w').and_then(|n| n.parse::<i32>().ok()).filter(|n| (0..=9).contains(n));
@@ -613,6 +626,8 @@ pub struct FontDb {
     pending: BTreeMap<String, (String, Vec<Pending>)>,
     /// System faces read from disk (file, face index), so a rescan only offers new ones.
     loaded_files: std::collections::BTreeSet<(std::path::PathBuf, u32)>,
+    /// Browser handles whose bytes were accepted, so listing them again adds no duplicate face.
+    loaded_local: std::collections::BTreeSet<usize>,
     /// Font files added as bytes (hash and length → families), so loading one again adds nothing.
     loaded_bytes: std::collections::HashMap<(u64, usize), Vec<String>>,
     system_scanned: bool,
@@ -709,15 +724,29 @@ impl FontDb {
         face
     }
 
+    /// Add an explicitly loaded face ahead of equally matching built-in or installed faces.
+    pub fn add_loaded(&mut self, mut face: Face) -> Arc<Face> {
+        // The existing vector supplies the order, without a wrapping sequence counter.
+        face.loaded = self.faces.len().saturating_add(1);
+        self.add(face)
+    }
+
     /// Add font file bytes (all faces of a collection). Returns the faces added.
     pub fn add_bytes(&mut self, bytes: Vec<u8>) -> Vec<Arc<Face>> {
+        self.add_bytes_with(bytes, false)
+    }
+
+    fn add_bytes_with(&mut self, bytes: Vec<u8>, loaded: bool) -> Vec<Arc<Face>> {
         let shared = Arc::new(bytes);
         let count = match FileRef::new(shared.as_slice()) {
             Ok(FileRef::Collection(c)) => c.len(),
             Ok(FileRef::Font(_)) => 1,
             Err(_) => 0,
         };
-        (0..count).filter_map(|i| Face::from_bytes(FontBytes::Shared(shared.clone()), i, None, None)).map(|f| self.add(f)).collect()
+        (0..count)
+            .filter_map(|i| Face::from_bytes(FontBytes::Shared(shared.clone()), i, None, None))
+            .map(|f| if loaded { self.add_loaded(f) } else { self.add(f) })
+            .collect()
     }
 
     /// The family and style of the face whose PostScript name is `ps` (ignoring case), loaded or
@@ -956,7 +985,8 @@ impl FontDb {
         let entries = self.keep_local(key, display, entries, ask);
         for e in entries {
             let Some(bytes) = self.file_bytes(&e.path) else { continue };
-            if let Some(face) = Face::from_bytes(FontBytes::Shared(bytes), e.index, Some(display), Some(&e.style)) {
+            if let Some(mut face) = Face::from_bytes(FontBytes::Shared(bytes), e.index, Some(display), Some(&e.style)) {
+                face.installed = true;
                 self.add(face);
                 self.loaded_files.insert((e.path, e.index));
             }
@@ -1013,10 +1043,9 @@ impl FontDb {
         let (family, style) = self.resolve(family, style);
         let (family, style) = (family.as_str(), style.as_str());
         self.load_family(family, None);
-        // A font the browser named is read one style at a time: the one asked for, unless a face
-        // read already has it.
-        if self.waiting_local(&self.key(family)).next().is_some() && !self.best(family, style).is_some_and(|f| has_style(&f, style)) {
-            self.load_family(family, Some(style));
+        // The installed style also needs its bytes when a built-in face already matches.
+        if let Some(i) = self.nearer_pending(&self.key(family), style) {
+            self.read_pending(&self.key(family), i);
         }
         self.best(family, style)
     }
@@ -1027,8 +1056,8 @@ impl FontDb {
     pub fn find_one(&mut self, family: &str, style: &str) -> Option<Arc<Face>> {
         let (family, style) = self.resolve(family, style);
         let (family, style) = (family.as_str(), style.as_str());
-        if !self.families.contains_key(&self.key(family)) {
-            self.load_family(family, Some(style));
+        if let Some(i) = self.nearer_pending(&self.key(family), style) {
+            self.read_pending(&self.key(family), i);
         }
         self.best(family, style)
     }
@@ -1036,9 +1065,12 @@ impl FontDb {
     /// The loaded face of `family` nearest `style`.
     fn best(&self, family: &str, style: &str) -> Option<Arc<Face>> {
         let (_, idx) = self.families.get(&self.key(family))?;
-        let faces: Vec<&Arc<Face>> = idx.iter().filter_map(|i| self.faces.get(*i)).collect();
-        let want = norm_style(style);
-        if let Some(f) = faces.iter().find(|f| norm_style(&f.style) == want).or_else(|| faces.iter().find(|f| has_style(f, style))) {
+        let mut faces: Vec<&Arc<Face>> = idx.iter().filter_map(|i| self.faces.get(*i)).collect();
+        // Stable source ties retain scan order; style quality still precedes source in fallback.
+        faces.sort_by_key(|f| source_priority(f));
+        // Literal labels and real named variable instances are equally exact style matches.
+        // Source/load priority applies before the unchanged nearest-style fallback.
+        if let Some(f) = faces.iter().find(|f| has_style(f, style)) {
             return Some((*f).clone());
         }
         let want_w = i32::from(figcraft_doc::style_weight(style));
@@ -1117,12 +1149,15 @@ impl FontDb {
     fn nearer_pending(&self, key: &str, style: &str) -> Option<usize> {
         let cost = style_distance(style);
         let read = self.families.get(key).map(|(_, idx)| idx.as_slice()).unwrap_or_default();
-        let nearest_read = read.iter().filter_map(|i| self.faces.get(*i)).map(|f| if has_style(f, style) { 0 } else { cost(&f.style) }).min();
+        let nearest_read =
+            read.iter().filter_map(|i| self.faces.get(*i)).map(|f| (if has_style(f, style) { 0 } else { cost(&f.style) }, source_priority(f))).min();
         let asked = |e: &Pending| e.local.is_some_and(|id| self.asked.contains(&id));
         let (_, pending) = self.pending.get(key)?;
         // Of two as near, the one asked for already.
         let (i, nearest, on_its_way) = pending.iter().enumerate().map(|(i, e)| (i, cost(&e.style), asked(e))).min_by_key(|(_, c, a)| (*c, !*a))?;
-        (!on_its_way && nearest_read.is_none_or(|r| nearest < r)).then_some(i)
+        // Pending faces come from the installed scan; equally exact explicit loads stay ahead.
+        let installed = (std::cmp::Reverse(0usize), false);
+        (!on_its_way && nearest_read.is_none_or(|r| (nearest, installed) < r)).then_some(i)
     }
 
     /// Colour emoji faces, for characters no other fallback covers. Kept out of
@@ -1170,8 +1205,8 @@ impl FontDb {
         !self.families.contains_key(&key) && self.waiting_local(&key).next().is_some()
     }
 
-    /// Offer the fonts the browser named: they join the families by name (a family the app has
-    /// keeps its faces, and the styles it lacks wait beside them). The families that were unknown.
+    /// Offer the fonts the browser named. Built-in faces remain usable while installed faces
+    /// wait for their bytes, including styles that the app already has. The families unknown before.
     pub fn add_local(&mut self, fonts: Vec<LocalFont>) -> Vec<String> {
         self.generation += 1;
         let before: std::collections::BTreeSet<String> = self.families().into_iter().collect();
@@ -1205,7 +1240,9 @@ impl FontDb {
         }
         // In a collection, the face with its PostScript name.
         let index = faces_in(&bytes).into_iter().find(|f| f.3.is_some() && f.3 == e.postscript).map_or(0, |f| f.0);
-        let face = Face::from_bytes(FontBytes::Shared(Arc::new(bytes)), index, Some(&display), Some(&e.style))?;
+        let mut face = Face::from_bytes(FontBytes::Shared(Arc::new(bytes)), index, Some(&display), Some(&e.style))?;
+        face.installed = true;
+        self.loaded_local.insert(id);
         self.add(face);
         Some(display)
     }
@@ -1253,21 +1290,22 @@ impl FontDb {
         self.merge_scan(found);
     }
 
-    /// Offer the families of the first walk of the font folders. A family already embedded keeps
-    /// its faces, which win, and the installed styles it lacks wait beside them (#1246: release
-    /// builds embed Poppins Regular, Italic and Bold, so an installed Poppins SemiBold went unseen).
+    /// Offer installed faces even when a built-in face has the same family and style (#2092).
+    /// Repeated pending offers retain the original order; accepted browser handles aren't requested again.
     fn merge_scan(&mut self, found: BTreeMap<String, (String, Vec<Pending>)>) {
         self.named_available.clear();
         self.generation += 1;
-        for (k, (display, mut entries)) in found {
-            if let Some((_, idx)) = self.families.get(&k) {
-                let have: Vec<&Arc<Face>> = idx.iter().filter_map(|i| self.faces.get(*i)).collect();
-                entries.retain(|e| !have.iter().any(|f| norm_style(&f.style) == norm_style(&e.style) || f.instance(&e.style).is_some()));
-                if entries.is_empty() {
-                    continue;
+        for (k, (display, entries)) in found {
+            let (_, waiting) = self.pending.entry(k).or_insert_with(|| (display, Vec::new()));
+            for e in entries {
+                // A native file can name several public families, whose faces share its bytes.
+                // loaded_files is deliberately not a global filter for new family aliases.
+                let loaded = e.local.is_some_and(|id| self.loaded_local.contains(&id));
+                let duplicate = waiting.iter().any(|w| w.local == e.local && w.path == e.path && w.index == e.index);
+                if !loaded && !duplicate {
+                    waiting.push(e);
                 }
             }
-            self.pending.entry(k).or_insert((display, entries));
         }
     }
 }
@@ -1593,7 +1631,7 @@ pub fn load_font_bytes(bytes: Vec<u8>) -> Vec<String> {
     if let Some(families) = db.loaded_bytes.get(&key) {
         return families.clone();
     }
-    let faces = db.add_bytes(bytes);
+    let faces = db.add_bytes_with(bytes, true);
     let mut families: Vec<String> = faces.iter().map(|f| f.family.clone()).collect();
     families.dedup();
     if !families.is_empty() {
@@ -1692,6 +1730,10 @@ mod names_tests;
 #[path = "fontdb_fallback_tests.rs"]
 mod fallback_tests;
 
+#[cfg(test)]
+#[path = "fontdb_installed_priority_tests.rs"]
+mod installed_priority_tests;
+
 /// An isolated native app chooses this before its first font scan. No environment mutation
 /// or suite-global preference is needed; subsequent rescans use the same store.
 #[cfg(not(target_arch = "wasm32"))]
@@ -1700,3 +1742,7 @@ static FONT_STORE_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::Once
 pub fn use_font_store_dir(dir: std::path::PathBuf) {
     let _ = FONT_STORE_DIR.set(dir);
 }
+
+#[cfg(test)]
+#[path = "fontdb_source_priority_tests.rs"]
+mod source_priority_tests;

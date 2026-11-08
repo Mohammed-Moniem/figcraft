@@ -208,7 +208,15 @@ pub fn invoke(app: &mut FigApp, id: &str) {
             let ids = app.session.selection();
             // For other apps: text layers' text, other layers as SVG; taken before a cut removes them.
             let doc = app.session.doc().ok();
-            let mirror = doc.and_then(|d| text_layers_text(d, &ids).or_else(|| figcraft_svg_export(d, &ids)));
+            // Points or segments selected in vector edit mode copy just those: the whole vector's
+            // SVG would misdescribe them.
+            let partial = app
+                .session
+                .ds()
+                .ok()
+                .and_then(|d| d.vector_edit.as_ref())
+                .is_some_and(|ve| ve.parts().iter().any(|p| !p.vertices.is_empty() || !p.segments.is_empty()));
+            let mirror = doc.filter(|_| !partial).and_then(|d| text_layers_text(d, &ids).or_else(|| figcraft_svg_export(d, &ids)));
             app.run(id, json!({}));
             // Mirror to the system clipboard (text or SVG, else a marker) and remember it, so a
             // later paste knows whether the clipboard still holds our layers. Control-channel
@@ -539,6 +547,7 @@ pub fn popups(app: &mut FigApp, ctx: &egui::Context) {
                 let mut entries: Vec<(&str, &str)> = if has_sel {
                     vec![
                         (tr("Copy"), "edit.copy"),
+                        (tr("Add annotation"), "annotation.new"),
                         (tr("Paste here"), "edit.paste"),
                         (tr("Paste to replace"), "edit.pasteReplace"),
                         (tr("Copy as"), COPY_AS),

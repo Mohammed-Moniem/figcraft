@@ -431,6 +431,11 @@ fn patch_copies(doc: &mut Document, seeds: &[(NodeId, Vec<&'static str>)]) -> bo
             // name follows the main's unless renamed; a resized one lays its layers out against
             // the main's size.
             let root = matches!(pn.kind, NodeKind::Component { .. });
+            // K-scaled copies carry physical values and main bindings separately. Rebuild that
+            // narrow case; a value-only patch would either lose the scale or skip a new binding.
+            if groups.iter().any(|g| cn.overrides.contains(*g) && cn.scale_derived_overrides.contains(*g)) {
+                return false;
+            }
             if root && ((groups.contains(&"name") && !cn.overrides.contains("name")) || (groups.contains(&"size") && cn.overrides.contains("size"))) {
                 return false;
             }

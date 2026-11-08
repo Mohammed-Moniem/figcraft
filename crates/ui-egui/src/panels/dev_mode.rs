@@ -26,6 +26,8 @@ use crate::theme::{Tokens, doc_c32, regular, semibold};
 use crate::widgets::{self, DropLead, PAD};
 use crate::{FigApp, RightTab};
 
+pub(crate) mod annotation_tool;
+
 /// Width of an annotation callout on the canvas.
 const CALLOUT_W: f32 = 220.0;
 /// Gap between a layer and its callouts.
@@ -95,6 +97,7 @@ pub struct DevUi {
     pub filter: usize,
     pub categories: CategoryFilter,
     pub compare: Option<crate::dev_compare::CompareView>,
+    pub(crate) annotation_tool: annotation_tool::Composer,
     annotated: Vec<NodeId>,
     annotated_key: Option<(u64, u64, NodeId)>,
     /// The measurements kept on the current page, with their lines.
@@ -133,9 +136,9 @@ fn active(app: &FigApp) -> bool {
 
 // ------------------------------------------------------------------ canvas
 
-/// The annotations on the current page as callouts beside their layers (Inspect tab only).
+/// The annotations on the current page, in Inspect or while the Annotation tool is active.
 pub fn draw(app: &mut FigApp, painter: &egui::Painter) {
-    if !active(app) {
+    if !(active(app) || app.ui.present.is_none() && app.session.tool.tool == figcraft_engine::ToolId::Annotation) {
         return;
     }
     let Ok(ds) = app.session.ds() else { return };

@@ -256,9 +256,12 @@ fn text_style_json(cmd: &str, v: &Value) -> Result<TextStyle> {
 }
 
 /// The text style definition a layer's chars from `at` (None = its base style) show.
-fn text_style_of(n: &Node, at: Option<usize>) -> Option<TextStyle> {
+fn text_style_of(n: &Node, range: Option<(usize, usize)>) -> Option<TextStyle> {
     let t = n.kind.text()?;
-    Some(at.map_or(&t.style, |a| t.style_at(a)).as_text_style())
+    let mut style = range.map_or(&t.style, |(a, _)| t.style_at(a)).as_text_style();
+    let (a, b) = range.unwrap_or((0, t.char_count()));
+    style.wrap_style = t.common_wrap_style(a, b).unwrap_or(t.wrap_style);
+    Some(style)
 }
 
 fn detach(s: &mut Session, p: &Value) -> Result<Value> {
@@ -318,7 +321,7 @@ fn create(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let from = range.map(|r| r.0).or(from);
     let doc = s.doc_mut()?;
-    let kind = if let Some(v) = get(p, "value") {
+    let mut kind = if let Some(v) = get(p, "value") {
         match t.as_str() {
             "paint" | "color" | "fill" => StyleKind::Paint { paints: paints_of(v).ok_or_else(|| bad(cmd, "value: paints"))? },
             "text" => StyleKind::Text { style: text_style_json(cmd, v)? },
@@ -326,12 +329,18 @@ fn create(s: &mut Session, p: &Value) -> Result<Value> {
             "grid" => StyleKind::Grid { grids: serde_json::from_value(v.clone()).map_err(|e| bad(cmd, e.to_string()))? },
             _ => return Err(bad(cmd, "type: paint|text|effect|grid")),
         }
-    } else if let Some((tid, a, _)) = range {
-        StyleKind::Text { style: doc.node(tid).and_then(|n| text_style_of(n, Some(a))).ok_or_else(|| bad(cmd, "not a text layer"))? }
+    } else if let Some((tid, a, b)) = range {
+        StyleKind::Text { style: doc.node(tid).and_then(|n| text_style_of(n, Some((a, b)))).ok_or_else(|| bad(cmd, "not a text layer"))? }
     } else {
         let n = from.and_then(|f| doc.node(f)).ok_or_else(|| bad(cmd, "pass `value` or select a layer to take it from"))?;
         kind_from_node(&t, n).ok_or_else(|| bad(cmd, "that layer has no such property"))?
     };
+    if get(p, "value").is_none()
+        && let Some(from) = from
+    {
+        kind = crate::style_vars::captured_kind(doc, from, &kind)
+            .ok_or_else(|| bad(cmd, "the style cannot preserve these values in the layer's scale context"))?;
+    }
     let sid = doc.new_style_id();
     let field = match t.as_str() {
         "stroke" => "strokeStyle",
@@ -347,9 +356,12 @@ fn create(s: &mut Session, p: &Value) -> Result<Value> {
     };
     doc.styles.push(Style { id: sid.clone(), name, description: string(p, "description").unwrap_or_default(), kind: kind.clone(), bound });
     // The source layer (or the selected chars) becomes linked to the new style.
-    if let (Some((tid, a, b)), StyleKind::Text { style }) = (range, &kind) {
-        if let NodeKind::Text(td) = &mut doc.get_mut(tid)?.kind {
-            td.link_text_style(a, b, style, &sid);
+    if let Some((tid, a, b)) = range {
+        let presented = doc.style(&sid).map(|style| crate::style_vars::kind_for(doc, style, tid).into_owned());
+        if let Some(StyleKind::Text { style }) = presented
+            && let NodeKind::Text(td) = &mut doc.get_mut(tid)?.kind
+        {
+            td.link_text_style(a, b, &style, &sid);
         }
     } else if let Some(f) = from
         && get(p, "value").is_none()
@@ -424,7 +436,7 @@ fn apply_style(s: &mut Session, p: &Value) -> Result<Value> {
     let st = req_string(cmd, p, "style")?;
     let style = s.doc()?.style(&st).cloned().ok_or_else(|| bad(cmd, format!("no style `{st}`")))?;
     // Text styles go on chars: a range, the selected chars of the edited text, or whole layers.
-    if let StyleKind::Text { style: def } = &style.kind {
+    if let StyleKind::Text { .. } = &style.kind {
         // A text style is no property of other layers: they're left alone.
         let doc = s.doc()?;
         let targets: Vec<TextTarget> =
@@ -436,8 +448,10 @@ fn apply_style(s: &mut Session, p: &Value) -> Result<Value> {
             let doc = s.doc_mut()?;
             match range {
                 Some((a, b)) => {
-                    if let NodeKind::Text(t) = &mut doc.get_mut(i)?.kind {
-                        t.link_text_style(a, b, def, &style.id);
+                    if let StyleKind::Text { style: def } = crate::style_vars::kind_for(doc, &style, i).into_owned()
+                        && let NodeKind::Text(t) = &mut doc.get_mut(i)?.kind
+                    {
+                        t.link_text_style(a, b, &def, &style.id);
                     }
                 }
                 None => apply_style_ref(doc, i, "textStyle", Some(&style.id))?,
@@ -519,8 +533,14 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
             _ => StyleKind::Grid { grids: serde_json::from_value(v.clone()).map_err(|e| bad(cmd, e.to_string()))? },
         })
     } else if let Some(f) = from {
-        let t = doc.styles.get(idx).map(|x| x.kind.type_name()).unwrap_or("paint");
-        doc.node(f).and_then(|n| kind_from_node(t, n))
+        let current = doc.styles.get(idx).ok_or_else(|| bad(cmd, "no such style"))?;
+        doc.node(f)
+            .and_then(|n| kind_from_node(current.kind.type_name(), n))
+            .map(|kind| {
+                crate::style_vars::redefined_kind(doc, f, current, &kind)
+                    .ok_or_else(|| bad(cmd, "the style cannot preserve these values in the layer's scale context"))
+            })
+            .transpose()?
     } else {
         None
     };
@@ -707,16 +727,25 @@ pub fn sync_text_styles(doc: &mut Document, ids: &[NodeId]) {
             _ => None,
         })
         .collect();
-    let varying: Vec<&Style> = doc.styles.iter().filter(|s| !s.bound.is_empty() && matches!(s.kind, StyleKind::Text { .. })).collect();
     let mut updates: Vec<(NodeId, Option<StyleId>, TextData)> = Vec::new();
     for id in ids {
         let Some(n) = doc.node(id) else { continue };
         let NodeKind::Text(t) = &n.kind else { continue };
         // Styles with bound fields read as this layer sees them.
         let mut defs = std::borrow::Cow::Borrowed(&defs);
-        for st in &varying {
-            if let StyleKind::Text { style } = crate::style_vars::kind_for(doc, st, id).into_owned() {
-                defs.to_mut().insert(st.id.clone(), style);
+        let linked: std::collections::BTreeSet<&str> = n
+            .styles
+            .text
+            .as_deref()
+            .into_iter()
+            .chain(t.style.style_id.as_deref())
+            .chain(t.runs.iter().filter_map(|run| run.style.style_id.as_deref()))
+            .collect();
+        for sid in linked {
+            if let Some(st) = doc.style(sid)
+                && let StyleKind::Text { style } = crate::style_vars::kind_for(doc, st, id).into_owned()
+            {
+                defs.to_mut().insert(sid.to_owned(), style);
             }
         }
         let mut t2 = t.clone();
@@ -812,12 +841,14 @@ pub(crate) fn bind_variable(cmd: &str, doc: &mut Document, ids: &[NodeId], field
         match vid {
             Some(v) => {
                 if n.bound.get(field).map(String::as_str) != Some(v) {
+                    crate::variable_scale::retire_field(n, field);
                     rebind_paint_alpha(&mut n.fills, &mut n.strokes, field, true);
                 }
                 n.bound.insert(field.to_string(), v.to_string());
             }
             None => {
                 if n.bound.remove(field).is_some() {
+                    crate::variable_scale::retire_field(n, field);
                     rebind_paint_alpha(&mut n.fills, &mut n.strokes, field, false);
                 }
             }
@@ -1202,6 +1233,7 @@ fn apply_bindings_matching(doc: &mut Document, only: Option<&std::collections::B
     };
     for id in bound {
         let modes = doc.modes_for(id);
+        let scale = crate::variable_scale::factor(doc, id);
         let Some(n) = doc.node(id) else { continue };
         let binds = n.bound.clone();
         let has_layout = n.layout.is_some();
@@ -1218,7 +1250,10 @@ fn apply_bindings_matching(doc: &mut Document, only: Option<&std::collections::B
             if !has_layout && super::props::LAYOUT_KEYS.contains(&field.as_str()) {
                 continue;
             }
-            let Some(val) = doc.variables.resolve(&var, &modes) else { continue };
+            let Some(mut val) = doc.variables.resolve(&var, &modes) else { continue };
+            if !scale_bound_value(&field, &mut val, scale) {
+                continue;
+            }
             // One list item's value: a paint's colour, an effect's or a layout grid's field.
             if let Some((list, i, prop)) = list_binding(&field) {
                 match (list, &val) {
@@ -1286,6 +1321,22 @@ fn apply_bindings_matching(doc: &mut Document, only: Option<&std::collections::B
             super::component::apply_prop_bindings(doc, id, &prop_sets);
         }
     }
+}
+
+/// Present a bound length in its layer's scale context before the property setter clamps it.
+fn scale_bound_value(field: &str, val: &mut VariableValue, scale: Option<f64>) -> bool {
+    use super::lists::{BoundList, list_binding};
+    let dimensional = match list_binding(field) {
+        Some((BoundList::Effects, _, prop)) => crate::variable_scale::effect_length(prop),
+        Some((BoundList::Grids, _, prop)) => crate::variable_scale::grid_length(prop),
+        Some(_) => false,
+        None => crate::variable_scale::length(field),
+    };
+    if dimensional && let VariableValue::Number(value) = val {
+        let Some(scaled) = scale.map(|factor| *value * factor).filter(|value| value.is_finite()) else { return false };
+        *value = scaled;
+    }
+    true
 }
 
 /// Set paint `i`'s colour (or its gradient stop `stop`'s) to a bound colour; a first paint that

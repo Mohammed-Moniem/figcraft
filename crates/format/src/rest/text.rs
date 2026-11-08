@@ -273,6 +273,7 @@ fn lists(v: &Value, td: &mut TextData) {
             },
             indent: indents.get(i).and_then(Value::as_f64).filter(|d| d.is_finite()).map_or(0, |d| d.clamp(0.0, 255.0) as u8),
             start_offset: starts.get(i).and_then(Value::as_f64).filter(|n| n.is_finite()).map_or(0, |n| n.clamp(0.0, f64::from(u32::MAX)) as u32),
+            wrap: None,
         })
         .collect();
     // Clamp the levels and fold one style for all back into the layer's list style.

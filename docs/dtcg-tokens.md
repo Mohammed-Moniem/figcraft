@@ -7,13 +7,14 @@ Import… reads it back from a native file picker or a browser file input. The s
 ```json
 [
   {"command":"variable.export","params":{"format":"dtcg","path":"theme.tokens.json"}},
-  {"command":"variable.import","params":{"variables":"theme.tokens.json"}}
+  {"command":"variable.import","params":{"format":"dtcg","variables":"theme.tokens.json"}}
 ]
 ```
 
 Omit `path` to receive `{text}`. `collections` filters by collection id/name as in the other
 variable formats. DTCG import is detected automatically from an object, JSON text or a regular
-file within the existing 256 MiB cap. Import merges by collection/variable/mode name and is one
+file within the existing 256 MiB cap. Explicit format dtcg keeps standard semantics;
+Figma extensions and string tokens have a separate [mode JSON adapter](figma-mode-tokens.md). Import merges by collection/variable/mode name and is one
 undo step. Invalid input is refused before document mutation. Scripts/batches reserve inline
 `$ref` objects for step references; pass DTCG containing JSON Pointers as a file path or JSON text
 to preserve those pointers through that transport. Direct command calls accept the token object.
@@ -31,7 +32,7 @@ claim of complete DTCG authoring or resolver conformance.
   whole-token JSON Pointer aliases and local property pointers. Following
   [Format §5.2.2](https://www.designtokens.org/tr/2025.10/format/#type), aliases without a token-level
   type infer the referenced type before considering a group default; explicit types must agree. Supported values are `color`,
-  `dimension`, `number`, single-string `fontFamily`, and `fontWeight`. Color input supports sRGB,
+  `dimension`, `duration`, `number`, single-string `fontFamily`, and `fontWeight`. Color input supports sRGB,
   linear sRGB, Display P3, HSL, LCH and OKLCH; values are converted to the receiving file's profile
   and clipped to its representable gamut, using the existing color conversion. LCH/OKLCH first use
   the existing sRGB gamut mapping (including its practical chroma bounds), then convert profiles.
@@ -39,6 +40,7 @@ claim of complete DTCG authoring or resolver conformance.
   references and font-family fallback arrays are refused with the affected path.
 - `rem` dimensions become pixel numbers using `remSize` (default 16). Pass a positive
   `remSize` up to 100000 to choose the conversion. Export writes the resulting pixel value.
+- Nonnegative duration values accept s or ms and normalize to seconds. Export writes s.
 
 ## Modes and native values
 
@@ -58,7 +60,8 @@ optional native designTokenType metadata through native files and variables JSON
 older untyped variables with the exposed standard type; general strings and booleans remain untyped.
 The Variables editor keeps it through copy/paste and Undo/Redo; variable.create accepts an optional
 compatible designTokenType for programmatic creation. This metadata does not restrict native variable pickers. Real bindings and explicit scopes still
-take priority when CSS determines units. Aliases between different standard types are flattened in
+take priority when CSS determines units. A duration uses seconds only when no native role is assigned;
+opacity/font-weight roles remain unitless and native lengths remain pixels. Aliases between different standard types are flattened in
 the standard tree while the native extension keeps their live expressions. Edited standard token values override
 the snapshot for the exposed mode; unedited calculated values keep their expressions.
 

@@ -187,6 +187,7 @@ pub fn panel(app: &mut FigApp, ui: &mut Ui) {
     crate::motion::sync_owner(app);
     let owner = app.ui.motion.owner;
     ui.scope_builder(egui::UiBuilder::new().id_salt(("motion_owner", owner)), |ui| panel_body(app, ui));
+    crate::motion::export::show(app, ui.ctx());
 }
 
 fn panel_body(app: &mut FigApp, ui: &mut Ui) {
@@ -272,6 +273,11 @@ fn header_row(app: &mut FigApp, ui: &mut Ui, header: Rect, t: &Tokens, settings:
     if icon_button(ui, at(163.0, 22.0, 24.0), Icon::ChevronUp, "fold", tr("Collapse layers"), false, t).clicked() {
         acts.push(Act::FoldAll);
     }
+    let export = Rect::from_center_size(pos2(header.left() + 237.0, cy), vec2(98.0, 26.0));
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(export));
+    if child.add_sized(export.size(), egui::Button::new(tr("Export GIF…"))).clicked() {
+        crate::motion::export::open(app);
+    }
     // Collapse the whole panel.
     let cb = Rect::from_center_size(pos2(header.right() - 18.0, cy), vec2(24.0, 24.0));
     if icon_button(ui, cb, Icon::Close, "collapse", tr("Close"), false, t).clicked() {
@@ -315,7 +321,8 @@ fn pxms(track_x: f32, right: f32, duration_ms: u32) -> f32 {
 /// The time ruler: the top-right band beside the header controls (same height as the header).
 fn ruler(app: &mut FigApp, ui: &mut Ui, header: Rect, t: &Tokens, settings: &TimelineSettings) -> Vec<Act> {
     let track_x = header.left() + LEFT_W;
-    let ruler = Rect::from_min_max(pos2(track_x, header.top()), pos2(header.right(), header.bottom()));
+    // This later click-and-drag widget must leave the header Close button its own hit area.
+    let ruler = Rect::from_min_max(pos2(track_x, header.top()), pos2((header.right() - 36.0).max(track_x), header.bottom()));
     let dur = settings.duration_ms.max(1) as f64;
     let scale = pxms(track_x, header.right(), settings.duration_ms);
     let scroll = app.ui.motion.scroll_x;

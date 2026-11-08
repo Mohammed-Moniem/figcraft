@@ -123,6 +123,10 @@ fn board_end_gap_high_zoom_drop_at_displayed_offset_keeps_attachment() {
         let a = shape(&mut s, 0.0, 0.0);
         let b = shape(&mut s, 400.0, 200.0);
         let c = id(&s.execute("board.connector", &json!({"from": a, "to": {"x": 700, "y": 300}, "style": "elbow"})).unwrap(), "id");
+        // Automatic routes now avoid B. Explicitly place a manual run over it to retain
+        // this test's own-connector occlusion precondition at both zoom levels.
+        s.execute("board.reshape", &json!({"id":c,"portion":1,"x":396,"y":250})).unwrap();
+        assert!(connector(&s, c).path.is_some());
         s.execute("tool.move", &json!({})).unwrap();
         s.execute("select.set", &json!({"ids": [c]})).unwrap();
         let first = drawn(&s, c)[0];

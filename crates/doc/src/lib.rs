@@ -30,7 +30,7 @@ pub mod vector_faces;
 pub mod vector_regions;
 
 pub use board::*;
-pub use board_route::{END_GAP, RouteEnd, attached_sides, path_handles, reshaped, route_along, route_points};
+pub use board_route::{END_GAP, RouteEnd, RoutingBudget, attached_sides, path_handles, reshaped, route_along, route_avoiding, route_points};
 pub use colors::*;
 pub use comments::*;
 pub use design_review::{DesignPreset, DesignReview, GRID_MAX, GRID_MIN, MAX_BRAND_COLORS, MAX_RADII};

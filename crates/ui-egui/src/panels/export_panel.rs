@@ -4,11 +4,11 @@
 //! change runs an `export.*` or `file.export*` command.
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use egui::{Align2, Color32, CornerRadius, Id, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
-use figcraft_doc::{Document, ExportFormat, ExportSetting, ExportSize, NodeId, NodeKind, PrintSettings, VdCompat};
-use figcraft_engine::cmd::file::export_jobs;
+use figcraft_doc::{Document, ExportColorProfile, ExportFormat, ExportSetting, ExportSize, NodeId, NodeKind, PrintSettings, VdCompat};
+use figcraft_engine::cmd::file::{ExportLayout, export_jobs};
 use serde_json::{Value, json};
 
 use crate::FigApp;
@@ -53,6 +53,43 @@ fn exports(doc: &Document, sel: &[NodeId]) -> Exports {
     }
 }
 
+/// One quality editor owner per panel/viewport. Weak snapshot identity retires authored row
+/// replacements without treating view-only command revisions as document edits.
+#[derive(Clone)]
+struct QualityOwner {
+    doc: Weak<Document>,
+    uid: u64,
+    ids: Vec<NodeId>,
+    open_row: Option<usize>,
+    frame: u64,
+    epoch: Option<u64>,
+}
+
+fn quality_owner(app: &FigApp, ui: &Ui, ids: &[NodeId], list: &[ExportSetting]) -> Option<Id> {
+    let ds = app.session.ds().ok()?;
+    let key = ui.scope_id().with(("export_quality_owner", ui.ctx().viewport_id()));
+    let frame = ui.ctx().cumulative_frame_nr();
+    let open_row = (0..list.len()).find(|i| egui::Popup::is_id_open(ui.ctx(), Id::unique(("export_more", *i))));
+    let previous = ui.data(|data| data.get_temp::<QualityOwner>(key));
+    let epoch = match previous {
+        Some(previous)
+            if previous.uid == ds.uid
+                && previous.ids == ids
+                && previous.open_row == open_row
+                && std::ptr::eq(previous.doc.as_ptr(), Arc::as_ptr(&ds.doc))
+                && (previous.frame == frame || previous.frame.checked_add(1) == Some(frame)) =>
+        {
+            previous.epoch
+        }
+        Some(previous) => previous.epoch.and_then(|epoch| epoch.checked_add(1)),
+        None => Some(0),
+    };
+    // A checked epoch never reuses an earlier draft id, even after an owner switches back or a
+    // section was absent for a frame. Exhaustion leaves this editor unavailable, not aliased.
+    ui.data_mut(|data| data.insert_temp(key, QualityOwner { doc: Arc::downgrade(&ds.doc), uid: ds.uid, ids: ids.to_vec(), open_row, frame, epoch }));
+    epoch.map(|epoch| key.with(epoch))
+}
+
 pub fn section(app: &mut FigApp, ui: &mut Ui, doc: &Arc<Document>, sel: &[NodeId]) {
     let t = Tokens::get(ui.ctx());
     let ids = sel.to_vec();
@@ -68,24 +105,26 @@ pub fn section(app: &mut FigApp, ui: &mut Ui, doc: &Arc<Document>, sel: &[NodeId
     if mixed {
         widgets::note(ui, tr("Click + to replace mixed content"), t.text_secondary);
     }
+    let quality_owner = quality_owner(app, ui, &ids, &list);
     for (i, e) in list.iter().enumerate() {
-        setting_row(app, ui, &ids, i, e, text);
+        setting_row(app, ui, &ids, i, e, text, quality_owner);
     }
     let Some(first) = first else { return };
+    let layout = layout_choice(ui);
     preview(app, ui, doc, first);
     let label = match (layers.len(), name) {
         (1, Some(name)) => trf("Export {name}", &[("name", &name)]),
         (k, _) => trn("Export {n} layers", k, &[]),
     };
     if wide_button(ui, &label) {
-        export_layers(app, sel, false);
+        export_layers_with_layout(app, sel, false, layout);
     }
 }
 
 /// One export setting: size (typed or picked; images only, SVG and PDF are vector), suffix,
 /// format, advanced options and remove; a PDF's print settings under it. `text`: every layer in
 /// `ids` is a text layer.
-fn setting_row(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], i: usize, e: &ExportSetting, text: bool) {
+fn setting_row(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], i: usize, e: &ExportSetting, text: bool, quality_owner: Option<Id>) {
     row(ui, 32.0, |ui| {
         // Tighter spacing so the advanced options and remove buttons fit beside the fields.
         ui.spacing_mut().item_spacing.x = 4.0;
@@ -129,7 +168,7 @@ fn setting_row(app: &mut FigApp, ui: &mut Ui, ids: &[NodeId], i: usize, e: &Expo
             .width(216.0)
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .show(|ui| {
-                if let Some(mut params) = advanced_options(ui, e, text) {
+                if let Some(mut params) = advanced_options(ui, e, text, quality_owner) {
                     params["ids"] = json!(ids);
                     params["index"] = json!(i);
                     app.run("export.update", params);
@@ -162,7 +201,7 @@ const VD_COMPAT: [(VdCompat, &str); 3] =
 /// for text layers (and for any setting that has it on, so it can be turned off); for SVG outline
 /// text, the id attribute and simplified strokes; for XML (Android Vector Drawable) the id attribute
 /// (as `android:name`) and the compatibility mode. Returns the changed option as command params.
-fn advanced_options(ui: &mut Ui, e: &ExportSetting, text: bool) -> Option<Value> {
+fn advanced_options(ui: &mut Ui, e: &ExportSetting, text: bool, quality_owner: Option<Id>) -> Option<Value> {
     let mut out = None;
     let mut option = |ui: &mut Ui, key: &str, on: bool, label: &str| {
         if widgets::checkbox(ui, on, label) {
@@ -188,6 +227,33 @@ fn advanced_options(ui: &mut Ui, e: &ExportSetting, text: bool) -> Option<Value>
                 out = Some(json!({"vdCompat": mode.key()}));
             }
         }
+    }
+    if matches!(e.format, ExportFormat::Png | ExportFormat::Jpg | ExportFormat::Webp) {
+        ui.add_space(4.0);
+        widgets::label(ui, tr("Color profile"), Tokens::get(ui.ctx()).text_secondary);
+        for (profile, label) in [
+            (ExportColorProfile::SameAsFile, tr("Same as file")),
+            (ExportColorProfile::Srgb, tr("sRGB")),
+            (ExportColorProfile::DisplayP3, tr("Display P3")),
+        ] {
+            if widgets::radio(ui, e.color_profile == profile, label) && e.color_profile != profile {
+                out = Some(json!({"colorProfile": profile.key()}));
+            }
+        }
+    }
+    if e.format == ExportFormat::Jpg {
+        ui.horizontal(|ui| {
+            widgets::label(ui, tr("Quality:"), Tokens::get(ui.ctx()).text_secondary);
+            let width = ui.available_width().max(48.0);
+            let Some(owner) = quality_owner else { return };
+            let id = ui.scope_id().with(("export_quality", owner));
+            if let Some(quality) = widgets::text_field(ui, id, &e.quality().to_string(), width, "90")
+                .and_then(|text| text.trim().parse::<u8>().ok())
+                .filter(|quality| (1..=100).contains(quality) && *quality != e.quality())
+            {
+                out.get_or_insert_with(|| json!({}))["quality"] = json!(quality);
+            }
+        });
     }
     out
 }
@@ -383,6 +449,30 @@ pub(crate) fn wide_button(ui: &mut Ui, label: &str) -> bool {
 /// Export `ids` with their export settings (`assets`: the Inspect tab's assets in and under them):
 /// one file through a save dialog, several into a folder.
 pub(crate) fn export_layers(app: &mut FigApp, ids: &[NodeId], assets: bool) {
+    export_layers_with_layout(app, ids, assets, ExportLayout::Flat);
+}
+
+fn layout_choice(ui: &mut Ui) -> ExportLayout {
+    let id = Id::unique(("mobile-export-layout", ui.ctx().viewport_id()));
+    let mut layout = ui.ctx().data(|d| d.get_temp::<ExportLayout>(id)).unwrap_or_default();
+    row(ui, 32.0, |ui| {
+        ui.label(tr("Asset layout"));
+        let response = widgets::dropdown(ui, if layout == ExportLayout::Flat { tr("Flat") } else { layout.label() }, 108.0, None);
+        menu_popup(&response).show(|ui| {
+            for option in ExportLayout::ALL {
+                let label = if option == ExportLayout::Flat { tr("Flat") } else { option.label() };
+                if menu_row(ui, label, "", 0.0, |_, _, _| {}).clicked() {
+                    layout = option;
+                    ui.close();
+                }
+            }
+        });
+    });
+    ui.ctx().data_mut(|d| d.insert_temp(id, layout));
+    layout
+}
+
+fn export_layers_with_layout(app: &mut FigApp, ids: &[NodeId], assets: bool, layout: ExportLayout) {
     let jobs = match app.session.doc() {
         Ok(doc) if assets => figcraft_engine::devinspect::asset_jobs(doc, ids),
         Ok(doc) => export_jobs(doc, ids),
@@ -391,12 +481,12 @@ pub(crate) fn export_layers(app: &mut FigApp, ids: &[NodeId], assets: bool) {
     match jobs.as_slice() {
         [] => {}
         // The suggested name keeps only the file's own name (a layer's folders apply to folders).
-        [one] => save_one(app, &[one.id], &one.setting, one.file.rsplit('/').next().unwrap_or(&one.file)),
+        [one] if layout == ExportLayout::Flat => save_one(app, &[one.id], &one.setting, one.file.rsplit('/').next().unwrap_or(&one.file)),
         // No folders in the browser, and it lets a page start one download at a time: the files
         // arrive together as one zip (#969).
         _ if app.services.downloads() => {
             let name = format!("{}.zip", app.session.doc().map_or("Export", |d| d.name.as_str()));
-            if let Some(r) = app.run("file.exportLayers", json!({"ids": ids, "assets": assets, "zip": true}))
+            if let Some(r) = app.run("file.exportLayers", json!({"ids": ids, "assets": assets, "zip": true, "layout":layout.key()}))
                 && app.download(&name, &r)
             {
                 app.toast(trn("Exported {n} files", r["files"].as_array().map_or(0, Vec::len), &[]));
@@ -405,7 +495,9 @@ pub(crate) fn export_layers(app: &mut FigApp, ids: &[NodeId], assets: bool) {
         _ => {
             let ids = ids.to_vec();
             app.pick_folder(tr("Export"), move |app, dir| {
-                if let Some(r) = app.run("file.exportLayers", json!({"ids": ids, "dir": dir.to_string_lossy(), "assets": assets})) {
+                if let Some(r) =
+                    app.run("file.exportLayers", json!({"ids": ids, "dir": dir.to_string_lossy(), "assets": assets, "layout":layout.key()}))
+                {
                     let files = r["files"].as_array().cloned().unwrap_or_default();
                     // Android Vector Drawables say what they changed or left out.
                     let changed = files.iter().any(|f| f["warnings"].as_array().is_some_and(|w| !w.is_empty()));

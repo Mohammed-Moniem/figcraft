@@ -6,7 +6,7 @@ impl FigApp {
     /// Calling `ImeContextTracker::observe` more than once in a pass would treat an idle followed
     /// by a focused observation as a context change (dropping the frame's receipts) and bump the
     /// generation. Keeping this in one place makes the fork contract structural.
-    pub(super) fn observe_ime(&mut self, ctx: &egui::Context, focused: bool) {
+    pub(crate) fn observe_ime(&mut self, ctx: &egui::Context, focused: bool) {
         #[cfg(test)]
         {
             self.ime_observations = self.ime_observations.saturating_add(1);

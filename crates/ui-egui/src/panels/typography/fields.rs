@@ -392,7 +392,20 @@ fn type_settings(
         }
         // Where lines break when the text wraps (Explore text properties).
         caption(ui, tr("Wrap style"));
-        let wrap = common(doc, ids, |n| n.kind.text().map(|t| t.wrap_style as usize)).flatten();
+        let wrap = common(doc, ids, |n| {
+            n.kind.text().and_then(|t| {
+                let wrap = match range.filter(|r| r.0 == n.id) {
+                    Some((_, a, b)) => t.common_wrap_style(a, b),
+                    None => {
+                        // A whole layer includes the empty paragraph after a final newline.
+                        let first = t.para_wrap_style(0);
+                        (0..t.paragraph_count()).all(|p| t.para_wrap_style(p) == first).then_some(first)
+                    }
+                };
+                wrap.map(|w| w as usize)
+            })
+        })
+        .flatten();
         let items = [
             (tr("Auto"), tr_noop("Auto: as many words as fit on each line")),
             (tr("Balance"), tr_noop("Balance: every line close to the same length")),
@@ -400,7 +413,7 @@ fn type_settings(
         ];
         if let Some(i) = text_seg(ui, "wrap", &items, wrap, w) {
             let style = ["auto", "balance", "pretty"].get(i).copied().unwrap_or("auto");
-            app.set_props(ids, json!({"wrapStyle": style}));
+            app.run("text.wrapStyle", json!({"ids": ids, "style": style}));
         }
         let resize = common(doc, ids, |n| n.kind.text().map(|t| t.auto_resize)).flatten();
         // Auto-height text with a line limit truncates too.

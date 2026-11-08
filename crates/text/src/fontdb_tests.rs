@@ -1,5 +1,14 @@
 use super::*;
 
+/// Loaded faces for this exact file, independent of concurrent additions from other files.
+fn loaded_face_ids(bytes: &[u8]) -> Vec<u32> {
+    let mut ids: Vec<_> =
+        db().read().unwrap().faces.iter().filter(|face| face.loaded > 0 && face.bytes.data() == bytes).map(|face| face.id).collect();
+    ids.sort_unstable();
+    assert!(!ids.is_empty(), "a successful public load retains faces for these exact bytes");
+    ids
+}
+
 fn pending(styles: &[&str]) -> FontDb {
     let mut db = FontDb::default();
     let entries = styles
@@ -333,7 +342,7 @@ fn a_rescan_offers_fonts_installed_since() {
 }
 
 /// #1246: the first scan offers the installed styles an embedded family lacks (release builds embed
-/// Poppins Regular, Italic and Bold; an installed SemiBold and Medium went unseen). Embedded styles win.
+/// Poppins Regular, Italic and Bold; an installed SemiBold and Medium went unseen). #2092 also retains conflicts.
 #[test]
 fn the_scan_offers_installed_styles_an_embedded_family_lacks() {
     // Any embedded or installed font stands in for the embedded face (none without craft-fonts on CI).
@@ -356,10 +365,10 @@ fn the_scan_offers_installed_styles_an_embedded_family_lacks() {
     let found =
         |family: &str, styles: &[&str]| BTreeMap::from([(family.to_lowercase(), (family.to_string(), styles.iter().map(|s| entry(s)).collect()))]);
     db.merge_scan(found("Brand Sans", &["Regular"]));
-    assert!(!db.pending.contains_key("brand sans"), "an embedded style isn't read from disk again");
+    assert!(db.pending.contains_key("brand sans"), "installed styles stay available beside matching built-in ones");
     db.merge_scan(found("Brand Sans", &["Regular", "SemiBold", "Medium"]));
     let waiting: Vec<String> = db.pending.get("brand sans").map(|(_, v)| v.iter().map(|e| e.style.clone()).collect()).unwrap_or_default();
-    assert_eq!(waiting, ["SemiBold", "Medium"]);
+    assert_eq!(waiting, ["Regular", "SemiBold", "Medium"]);
     assert_eq!(db.families(), ["Brand Sans"]);
     db.merge_scan(found("CJK UI", &["Regular", "Bold"]));
     assert_eq!(left(&db), ["Regular", "Bold"]);
@@ -376,10 +385,49 @@ fn font_bytes_load_into_the_db() {
         let families = load_font_bytes(f.bytes.to_vec());
         assert_eq!(families.len(), 1);
         assert!(families.iter().all(|f| has_family(f)));
-        let faces = db().read().unwrap().face_count();
+        let faces = loaded_face_ids(f.bytes);
         assert_eq!(load_font_bytes(f.bytes.to_vec()), families);
-        assert_eq!(db().read().unwrap().face_count(), faces);
+        assert_eq!(loaded_face_ids(f.bytes), faces);
     }
+}
+
+/// #2092: a font loaded with `text.loadFont` wins over the built-in and installed faces of its family
+/// and style, the latest load over earlier ones; other styles resolve as before.
+#[test]
+fn a_loaded_face_wins_over_the_built_in_one_of_its_family_and_style() {
+    // Any embedded or installed font stands in for the faces (none without craft-fonts on CI).
+    let stand_in = CRAFT_FONTS.first().map(|f| f.bytes.to_vec()).or_else(|| {
+        let mut installed = BTreeMap::new();
+        for dir in system_font_dirs() {
+            scan_dir(&dir, 0, &mut installed);
+        }
+        installed.values().flat_map(|(_, v)| v).find_map(|p| std::fs::read(&p.path).ok())
+    });
+    let Some(bytes) = stand_in.map(Arc::new) else {
+        eprintln!("skipping: no font to stand in");
+        return;
+    };
+    let face = |style: &str, name: &str| {
+        let mut f = Face::from_bytes(FontBytes::Shared(bytes.clone()), 0, Some("Brand Sans"), Some(style)).unwrap();
+        f.instances.clear();
+        f.postscript = Some(name.into());
+        f
+    };
+    let name = |db: &FontDb, style: &str| db.best("Brand Sans", style).and_then(|f| f.postscript.clone());
+    let mut db = FontDb::default();
+    db.add(face("Regular", "Built-in-Regular"));
+    db.add(face("Bold", "Built-in-Bold"));
+    assert_eq!(name(&db, "Regular").as_deref(), Some("Built-in-Regular"));
+    db.add_loaded(face("Regular", "Loaded-Regular"));
+    assert_eq!(name(&db, "Regular").as_deref(), Some("Loaded-Regular"));
+    // Bold wasn't loaded: the built-in one stays. Nor does the loaded Regular stand in for it.
+    assert_eq!(name(&db, "Bold").as_deref(), Some("Built-in-Bold"));
+    // The latest load wins.
+    db.add_loaded(face("Regular", "Loaded-Regular-2"));
+    assert_eq!(name(&db, "Regular").as_deref(), Some("Loaded-Regular-2"));
+    // A face added after a load, not loaded, doesn't displace it.
+    db.add(face("Regular", "Installed-Regular"));
+    assert_eq!(name(&db, "Regular").as_deref(), Some("Loaded-Regular-2"));
 }
 
 /// Apple's system font answers to the names designs and CSS use for it (SF Pro, SF UI Text,
@@ -618,4 +666,64 @@ fn system_font_dirs_are_walked_once_each() {
     let dirs = super::system_font_dirs();
     let unique: std::collections::HashSet<_> = dirs.iter().collect();
     assert_eq!(unique.len(), dirs.len(), "{dirs:?}");
+}
+
+#[test]
+fn explicit_loaded_font_wins_for_matching_family_and_style_through_the_public_loader() {
+    let Some(font) = CRAFT_FONTS.iter().min_by_key(|f| f.bytes.len()) else {
+        eprintln!("skipping explicit load precedence: no embedded test font");
+        return;
+    };
+    let original = Face::from_bytes(FontBytes::Static(font.bytes), 0, None, None).unwrap();
+    let (family, style) = (original.family.clone(), original.style.clone());
+    db().write().unwrap().add(original);
+    let mut first = font.bytes.to_vec();
+    first.extend_from_slice(b"FIGCRAFT_PR2101_PUBLIC_LOAD_1");
+    let names = load_font_bytes(first.clone());
+    assert!(names.iter().any(|name| name.eq_ignore_ascii_case(&family)));
+    assert!(
+        db().read().unwrap().best(&family, &style).unwrap().bytes.data() == first.as_slice(),
+        "explicit load must replace equally matching earlier faces"
+    );
+    let mut second = first;
+    second.extend_from_slice(b"_LATEST");
+    load_font_bytes(second.clone());
+    assert!(db().read().unwrap().best(&family, &style).unwrap().bytes.data() == second.as_slice(), "latest explicit load wins");
+    let faces = loaded_face_ids(&second);
+    load_font_bytes(second.clone());
+    assert_eq!(loaded_face_ids(&second), faces, "same bytes remain deduplicated");
+    db().write().unwrap().add(Face::from_bytes(FontBytes::Static(font.bytes), 0, None, None).unwrap());
+    assert!(
+        db().read().unwrap().best(&family, &style).unwrap().bytes.data() == second.as_slice(),
+        "later installed faces cannot displace an explicit load"
+    );
+}
+
+#[test]
+fn a_loaded_variable_named_style_wins_over_a_built_in_exact_style_label() {
+    let Some(bytes) = ["/System/Library/Fonts/SFNS.ttf", "C:/Windows/Fonts/SegUIVar.ttf"].iter().find_map(|p| std::fs::read(p).ok()) else {
+        eprintln!("skipping: real variable font fixture unavailable");
+        return;
+    };
+    let bytes = Arc::new(bytes);
+    let variable = Face::from_bytes(FontBytes::Shared(bytes.clone()), 0, Some("VariablePriorityFixture"), Some("Regular")).unwrap();
+    let named = variable
+        .instances
+        .iter()
+        .find(|i| norm_style(&i.name) == "bold")
+        .or_else(|| variable.instances.iter().find(|i| norm_style(&i.name) != "regular"))
+        .expect("real variable font exposes a named style")
+        .name
+        .clone();
+    let mut builtin = Face::from_bytes(FontBytes::Shared(bytes), 0, Some("VariablePriorityFixture"), Some(&named)).unwrap();
+    builtin.instances.clear();
+    let mut db = FontDb::default();
+    let old = db.add(builtin);
+    let loaded = db.add_loaded(variable);
+    let chosen = db.best("VariablePriorityFixture", &named).unwrap();
+    assert_ne!(old.id, loaded.id);
+    assert_eq!(chosen.id, loaded.id, "a loaded real variable named style has the same match quality as a built-in exact label");
+    let wanted = loaded.instance(&named).unwrap();
+    let style = figcraft_doc::TextStyle { font_style: named, ..Default::default() };
+    assert_eq!(chosen.axis_values(&style), wanted.coords, "the chosen named style uses its actual variable coordinates");
 }

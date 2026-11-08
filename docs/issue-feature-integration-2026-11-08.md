@@ -1,7 +1,112 @@
 # Local feature integration, 8 November 2026
 
 Status: **IN_PROGRESS**. This batch implements the following scoped changes; it does not complete
-the 185 open bugs and feature requests, close upstream issues, or establish whole-product parity.
+the refreshed 197 open bugs and feature requests, close upstream issues, or establish whole-product parity.
+
+The combined runtime follow-up preserves K-derived ownership through the public `edit.undo`
+and `edit.redo` commands. Their restored snapshot differences no longer become fresh local edits;
+explicit local edits and same-value rebindings retain their existing ownership behavior. Four
+original controls failed and the same four pass after the scoped repair, including later main
+bindings after a native codec round trip.
+
+Closing a detached preview also retires its presented-input fence before the backend forgets
+the viewport. The original native run and unit control hit the same missing-viewport panic.
+The two repaired unit controls pass while preserving the unrelated live viewport's boundary.
+Matching full combined gates and native lifecycle acceptance remain separate requirements.
+
+The earlier combined build passed 6,855 tests with 27 existing ignored tests, plus scoped browser
+GIF/mode-token delivery and an actual ten-minute native control lease. Those records remain bound
+to that build; they do not certify the later repairs or the whole issue inventory.
+
+The locally merged candidates continue under combined validation:
+
+- [Variable mode JSON](figma-mode-tokens.md) imports/exports one local collection and mode with
+  typed values and aliases, preserving existing metadata and other modes. Source-scoped native
+  picker and eight-token external checks are retained. The reviewed return adapter accepts matching
+  string metadata and normalizes returned millisecond durations to seconds. Figma normalizes some
+  token-type hints. Root retained two actual duration/CSS failures; the same controls pass after a
+  narrow native-role precedence repair. Matching combined native/browser acceptance remains pending.
+- Experimental `.fig` export reports when native Motion keyframes, clips or timeline settings
+  are omitted, including hidden content. Three exact final controls failed on root original
+  production before the warning was added. This is omission reporting, not editable Motion
+  interchange; a `.figcraft` copy remains the preservation path. Final combined checks are pending.
+
+- Animated GIF export samples a visible top-level Motion frame into a bounded, fixed-viewport
+  sRGB GIF, through the Motion dialog or `motion.export`. See [options and limits](animated-gif-export.md).
+  Its isolated producer checks pass; the combined annotation/export controls found and repaired
+  draft replacement, cancel-batch, canvas-key and picker-Escape ownership seams. The six combined
+  headless controls pass, including timeline Close hit ownership, exporter retirement on Hide UI
+  and timeline Close, and restored fresh canvas keys. Matching launched native/browser acceptance
+  remains pending.
+- [#1110](https://github.com/storytold/figcraft/issues/1110): a native control connection has a
+  ten-minute absolute admission lease, including authentication. Keepalives cannot renew it; an
+  already admitted request retains its existing bounded wait and reply. Five real-TCP controls
+  with a manually advanced monotonic test clock and all 169 isolated native tests pass, as do
+  strict Clippy, formatting and layers. This is not per-user fairness or reconnection-flood
+  prevention. The real-duration app probe and matching combined validation remain pending.
+
+- [#1689](https://github.com/storytold/figcraft/issues/1689): [mobile asset folder layouts](mobile-export-layout.md)
+  use one bounded shared planner for Flutter density folders, iOS image sets with manifests, and
+  Android density folders or explicitly selected XML. Engine/CLI tests pass 2,278 cases and the full
+  isolated UI suite passes 1,575, with four existing ignored tests across those runs; strict Clippy,
+  formatting, layers and docs pass. Ten actual CLI invocations verify command/flag byte equality,
+  image dimensions, manifest members, distinct canonical-name families, invalid flags and Flat
+  defaults. The actual macOS filename-overwrite counterfactual and repair are retained. A separate
+  CLI help correction qualifies --node as a Flat single-file behavior and awaits fresh combined
+  validation. Parent JPEG quality/profile composition and launched native/browser acceptance
+  remain pending; no platform SDK acceptance or whole-process memory claim is made.
+- [#1681](https://github.com/storytold/figcraft/issues/1681): [manual dash phase](dash-phase.md)
+  adds an optional signed physical offset while retaining automatic fitting for existing native
+  strokes. Six affected libraries pass 3,366 tests; nine actual headless phase UI controls are included
+  in 67 adjacent UI passes. Strict all-target Clippy, owned formatting and layers pass. The final
+  producer differs from that runtime source only in truthful documentation wording, verified by
+  full file maps. K dimensional scaling composition and matching combined app acceptance remain
+  pending. Centering dashes on corners remains unresolved.
+- [#1707](https://github.com/storytold/figcraft/issues/1707): [automatic elbow avoidance](board-obstacle-routing.md)
+  routes eligible native Board connectors around complete bounded same-page Shape/Sticky bounds,
+  with current transforms, visibility and clipping. Obstacle edits and derived routes share one
+  Undo transaction; incomplete or exhausted contexts compute fresh legacy geometry. Doc tests
+  pass 212 and affected engine Board tests pass 104, including 11 new controls. Original failures,
+  a free-endpoint counterfactual regression and its repair are retained; strict Clippy and owned
+  formatting pass. Parallel connector spacing, arbitrary silhouettes/effects and launched combined
+  pointer/native-reopen acceptance remain open.
+
+- [#2092](https://github.com/storytold/figcraft/issues/2092): [installed-font priority](installed-font-priority.md)
+  retains conflicting installed faces and selects matching styles and named instances. Five original
+  failures and a further named-instance failure were reproduced. The repaired producer passes187
+  text tests, strict all-target Clippy and formatting with required pinned fonts; independent and
+  root source reviews passed before the five-path merge. Explicitly loaded-font priority still
+  requires composition with the other lane. Digest matching, reporter Inter3.19 widths, Windows
+  installation and combined app acceptance remain unverified. This follows the issue's requested
+  installed-first behavior and does not establish incumbent Inter parity.
+- [#2082](https://github.com/storytold/figcraft/issues/2082): [bulk variable metadata](variable-bulk-metadata.md)
+  uses Cmd/Ctrl toggles and visible Shift ranges, with atomic Hide and Scope edits for editable rows
+  of one collection. Selection and pending edits retain document and variable ownership checks.
+  The isolated serial UI suite passes 1,564 tests with one existing ignored test. A prior parallel run
+  retains an unexplained retained-render failure; matching combined and app checks remain pending.
+- [#2090](https://github.com/storytold/figcraft/issues/2090): [cross-axis Fill/Hug](cross-axis-fill.md)
+  keeps a hugging linear container when a child fills its cross axis, and updates existing component
+  copies on the same edit. The isolated engine/layout suites pass 2,224 tests with three existing
+  ignored tests, plus strict Clippy, formatting and layer checks. The separately reviewed
+  [native instance-scale extension](native-instance-scale.md) is now also merged: its isolated
+  engine/doc/collaboration/format suites pass 3,272 tests, including 54 scale controls, with seven
+  existing ignored tests; strict all-target Clippy, owned formatting and layers pass. Global
+  definitions retain their units, while native instances, bound lengths, linked styles and selected
+  text ranges retain their scale context and local override ownership. The exact combined
+  cross-Fill test, manual-phase scaling, parent text/style composition and matching native/browser
+  workflows still need fresh acceptance. These subscopes do not complete #2090.
+- [#1094](https://github.com/storytold/figcraft/issues/1094): filesystem operations refuse when no
+  authority root is eligible before resolving a target. Windows local-only roots also reject raw
+  UNC forms before target resolution. Nineteen focused and 2,163 engine tests pass on macOS ARM64;
+  four Windows-specific cases remain unrun. Mapped drives, network-targeting local links, handle
+  validation and check/open races remain outside this partial repair. See [control policy](control-protocol.md).
+- [#2098](https://github.com/storytold/figcraft/issues/2098): the local baseline already preserves a
+  420×420 nested slot when an override changes only the selected 24×24 symbol. Three original
+  wire-fixture controls verify replacement identity and editable vector bounds, an explicit 84×126
+  override, unchanged mains and exact native-node reopen. The full isolated format suite passes
+  664 tests with two existing ignored tests, plus strict Clippy and formatting. Only regression
+  tests are added. The reporter's project, Windows UI and companion scale-factor issue #2097
+  remain unverified by these controls.
 
 - [#286](https://github.com/storytold/figcraft/issues/286): optional focused numeric wheel editing,
   off by default, retaining unit mappings, clamps, mixed relative edits and gesture Undo. See

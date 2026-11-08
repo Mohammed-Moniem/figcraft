@@ -97,3 +97,32 @@ fn explicit_variable_modes_go_back_to_auto() {
     assert!(s.execute("variable.setMode", &json!({"ids": [f], "collection": "Tokens", "mode": "Dusk"})).is_err());
     assert!(s.execute("variable.setMode", &json!({"ids": [f], "collection": "Tokens"})).is_err(), "a mode, or null for Auto");
 }
+
+#[test]
+fn detached_preview_request_captures_live_source_uid_and_is_not_a_document_edit() {
+    let mut s = Session::new();
+    let frame = id_of(&s.execute("node.create", &json!({"type":"frame","width":200,"height":300})).unwrap()["id"]).unwrap();
+    let uid = s.ds().unwrap().uid;
+    let before = s.ds().unwrap().clone();
+    s.ui_requests.clear();
+    assert_eq!(s.execute("proto.detachPreview", &json!({"start":frame})).unwrap()["start"], json!(frame));
+    assert_eq!(s.ui_requests.last().unwrap().kind, "preview.detach");
+    assert_eq!(s.ui_requests.last().unwrap().data, json!({"start":frame,"sourceDocument":uid}));
+    assert!(std::sync::Arc::ptr_eq(&before.doc, &s.ds().unwrap().doc));
+    assert_eq!(s.ds().unwrap().history.undo.len(), before.history.undo.len());
+    s.execute("file.new", &json!({"name":"Later tab"})).unwrap();
+    assert_ne!(s.ds().unwrap().uid, uid);
+    assert_eq!(s.ui_requests.iter().find(|r| r.kind == "preview.detach").unwrap().data["sourceDocument"], uid);
+}
+
+#[test]
+fn detached_preview_request_refuses_a_missing_frame_before_requesting_any_ui() {
+    let mut s = Session::new();
+    s.ui_requests.clear();
+    let before = s.ds().unwrap().clone();
+    assert!(s.execute("proto.detachPreview", &json!({})).is_err());
+    assert!(s.execute("proto.detachPreview", &json!({"start":999999})).is_err());
+    assert!(s.ui_requests.is_empty());
+    assert!(std::sync::Arc::ptr_eq(&before.doc, &s.ds().unwrap().doc));
+    assert_eq!(before.history.undo.len(), s.ds().unwrap().history.undo.len());
+}

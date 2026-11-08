@@ -1,3 +1,6 @@
+#[path = "stroke_phase.rs"]
+mod phase;
+
 use super::menu::{menu_item, menu_item_with, menu_popup, row};
 use super::{
     Brush, Color32, Document, FigApp, Icon, Id, Lead, NodeId, NodeKind, PAD, Pos2, Rect, Stroke, StrokeAlign, StrokeCap, StrokeJoin, StrokeProps,
@@ -309,6 +312,7 @@ fn basic_settings(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeId])
     let st = common(doc, sel, |n| n.stroke.clone());
     let weight = st.as_ref().map(|s| s.weight).unwrap_or(1.0).max(1.0);
     dash_settings(app, ui, &ids, st.as_ref().map(|s| s.dashes.as_slice()), weight);
+    phase::settings(app, ui, doc, sel);
     if let Some(s) = st.as_ref().filter(|s| !s.dashes.is_empty()) {
         dash_cap_row(app, ui, &ids, s);
     }

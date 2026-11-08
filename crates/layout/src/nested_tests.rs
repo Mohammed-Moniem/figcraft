@@ -48,15 +48,15 @@ fn fill_text(d: &mut Document, parent: NodeId) -> NodeId {
 }
 
 #[test]
-fn hug_parent_treats_fill_children_as_fixed() {
+fn hug_parent_keeps_main_axis_fill_fixed_and_resolves_cross_fill_from_siblings() {
     let mut d = Document::new("t");
     let p = page(&d);
     let f = al(&mut d, p, LayoutMode::Horizontal, (10.0, 10.0), (Sizing::Hug, Sizing::Hug));
     rect(&mut d, f, 50.0, 20.0);
     let b = rect(&mut d, f, 30.0, 40.0);
-    sizing(&mut d, b, Sizing::Fill, Sizing::Fill);
+    sizing(&mut d, b, Sizing::Fill, Sizing::Fixed);
     layout_frame(&mut d, f, &NoMeasure);
-    // Nothing to fill: the fill child keeps its size and the frame gets the content size.
+    // Nothing to fill along the main axis: its size stays, and the frame fits the content.
     assert_eq!(size(&d, f), (90.0, 40.0));
     assert_eq!(pos(&d, b), (60.0, 0.0, 30.0, 40.0));
     // Vertical, fill on the cross axis.
@@ -65,8 +65,122 @@ fn hug_parent_treats_fill_children_as_fixed() {
     sizing(&mut d, c, Sizing::Fill, Sizing::Fixed);
     rect(&mut d, g, 40.0, 30.0);
     layout_frame(&mut d, g, &NoMeasure);
-    assert_eq!(size(&d, g), (60.0, 60.0));
-    assert_eq!(size(&d, c), (60.0, 20.0));
+    assert_eq!(size(&d, g), (40.0, 60.0));
+    assert_eq!(size(&d, c), (40.0, 20.0));
+}
+
+#[test]
+fn cross_fill_coherence_keeps_a_hugging_linear_cross_axis() {
+    let mut d = Document::new("t");
+    let p = page(&d);
+    for mode in [LayoutMode::Horizontal, LayoutMode::Vertical] {
+        let f = al(&mut d, p, mode, (100.0, 100.0), (Sizing::Hug, Sizing::Hug));
+        let c = rect(&mut d, f, 3.0, 20.0);
+        sizing(&mut d, c, Sizing::Fill, Sizing::Fill);
+        coherent_sizing(&mut d, f);
+        let cl = &d.node(c).unwrap().child_layout;
+        let actual = (cl.sizing_h, cl.sizing_v);
+        let expected = if mode == LayoutMode::Horizontal { (Sizing::Fixed, Sizing::Fill) } else { (Sizing::Fill, Sizing::Fixed) };
+        assert_eq!(actual, expected, "only main-axis Fill loses its cyclic dependency: {mode:?}");
+    }
+}
+
+#[test]
+fn cross_fill_hug_uses_its_wrapped_line_and_shrinks_without_feedback() {
+    let mut d = Document::new("t");
+    let p = page(&d);
+    let f = al(&mut d, p, LayoutMode::Horizontal, (100.0, 1.0), (Sizing::Fixed, Sizing::Hug));
+    layout_mut(&mut d, f).wrap = true;
+    layout_mut(&mut d, f).cross_gap = 7.0;
+    let a = rect(&mut d, f, 40.0, 20.0);
+    let b = rect(&mut d, f, 40.0, 40.0);
+    let c = rect(&mut d, f, 40.0, 60.0);
+    let e = rect(&mut d, f, 40.0, 30.0);
+    for id in [a, c] {
+        sizing(&mut d, id, Sizing::Fixed, Sizing::Fill);
+    }
+    layout_frame(&mut d, f, &NoMeasure);
+    assert_eq!(size(&d, f), (100.0, 77.0));
+    assert_eq!(pos(&d, a), (0.0, 0.0, 40.0, 40.0));
+    assert_eq!(pos(&d, c), (0.0, 47.0, 40.0, 30.0));
+    set_size(&mut d, b, 40.0, 12.0);
+    layout_frame(&mut d, f, &NoMeasure);
+    assert_eq!(size(&d, f), (100.0, 49.0));
+    assert_eq!(pos(&d, a), (0.0, 0.0, 40.0, 12.0));
+    assert_eq!(pos(&d, c), (0.0, 19.0, 40.0, 30.0));
+    assert_eq!(pos(&d, e), (50.0, 19.0, 40.0, 30.0));
+}
+
+#[test]
+fn cross_fill_hug_honours_min_max_then_shrinks_when_bounds_are_removed() {
+    let mut d = Document::new("t");
+    let p = page(&d);
+    let f = al(&mut d, p, LayoutMode::Horizontal, (100.0, 1.0), (Sizing::Fixed, Sizing::Hug));
+    let c = rect(&mut d, f, 3.0, 20.0);
+    let b = rect(&mut d, f, 40.0, 44.0);
+    sizing(&mut d, c, Sizing::Fixed, Sizing::Fill);
+    d.get_mut(c).unwrap().child_layout.max_h = Some(40.0);
+    layout_frame(&mut d, f, &NoMeasure);
+    assert_eq!(size(&d, f), (100.0, 44.0));
+    assert_eq!(size(&d, c), (3.0, 40.0));
+    d.get_mut(c).unwrap().child_layout.min_h = Some(80.0);
+    layout_frame(&mut d, f, &NoMeasure);
+    assert_eq!(size(&d, f), (100.0, 80.0), "a real minimum contributes to Hug even on a Fill child");
+    assert_eq!(size(&d, c), (3.0, 80.0), "minimum wins over conflicting maximum");
+    d.get_mut(c).unwrap().child_layout.min_h = None;
+    d.get_mut(c).unwrap().child_layout.max_h = None;
+    set_size(&mut d, b, 40.0, 12.0);
+    layout_frame(&mut d, f, &NoMeasure);
+    assert_eq!(size(&d, f), (100.0, 12.0));
+    assert_eq!(size(&d, c), (3.0, 12.0));
+}
+
+#[test]
+fn cross_fill_all_fill_line_uses_resolved_fallback_without_growth() {
+    let mut d = Document::new("t");
+    let p = page(&d);
+    let f = al(&mut d, p, LayoutMode::Horizontal, (100.0, 1.0), (Sizing::Fixed, Sizing::Hug));
+    let a = rect(&mut d, f, 30.0, 20.0);
+    let b = rect(&mut d, f, 30.0, 44.0);
+    for c in [a, b] {
+        sizing(&mut d, c, Sizing::Fixed, Sizing::Fill);
+    }
+    for _ in 0..4 {
+        layout_frame(&mut d, f, &NoMeasure);
+        assert_eq!(size(&d, f), (100.0, 44.0));
+        assert_eq!(size(&d, a), (30.0, 44.0));
+        assert_eq!(size(&d, b), (30.0, 44.0));
+    }
+}
+
+#[test]
+fn cross_fill_hug_includes_a_child_frames_own_padding() {
+    let mut d = Document::new("t");
+    let p = page(&d);
+    let f = al(&mut d, p, LayoutMode::Horizontal, (100.0, 1.0), (Sizing::Fixed, Sizing::Hug));
+    let c = al(&mut d, f, LayoutMode::Horizontal, (20.0, 100.0), (Sizing::Fixed, Sizing::Fill));
+    layout_mut(&mut d, c).padding = [30.0, 0.0, 30.0, 0.0];
+    rect(&mut d, f, 40.0, 44.0);
+    layout_frame(&mut d, f, &NoMeasure);
+    assert_eq!(size(&d, f), (100.0, 60.0));
+    assert_eq!(size(&d, c), (20.0, 60.0));
+}
+
+#[test]
+fn cross_fill_hug_resolves_a_nested_cards_changed_main_extent_before_placing_siblings() {
+    let mut d = Document::new("t");
+    let p = page(&d);
+    let f = al(&mut d, p, LayoutMode::Vertical, (1.0, 1.0), (Sizing::Hug, Sizing::Hug));
+    let card = al(&mut d, f, LayoutMode::Vertical, (50.0, 1.0), (Sizing::Fill, Sizing::Hug));
+    let t = fill_text(&mut d, card);
+    let sibling = rect(&mut d, f, 200.0, 20.0);
+    let m = FakeMeasure([(t, (400.0, 20.0, 15.0))].into_iter().collect());
+    for _ in 0..3 {
+        layout_page(&mut d, p, &m);
+        assert_eq!(size(&d, card), (200.0, 40.0));
+        assert_eq!(size(&d, f), (200.0, 70.0));
+        assert_eq!(pos(&d, sibling), (0.0, 50.0, 200.0, 20.0));
+    }
 }
 
 #[test]

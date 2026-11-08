@@ -16,7 +16,7 @@ pub fn variable_groups(n: &Node, src: &Node) -> Vec<&'static str> {
 
 /// The override group a variable binding key feeds (`None` for component property and layout
 /// grid bindings, which follow other rules).
-pub(super) fn binding_group(key: &str) -> Option<&'static str> {
+pub(crate) fn binding_group(key: &str) -> Option<&'static str> {
     use crate::cmd::lists::{BoundList, list_binding};
     if key.starts_with(PROP_BINDING) {
         return None;
@@ -38,6 +38,9 @@ pub(super) fn bindings_of<'a>(n: &'a Node, g: &'a str) -> impl Iterator<Item = (
 /// Property groups that differ between two versions of a node.
 pub fn diff_groups(a: &Node, b: &Node) -> Vec<&'static str> {
     let mut out = Vec::new();
+    if a.variable_scale != b.variable_scale {
+        out.push("variableScale");
+    }
     if a.fills != b.fills {
         out.push("fills");
     }
@@ -68,14 +71,7 @@ pub fn diff_groups(a: &Node, b: &Node) -> Vec<&'static str> {
     if a.transform != b.transform {
         out.push("position");
     }
-    if let (NodeKind::Text(x), NodeKind::Text(y)) = (&a.kind, &b.kind) {
-        if x.characters != y.characters {
-            out.push("characters");
-        }
-        if text_style_differs(x, y) {
-            out.push("textStyle");
-        }
-    }
+    text_groups(a, b, &mut out);
     if let (Some(x), Some(y)) = (&a.layout, &b.layout) {
         if x.padding != y.padding {
             out.push("padding");
@@ -108,6 +104,18 @@ pub fn diff_groups(a: &Node, b: &Node) -> Vec<&'static str> {
         }
     }
     out
+}
+
+/// Text groups keep their original order after the common geometry groups.
+fn text_groups(a: &Node, b: &Node, out: &mut Vec<&'static str>) {
+    if let (NodeKind::Text(x), NodeKind::Text(y)) = (&a.kind, &b.kind) {
+        if x.characters != y.characters {
+            out.push("characters");
+        }
+        if text_style_differs(x, y) {
+            out.push("textStyle");
+        }
+    }
 }
 
 /// The `resizing` group of a layer: how it sizes on each axis, and its min and max sizes.

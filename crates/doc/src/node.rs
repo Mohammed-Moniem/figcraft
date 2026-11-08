@@ -515,6 +515,14 @@ pub struct Node {
     /// Variable bindings: field name ("fills/0/color", "width", "cornerRadius", "characters", …) → id.
     #[serde(default, skip_serializing_if = "is_default")]
     pub bound: BTreeMap<String, VariableId>,
+    /// K-scale multiplier for dimensional bindings on this layer and its descendants. Relative
+    /// to the parent context; retained on ordinary containers after detaching an instance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variable_scale: Option<f64>,
+    /// Dimensional overrides produced only by K-scale. Their physical values survive a
+    /// rebuild, but new bindings still follow the main until an explicit local edit owns them.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub scale_derived_overrides: BTreeSet<String>,
     /// Explicit variable modes (collection → mode) set on this container.
     #[serde(default, skip_serializing_if = "is_default")]
     pub var_modes: BTreeMap<CollectionId, ModeId>,
@@ -738,6 +746,8 @@ impl Node {
             scroll_position: Default::default(),
             styles: StyleRefs::default(),
             bound: BTreeMap::new(),
+            variable_scale: None,
+            scale_derived_overrides: BTreeSet::new(),
             var_modes: BTreeMap::new(),
             bool_op: None,
             constrain_proportions: false,

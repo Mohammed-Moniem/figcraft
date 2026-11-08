@@ -70,7 +70,7 @@ pub(super) fn reset_instance(s: &mut Session, p: &Value) -> Result<Value> {
         let Some(inst) = owning_instance(doc, i) else { continue };
         let top = !inside_instance(doc, inst);
         for d in doc.subtree(inst) {
-            let keep: Vec<&str> = if d == inst && top { vec!["size"] } else { vec![] };
+            let keep: Vec<&str> = if d == inst && top { vec!["size", "variableScale"] } else { vec![] };
             if let Some(n) = doc.node(d)
                 && n.overrides.iter().any(|g| !keep.contains(&g.as_str()))
                 && let Some(n) = doc.node_mut(d)

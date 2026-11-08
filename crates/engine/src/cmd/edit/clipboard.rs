@@ -1,6 +1,6 @@
 use super::{
-    Affine, BTreeMap, BTreeSet, Document, EngineError, ImageData, Node, NodeId, NodeKind, Result, Session, Value, bad, delete, id, json, num, ok,
-    req_targets, roots, string, targets, z_sorted,
+    Affine, BTreeMap, BTreeSet, Document, EngineError, ImageData, Node, NodeId, NodeKind, Result, Session, Value, bad, delete, get, id, json, num,
+    ok, req_targets, roots, string, targets, vector_clipboard, z_sorted,
 };
 
 /// The copied form of the selection.
@@ -12,6 +12,18 @@ pub fn copy_to_clipboard(s: &mut Session, cmd: &str, ids: &[NodeId]) -> Result<(
         return Err(EngineError::Disabled(cmd.into(), "pages can't be copied; use page.duplicate".into()));
     }
     let (nodes, images, bounds) = copied(&ds.doc, &layers);
+    store_clipboard(s, cmd, nodes, images, bounds)
+}
+
+/// Make `nodes` (the copied layers, each root's transform in page space) the clipboard's layers.
+pub(super) fn store_clipboard(
+    s: &mut Session,
+    cmd: &str,
+    nodes: Vec<(NodeId, Vec<Node>)>,
+    images: BTreeMap<String, ImageData>,
+    bounds: Option<figcraft_geom::Rect>,
+) -> Result<()> {
+    let ds = s.ds()?;
     let (source, source_path, uid) = (ds.doc.clone(), ds.path.clone(), ds.uid);
     s.clipboard.source = Some(source);
     s.clipboard.source_path = source_path;
@@ -43,19 +55,93 @@ fn copied(doc: &Document, ids: &[NodeId]) -> Copied {
         if let Some(r) = sub.first_mut() {
             r.transform = world;
         }
-        for n in &sub {
-            for p in n.fills.iter().chain(n.strokes.iter()) {
-                if let figcraft_color::PaintKind::Image(img) = &p.kind
-                    && let Some(d) = doc.images.get(&img.image)
-                {
-                    images.insert(img.image.clone(), d.clone());
-                }
-            }
-        }
+        collect_images(doc, &sub, &mut images);
         nodes.push((*i, sub));
     }
     let bounds = doc.bounds_of(&ids);
     (nodes, images, bounds)
+}
+
+/// The images the paints of `nodes` use, taken from `doc` into `images`.
+pub(super) fn collect_images(doc: &Document, nodes: &[Node], images: &mut BTreeMap<String, ImageData>) {
+    let mut take = |paints: &[figcraft_color::Paint]| {
+        for paint in paints {
+            if let figcraft_color::PaintKind::Image(img) = &paint.kind
+                && let Some(data) = doc.images.get(&img.image)
+            {
+                images.insert(img.image.clone(), data.clone());
+            }
+        }
+    };
+    for node in nodes {
+        take(&node.fills);
+        take(&node.strokes);
+        if let NodeKind::Vector { network } = &node.kind {
+            for region in &network.regions {
+                if let Some(fills) = &region.fills {
+                    take(fills);
+                }
+            }
+        }
+    }
+}
+
+/// Collision-safe image import planned without changing the destination.
+/// Matches fill.paste: reuse identical data, otherwise content hash then numbered variants.
+pub(super) struct ImageImport {
+    pub(super) remap: BTreeMap<String, String>,
+    added: BTreeMap<String, ImageData>,
+}
+
+impl ImageImport {
+    pub(super) fn commit(self, doc: &mut Document) {
+        doc.images.extend(self.added);
+    }
+}
+
+pub(super) fn plan_images(cmd: &str, doc: &Document, images: &BTreeMap<String, ImageData>) -> Result<ImageImport> {
+    let mut added = BTreeMap::new();
+    let mut remap = BTreeMap::new();
+    for (copied, data) in images {
+        let occupied = |key: &str| added.get(key).or_else(|| doc.images.get(key));
+        let base = if occupied(copied).is_some_and(|existing| existing != data) { figcraft_format::image_hash(&data.bytes) } else { copied.clone() };
+        let mut key = base.clone();
+        let mut n = 0u32;
+        while occupied(&key).is_some_and(|existing| existing != data) {
+            n = n.saturating_add(1);
+            if n > 999 {
+                return Err(bad(cmd, "no free image key for the copied image"));
+            }
+            key = format!("{base}{n}");
+        }
+        if occupied(&key).is_none() {
+            added.insert(key.clone(), data.clone());
+        }
+        remap.insert(copied.clone(), key);
+    }
+    Ok(ImageImport { remap, added })
+}
+
+pub(super) fn remap_paint_images(paints: &mut [figcraft_color::Paint], remap: &BTreeMap<String, String>) {
+    for paint in paints {
+        if let figcraft_color::PaintKind::Image(img) = &mut paint.kind
+            && let Some(key) = remap.get(&img.image)
+        {
+            img.image.clone_from(key);
+        }
+    }
+}
+
+fn remap_node_images(node: &mut Node, remap: &BTreeMap<String, String>) {
+    remap_paint_images(&mut node.fills, remap);
+    remap_paint_images(&mut node.strokes, remap);
+    if let NodeKind::Vector { network } = &mut node.kind {
+        for region in &mut network.regions {
+            if let Some(fills) = &mut region.fills {
+                remap_paint_images(fills, remap);
+            }
+        }
+    }
 }
 
 /// The markers around the copied layers in the clipboard's HTML, spelt as that format spells them.
@@ -167,13 +253,32 @@ fn layers_missing_images(doc: &figcraft_doc::Document, ids: &[NodeId]) -> Vec<St
     names
 }
 
+/// Whether the command names its layers (`ids` / `id`): it then acts on them even in vector edit mode.
+fn names_layers(p: &Value) -> bool {
+    get(p, "ids").is_some() || get(p, "id").is_some()
+}
+
 pub(super) fn copy(s: &mut Session, p: &Value) -> Result<Value> {
+    // In vector edit mode with points or segments selected, Copy takes just those (#1875).
+    if !names_layers(p)
+        && let Some(sel) = vector_clipboard::edit_selection(s)
+        && !sel.parts.is_empty()
+    {
+        return vector_clipboard::copy_selection(s, "edit.copy", sel);
+    }
     let ids = req_targets("edit.copy", s, p)?;
     copy_to_clipboard(s, "edit.copy", &ids)?;
     Ok(json!({"copied": s.clipboard.nodes.len()}))
 }
 
 pub(super) fn cut(s: &mut Session, p: &Value) -> Result<Value> {
+    // In vector edit mode with points or segments selected, Cut takes just those and stays in edit mode (#1875).
+    if !names_layers(p)
+        && let Some(sel) = vector_clipboard::edit_selection(s)
+        && sel.any
+    {
+        return vector_clipboard::cut_selection(s, sel);
+    }
     let ids = req_targets("edit.cut", s, p)?;
     copy_to_clipboard(s, "edit.cut", &ids)?;
     let doc = s.doc()?;
@@ -191,9 +296,8 @@ pub fn paste_into(s: &mut Session, parent: NodeId, at: Option<(f64, f64)>) -> Re
     let foreign = clip.source.as_ref().filter(|_| s.ds().is_ok_and(|d| d.uid != clip.source_doc));
     let copy_local = s.ds()?.uid == clip.source_doc;
     let doc = s.doc_mut()?;
-    for (k, v) in &clip.images {
-        doc.images.entry(k.clone()).or_insert_with(|| v.clone());
-    }
+    let ImageImport { remap: image_remap, added } = plan_images("edit.paste", doc, &clip.images)?;
+    doc.images.extend(added);
     // Sections go on the page (or in sections), never in the frame being pasted into.
     let page = doc.page_of(parent).unwrap_or(parent);
     let shift = match (at, clip.bounds) {
@@ -218,6 +322,9 @@ pub fn paste_into(s: &mut Session, parent: NodeId, at: Option<(f64, f64)>) -> Re
             map.insert(n.id, doc.alloc_id());
         }
         let mut nodes = nodes.clone();
+        for node in &mut nodes {
+            remap_node_images(node, &image_remap);
+        }
         let section = nodes.first().is_some_and(|r| matches!(r.kind, NodeKind::Section { .. }));
         let into = if section && !doc.takes_sections(parent) { page } else { parent };
         if let Some(r) = nodes.first_mut() {
@@ -238,6 +345,10 @@ pub fn paste_into(s: &mut Session, parent: NodeId, at: Option<(f64, f64)>) -> Re
 }
 
 pub(super) fn paste(s: &mut Session, p: &Value) -> Result<Value> {
+    // While editing a vector, the copied layers join its network (#1875); `parent` asks for layers.
+    if id(p, "parent").is_none() && s.ds()?.vector_edit.is_some() {
+        return vector_clipboard::paste_into_vector(s, p);
+    }
     let page = s.page()?;
     // Figma pastes into the selected frame (if one is selected), at the same position when it fits,
     // else in the frame's centre; otherwise in place on the page (or the viewport centre).
@@ -329,6 +440,7 @@ pub(super) fn copy_props_of(doc: &Document, id: NodeId) -> Value {
         "strokeSides": n.stroke.sides, "startCap": n.stroke.cap_start, "endCap": n.stroke.cap_end,
         "strokeJoin": n.stroke.join, "miterLimit": n.stroke.miter_limit, "dashes": n.stroke.dashes,
         "dashCap": n.stroke.dash_cap,
+        "dashPhase": n.stroke.dash_phase,
         "widthProfile": super::super::props::width_points_json(n.stroke.width_profile.as_ref()), "brush": n.stroke.brush,
         "effects": n.effects, "opacity": n.opacity, "blend": n.blend,
     });

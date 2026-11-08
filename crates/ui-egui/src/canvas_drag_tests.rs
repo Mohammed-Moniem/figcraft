@@ -98,12 +98,14 @@ fn issue_2023_canvas_drag_moves_over_both_side_panels() {
         let start = u.app.to_screen(before.center().x, before.center().y);
         let canvas = u.app.canvas.rect;
         let outside = egui::pos2(if left { canvas.min.x - 40.0 } else { canvas.max.x + 40.0 }, start.y);
-        let zoom = u.app.session.ds().unwrap().view.zoom;
+        let grab = u.app.to_page(start) - before.origin();
         let history = u.app.session.undo_depth().0;
         u.button(start, true);
         u.frame(vec![Event::PointerMoved(start + vec2(if left { -24.0 } else { 24.0 }, 0.0))]);
         u.frame(vec![Event::PointerMoved(outside)]);
-        let expected_x = before.x0 + f64::from(outside.x - start.x) / zoom;
+        // Edge panning changes the page point under this screen position. The original
+        // grab offset still belongs to the canvas-owned drag.
+        let expected_x = u.app.to_page(outside).x - grab.x;
         let during = u.app.session.doc().unwrap().world_bounds(moved).unwrap();
         assert!((during.x0 - expected_x).abs() < 0.01, "left={left}: movement must continue before release: {during:?}, expected x={expected_x}");
         u.button(outside, false);
@@ -122,10 +124,10 @@ fn issue_2023_releasing_over_a_layer_row_keeps_the_canvas_drag() {
     let row = u.row_at(untouched);
     let before = u.app.session.doc().unwrap().world_bounds(moved).unwrap();
     let start = u.app.to_screen(before.center().x, before.center().y);
-    let zoom = u.app.session.ds().unwrap().view.zoom;
-    let expected = before.origin() + figcraft_geom::Vec2::new(f64::from(row.x - start.x) / zoom, f64::from(row.y - start.y) / zoom);
+    let grab = u.app.to_page(start) - before.origin();
     u.drag_to(start, row);
     u.button(row, false);
+    let expected = u.app.to_page(row) - grab;
     let after = u.app.session.doc().unwrap().world_bounds(moved).unwrap();
     assert!((after.x0 - expected.x).abs() < 0.01 && (after.y0 - expected.y).abs() < 0.01, "{after:?}, expected origin {expected:?}");
     assert_eq!(u.app.session.selection(), [moved], "the layer row never owned this press");

@@ -79,12 +79,23 @@ fn run(cli: Cli) -> CliResult<ExitCode> {
     match cli.command {
         Command::Info(a) => confined(&a.roots, || files::info(&a.file, a.json)),
         Command::Export(a) => {
-            let target =
-                files::Target { print: a.print(), vd_compat: a.vd_compat, scale: a.scale.scale, format: a.format, page: a.page, node: a.node };
+            let target = files::Target {
+                print: a.print(),
+                vd_compat: a.vd_compat,
+                quality: a.raster.quality,
+                color_profile: a.raster.color_profile,
+                scale: a.scale.scale,
+                format: a.format,
+                page: a.page,
+                node: a.node,
+                layout: a.layout,
+            };
             confined(&a.roots, || files::export(&a.file, &a.out, &target))
         }
         Command::Convert(a) => confined(&a.roots, || files::convert(&a.input, &a.output)),
-        Command::Render(a) => confined(&a.roots, || files::render(&a.file, &a.out, a.scale.scale, a.page.as_deref())),
+        Command::Render(a) => {
+            confined(&a.roots, || files::render(&a.file, &a.out, a.scale.scale, a.page.as_deref(), a.raster.quality, a.raster.color_profile))
+        }
         Command::Run(a) => confined(&a.roots, || files::run_script(&a.script, a.input.as_deref(), a.out.as_deref())),
         Command::Commands(a) => {
             commands(a.json, a.filter.as_deref());

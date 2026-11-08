@@ -587,3 +587,72 @@ fn rect_clip_frame_matches_same_rect_fill_on_fractional_edges() {
         }
     }
 }
+
+/// Deterministic colourful detail makes JPEG quantization affect decoded pixels, not just headers.
+fn jpeg_quality_pixmap() -> Pixmap {
+    let mut pix = Pixmap::new(128, 96).unwrap();
+    let mut state = 7_u32;
+    for pixel in pix.data_mut().chunks_exact_mut(4) {
+        for channel in pixel.iter_mut().take(3) {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *channel = (state >> 24) as u8;
+        }
+        pixel[3] = 255;
+    }
+    pix
+}
+
+#[test]
+fn jpeg_export_quality_changes_decoded_detail_and_keeps_the_exact_icc_profile() {
+    use image::ImageDecoder;
+    let pix = jpeg_quality_pixmap();
+    for profile in ColorProfile::ALL {
+        let encode = |quality| encode_export_with(&pix, ExportFormat::Jpg, profile, quality).unwrap();
+        let low = encode(1);
+        let high = encode(100);
+        assert!(low.len() < high.len(), "detailed JPEG quality changes encoded size");
+        let low_pixels = image::load_from_memory(&low).unwrap().to_rgb8();
+        let high_pixels = image::load_from_memory(&high).unwrap().to_rgb8();
+        let error = |decoded: &image::RgbImage| -> u64 {
+            assert_eq!(decoded.dimensions(), (pix.width(), pix.height()));
+            decoded
+                .pixels()
+                .zip(pix.data().chunks_exact(4))
+                .map(|(actual, source)| actual.0.iter().zip(source.iter().take(3)).map(|(a, b)| u64::from(a.abs_diff(*b))).sum::<u64>())
+                .sum()
+        };
+        assert!(error(&high_pixels) < error(&low_pixels), "quality 100 preserves more detail than quality 1");
+        for bytes in [&low, &high] {
+            let mut decoder = image::codecs::jpeg::JpegDecoder::new(std::io::Cursor::new(bytes)).unwrap();
+            assert_eq!(decoder.icc_profile().unwrap(), Some(profile.icc()), "{profile:?}");
+        }
+        assert_eq!(encode_export(&pix, ExportFormat::Jpg, profile).unwrap(), encode(90), "the old API remains quality 90");
+        assert_eq!(encode(0), low, "untrusted stored quality is safely clamped at the lower boundary");
+        assert_eq!(encode(101), high, "untrusted stored quality is safely clamped at the upper boundary");
+        assert_eq!(encode(255), high);
+        for quality in [1, 20, 90, 100] {
+            let setting: figcraft_doc::ExportSetting = serde_json::from_value(serde_json::json!({"quality": quality})).unwrap();
+            assert_eq!(encode(setting.quality()), encode(quality), "the saved-setting accessor forwards the requested quality");
+        }
+        for (stored, safe) in [(0, 1), (101, 100), (255, 100)] {
+            let setting: figcraft_doc::ExportSetting = serde_json::from_value(serde_json::json!({"quality": stored})).unwrap();
+            assert_eq!(encode(setting.quality()), encode(safe));
+        }
+    }
+}
+
+#[test]
+fn non_jpeg_exports_ignore_quality_and_vector_encoders_still_refuse_pixels() {
+    let pix = jpeg_quality_pixmap();
+    for profile in ColorProfile::ALL {
+        for format in [ExportFormat::Png, ExportFormat::Webp] {
+            let expected = encode_export(&pix, format, profile).unwrap();
+            for quality in [0, 1, 90, 100, 255] {
+                assert_eq!(encode_export_with(&pix, format, profile, quality).unwrap(), expected, "{format:?} ignores JPEG quality");
+            }
+        }
+        for format in [ExportFormat::Svg, ExportFormat::Pdf, ExportFormat::VectorDrawable] {
+            assert!(encode_export_with(&pix, format, profile, 75).is_err());
+        }
+    }
+}

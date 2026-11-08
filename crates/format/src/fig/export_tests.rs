@@ -873,11 +873,32 @@ fn close(a: &Value, b: &Value, path: &str) -> Result<(), String> {
     }
 }
 
+/// Import can add bounded, typed historical observations that were never authored in the
+/// source document. Permit only this new descriptive key. Source-authored reserved values,
+/// unrelated plugin data, and all other fields remain comparison-significant.
+fn project_added_import_history(source: &Value, imported: &mut Value) {
+    use crate::fig_scale_provenance::{KEY, MAX_RECORD_BYTES, Record};
+    if source.get("plugin_data").and_then(|data| data.get(KEY)).is_some() {
+        return;
+    }
+    let Some(payload) = imported.get("plugin_data").and_then(|data| data.get(KEY)).and_then(Value::as_str) else { return };
+    if payload.len() > MAX_RECORD_BYTES || !serde_json::from_str::<Record>(payload).is_ok_and(|record| record.valid()) {
+        return;
+    }
+    if let Some(data) = imported.get_mut("plugin_data").and_then(Value::as_object_mut) {
+        data.remove(KEY);
+        if data.is_empty() {
+            imported.as_object_mut().unwrap().remove("plugin_data");
+        }
+    }
+}
+
 fn assert_same(a: &Document, b: &Document, what: &str) {
-    let (x, y) = (canon(a), canon(b));
+    let (x, mut y) = (canon(a), canon(b));
     let names = |c: &[Value]| c.iter().map(|v| v["name"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>();
     assert_eq!(names(&x), names(&y), "{what}: layer trees differ");
-    for (p, q) in x.iter().zip(&y) {
+    for (p, q) in x.iter().zip(&mut y) {
+        project_added_import_history(p, q);
         if let Err(e) = close(p, q, p["name"].as_str().unwrap_or("?")) {
             panic!("{what}: {e}\nwritten:  {p}\nread back: {q}");
         }
@@ -1777,4 +1798,152 @@ fn an_ellipse_starting_many_turns_round_comes_back_the_same() {
             assert!((w - sweep).abs() < 1e-5, "start {start}, sweep {sweep}: came back sweeping {w}");
         }
     }
+}
+
+#[test]
+fn fig_export_warns_when_per_setting_pixel_options_are_not_represented() {
+    let mut doc = Document::new("Export options");
+    let page = doc.first_page().unwrap();
+    let id = doc.create(page, NodeKind::Rectangle, "Cover", 0.0, 0.0, 24.0, 24.0).unwrap();
+    doc.get_mut(id).unwrap().exports = vec![figcraft_doc::ExportSetting { format: figcraft_doc::ExportFormat::Jpg, ..Default::default() }];
+    let (_, defaults) = export(&doc, None).unwrap();
+    assert!(!defaults.iter().any(|warning| warning.contains("quality") || warning.contains("per-setting profile")));
+    // JSON keeps this public regression compatible with the original model for baseline RED.
+    doc.get_mut(id).unwrap().exports = serde_json::from_value(serde_json::json!([{"format":"jpg","quality":40,"colorProfile":"displayP3"}])).unwrap();
+    let (bytes, warnings) = export(&doc, None).unwrap();
+    assert!(warnings.iter().any(|warning| warning.contains("quality")), "{warnings:?}");
+    assert!(warnings.iter().any(|warning| warning.contains("per-setting profile")), "{warnings:?}");
+    let (back, _) = import(&bytes, "back").unwrap();
+    let cover = back.ids().filter_map(|id| back.node(id)).find(|node| node.name == "Cover").unwrap();
+    let settings = serde_json::to_value(&cover.exports).unwrap();
+    assert!(settings[0].get("quality").is_none());
+    assert!(settings[0].get("colorProfile").is_none());
+}
+
+fn history_comparison_subject() -> (Document, NodeId) {
+    let mut doc = Document::new("History comparison");
+    let page = doc.first_page().unwrap();
+    let id = doc.create(page, NodeKind::Rectangle, "Subject", 0.0, 0.0, 100.0, 60.0).unwrap();
+    (doc, id)
+}
+
+fn added_history_payload() -> String {
+    serde_json::json!({"version":1,"authority":"descriptive-only","originGuid":"1:2","restId":"1:2","enclosingCumulative":0.5,
+           "childClampApplied":false,"fittedGeometry":false,"fields":[]})
+    .to_string()
+}
+
+fn must_reject_authored_difference(source: &Document, imported: &Document, label: &str) {
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| assert_same(source, imported, label)));
+    assert!(outcome.is_err(), "round-trip comparison must reject {label}");
+}
+
+#[test]
+fn history_comparison_keeps_authored_reserved_and_unrelated_plugin_data_strict() {
+    let key = crate::fig_scale_provenance::KEY;
+    let (mut source, id) = history_comparison_subject();
+    source.node_mut(id).unwrap().plugin_data.insert("authored".into(), "original".into());
+    source.node_mut(id).unwrap().plugin_data.insert(key.into(), added_history_payload());
+    let mut edited = source.clone();
+    edited.node_mut(id).unwrap().plugin_data.insert(key.into(), added_history_payload().replace("0.5", "0.25"));
+    must_reject_authored_difference(&source, &edited, "changed source-authored reserved key");
+    let mut dropped = source.clone();
+    dropped.node_mut(id).unwrap().plugin_data.remove(key);
+    must_reject_authored_difference(&source, &dropped, "dropped source-authored reserved key");
+    let mut edited = source.clone();
+    edited.node_mut(id).unwrap().plugin_data.insert("authored".into(), "changed".into());
+    must_reject_authored_difference(&source, &edited, "changed unrelated authored plugin data");
+    let (source, id) = history_comparison_subject();
+    let mut added = source.clone();
+    added.node_mut(id).unwrap().plugin_data.insert("unrelated".into(), "new".into());
+    must_reject_authored_difference(&source, &added, "added unrelated plugin data");
+}
+
+#[test]
+fn history_comparison_rejects_invalid_new_history_and_preserves_other_field_checks() {
+    let key = crate::fig_scale_provenance::KEY;
+    let (source, id) = history_comparison_subject();
+    let payload = added_history_payload();
+    let invalid = [
+        "not JSON".to_string(),
+        payload.replace("descriptive-only", "native-authority"),
+        payload.replace("\"version\":1", "\"version\":2"),
+        payload.replace("\"restId\":\"1:2\"", "\"restId\":\"1:3\""),
+        format!("{}{}", " ".repeat(crate::fig_scale_provenance::MAX_RECORD_BYTES), payload),
+    ];
+    for (case, payload) in invalid.into_iter().enumerate() {
+        let mut imported = source.clone();
+        imported.node_mut(id).unwrap().plugin_data.insert(key.into(), payload);
+        must_reject_authored_difference(&source, &imported, &format!("invalid new history case {case}"));
+    }
+    let mut changed = source.clone();
+    changed.node_mut(id).unwrap().plugin_data.insert(key.into(), added_history_payload());
+    changed.node_mut(id).unwrap().width = 200.0;
+    must_reject_authored_difference(&source, &changed, "changed geometry alongside valid new history");
+    let mut renamed = source.clone();
+    renamed.node_mut(id).unwrap().plugin_data.insert(key.into(), added_history_payload());
+    renamed.node_mut(id).unwrap().name = "Different tree entry".into();
+    must_reject_authored_difference(&source, &renamed, "renamed layer alongside valid new history");
+}
+
+#[test]
+fn history_comparison_accepts_only_new_typed_history_without_losing_unrelated_values() {
+    let key = crate::fig_scale_provenance::KEY;
+    let (mut source, id) = history_comparison_subject();
+    source.node_mut(id).unwrap().plugin_data.insert("authored".into(), "unchanged".into());
+    let mut imported = source.clone();
+    imported.node_mut(id).unwrap().plugin_data.insert(key.into(), added_history_payload());
+    assert_same(&source, &imported, "new descriptive history beside unchanged authored data");
+    imported.node_mut(id).unwrap().plugin_data.insert("authored".into(), "changed".into());
+    must_reject_authored_difference(&source, &imported, "authored value changed beside valid new history");
+}
+
+#[test]
+fn history_comparison_accepts_actual_nonunit_fig_import_but_still_checks_authored_geometry() {
+    let mut doc = Document::new("Scaled historical observation");
+    let page = doc.first_page().unwrap();
+    let main = doc
+        .create(
+            page,
+            NodeKind::Component { description: String::new(), props: BTreeMap::new(), prop_order: Vec::new() },
+            "Main",
+            0.0,
+            0.0,
+            100.0,
+            60.0,
+        )
+        .unwrap();
+    let child = doc.create(main, NodeKind::Rectangle, "Child", 10.0, 10.0, 40.0, 40.0).unwrap();
+    doc.node_mut(main).unwrap().stroke.weight = 2.0;
+    doc.node_mut(child).unwrap().stroke.weight = 2.0;
+    doc.node_mut(child).unwrap().corners.radii = [10.0; 4];
+    let mut generator = Gen { r: Lcg(1), doc, image: String::new(), frames: Vec::new(), layers: Vec::new() };
+    let instance = generator.instance(main, page, BTreeMap::new());
+    let mut doc = generator.doc;
+    doc.node_mut(instance).unwrap().name = "Genuine scaled copy".into();
+    for id in doc.subtree(instance) {
+        let node = doc.node_mut(id).unwrap();
+        node.width *= 1.5;
+        node.height *= 1.5;
+        node.stroke.weight *= 1.5;
+        for radius in &mut node.corners.radii {
+            *radius *= 1.5;
+        }
+        if id != instance {
+            let point = node.transform.translation();
+            node.transform = Affine::translate((point.x * 1.5, point.y * 1.5));
+        }
+    }
+    let (bytes, warnings) = export(&doc, None).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let (imported, issues) = import(&bytes, "scaled").unwrap();
+    assert!(issues.is_empty(), "{issues:?}");
+    let copied = imported.nodes().find(|node| node.name == "Genuine scaled copy").unwrap();
+    let record: crate::fig_scale_provenance::Record = serde_json::from_str(&copied.plugin_data[crate::fig_scale_provenance::KEY]).unwrap();
+    assert!(record.valid());
+    assert_eq!(record.local_relative.unwrap().wire, Some(1.5), "the actual importer retains a genuine nonunit observation");
+    assert_same(&doc, &imported, "actual imported1.5 history is descriptive, authored data still agrees");
+    let mut changed = imported.clone();
+    changed.node_mut(copied.id).unwrap().height += 20.0;
+    must_reject_authored_difference(&doc, &changed, "changed geometry on actual scaled import");
 }

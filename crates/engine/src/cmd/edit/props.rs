@@ -393,23 +393,10 @@ pub(super) fn paint_paste(s: &mut Session, p: &Value, fills: bool) -> Result<Val
         let copied = img.image.clone();
         if let Some(d) = s.clipboard.paint_images.get(&copied).cloned() {
             let doc = s.doc_mut()?;
-            // The destination may already use that key for different data (other layers keep
-            // that image): the pasted paint takes the copied data's content hash instead. That key
-            // can be taken too — images are usually keyed by their hash, so the copied key often
-            // is that hash — and then a numbered variant of it. Image keys become archive member
-            // names, which keep only letters and digits, so the number is appended plainly.
-            let base = if doc.images.get(&copied).is_some_and(|existing| existing != &d) { figcraft_format::image_hash(&d.bytes) } else { copied };
-            let mut key = base.clone();
-            let mut n = 0u32;
-            while doc.images.get(&key).is_some_and(|existing| existing != &d) {
-                n = n.saturating_add(1);
-                if n > 999 {
-                    return Err(bad(cmd, "no free image key for the copied image"));
-                }
-                key = format!("{base}{n}");
-            }
-            doc.images.entry(key.clone()).or_insert(d);
-            img.image = key;
+            let images = std::collections::BTreeMap::from([(copied.clone(), d)]);
+            let import = super::clipboard::plan_images(cmd, doc, &images)?;
+            img.image = import.remap.get(&copied).cloned().unwrap_or(copied);
+            import.commit(doc);
         }
     }
     let mut q = json!({"ids": ids, "paint": serde_json::to_value(paint).map_err(|e| bad(cmd, e.to_string()))?});

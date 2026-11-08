@@ -39,6 +39,16 @@ capacity becomes free. Authentication retains its separate absolute two-second d
 each subsequent frame has an **absolute 60 s deadline**, including a frame arriving slowly;
 socket writes retain their **60 s inactivity timeout**. Clients can reconnect after a timeout.
 
+Each worker also has an absolute **10-minute connection lease**, starting before authentication.
+Keepalive requests and whitespace do not renew it. A frame read is capped by the remaining lease;
+expired frames are refused before parsing or dispatch with
+`{"id": null, "ok": false, "error": "control session lifetime exceeded; reconnect to continue"}`,
+then the connection closes. A request already admitted keeps its existing `timeoutMs` and reply,
+so its bounded wait and blocked reply-write timeout can extend worker retirement past the lease.
+The attached MCP client reconnects before its next call; custom clients must reconnect too and
+must not blindly replay a written mutation whose result is uncertain. Rotation bounds a
+connection's slot ownership; it does not impose a per-user quota against repeated reconnections.
+
 All native control sessions and listener generations share a **64 MiB ingress admission budget**.
 Raw buffer capacity, including old/new overlap during growth, is reserved before allocation. An
 allocation-free lexical scan then reserves an expansion envelope before JSON parsing: 4096 bytes
@@ -128,6 +138,12 @@ are set: commands don't reach the network …`). A root on a network share (a UN
 `\\server\share\…`, or a mounted network drive) is the exception: files read and written inside it,
 documents saved there included, go to that file server. Without the flags nothing changes. The flags arrived in FigCraft 0.7.0: 0.6.0 and earlier ignore
 them and confine nothing.
+
+Requests with no eligible root for their access are refused before target resolution. On Windows,
+recognized UNC spellings are likewise refused before target resolution when only local roots are
+eligible. Explicit UNC roots retain the resolved-path boundary check. This preflight does not
+identify mapped backing stores, local links to network paths or every device namespace, and the
+check-then-open race documented in `docs/mcp.md` remains.
 
 Not confined: opening the files given on the command line when the app starts and the documents
 the system hands over (Finder, Open With; saving them later is confined like any write), and the

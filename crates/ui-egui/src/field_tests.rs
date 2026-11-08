@@ -111,17 +111,17 @@ fn typed_text_is_a_number_arithmetic_or_an_edit_relative_to_the_value() {
 }
 
 #[test]
-fn a_scrub_moves_a_step_a_point_ten_with_shift_and_a_tenth_with_alt() {
+fn a_scrub_moves_half_a_step_a_point_ten_times_that_with_shift_and_a_tenth_with_alt() {
     // (points dragged, the field's step, Shift, Alt) → how far the value moves
     let rows = [
-        ((25.0, 1.0, false, false), 25.0),
-        ((-25.0, 1.0, false, false), -25.0),
-        ((10.0, 1.0, true, false), 100.0),
-        ((20.0, 1.0, false, true), 2.0),
-        ((20.0, 1.0, true, true), 20.0),
-        ((10.0, 0.1, false, false), 1.0),
-        ((10.0, 0.1, true, false), 10.0),
-        ((10.0, 10.0, false, false), 100.0),
+        ((25.0, 1.0, false, false), 12.5),
+        ((-25.0, 1.0, false, false), -12.5),
+        ((10.0, 1.0, true, false), 50.0),
+        ((20.0, 1.0, false, true), 1.0),
+        ((20.0, 1.0, true, true), 10.0),
+        ((10.0, 0.1, false, false), 0.5),
+        ((10.0, 0.1, true, false), 5.0),
+        ((10.0, 10.0, false, false), 50.0),
         ((0.0, 1.0, true, false), 0.0),
     ];
     for ((dx, step, shift, alt), want) in rows {
@@ -269,11 +269,11 @@ fn scrubbing_the_label_moves_the_value_and_is_one_undo_step() {
     let alt = Modifiers { alt: true, ..Modifiers::NONE };
     // (field, points, modifiers, x after): X starts at 10.
     let rows = [
-        ("X", 25.0, Modifiers::NONE, 35.0),
-        ("X", 10.0, shift, 135.0),
-        ("X", 20.0, alt, 137.0),
-        ("X", -37.0, Modifiers::NONE, 100.0),
-        ("X", -8.0, shift, 20.0),
+        ("X", 24.0, Modifiers::NONE, 22.0),
+        ("X", 10.0, shift, 72.0),
+        ("X", 20.0, alt, 73.0),
+        ("X", -36.0, Modifiers::NONE, 55.0),
+        ("X", -8.0, shift, 15.0),
     ];
     for (name, dx, m, want) in rows {
         let steps = undo_steps(&u);
@@ -282,18 +282,18 @@ fn scrubbing_the_label_moves_the_value_and_is_one_undo_step() {
         assert_eq!(undo_steps(&u), steps + 1, "one undo step for the whole scrub");
     }
     u.app.run("edit.undo", json!({}));
-    assert_eq!(geom(&u, a).0, 100.0, "undo takes back the last scrub alone");
+    assert_eq!(geom(&u, a).0, 55.0, "undo takes back the last scrub alone");
     // A few points aren't a drag yet (a click on the label), then it counts from the press.
     // Alt gives tenths (the field shows them); the fraction stays under a plain scrub.
     let width = |u: &Ui| u.app.session.doc().unwrap().node(a).unwrap().width;
-    scrub(&mut u, "Width", 7.0, alt);
-    assert_eq!(width(&u), 40.7);
+    scrub(&mut u, "Width", 8.0, alt);
+    assert_eq!(width(&u), 40.4);
     scrub(&mut u, "Width", 8.0, Modifiers::NONE);
-    assert_eq!(width(&u), 48.7);
-    // Fractional fields: opacity moves a percent a point, rotation a degree.
-    scrub(&mut u, "Opacity", -30.0, Modifiers::NONE);
+    assert_eq!(width(&u), 44.4);
+    // Fractional fields: opacity moves half a percent a point, rotation half a degree.
+    scrub(&mut u, "Opacity", -60.0, Modifiers::NONE);
     assert_eq!(u.app.session.doc().unwrap().node(a).unwrap().opacity, 0.7);
-    scrub(&mut u, "Rotation", 15.0, Modifiers::NONE);
+    scrub(&mut u, "Rotation", 30.0, Modifiers::NONE);
     let rot = figcraft_geom::rotation_degrees(u.app.session.doc().unwrap().node(a).unwrap().transform);
     assert!((rot.abs() - 15.0).abs() < 1e-6, "rotation {rot}");
     // A press on the label that doesn't move changes nothing.
@@ -510,7 +510,7 @@ fn scrubbing_colour_picker_fields_is_live_and_one_undo_step() {
     let steps = undo_steps(&u);
     let from = lead(&u, crate::colorpicker::current_field_id(&u.ctx, ("cp_f", "r")));
     drag(&mut u, from, -20.0, Modifiers::NONE);
-    assert_eq!((rgba(&u)[0], undo_steps(&u)), (r0 - 20, steps + 1), "R");
+    assert_eq!((rgba(&u)[0], undo_steps(&u)), (r0 - 10, steps + 1), "R");
     // Committing adds a recent colour row and can lift the anchored picker. Settle its layout.
     for _ in 0..3 {
         u.frame(vec![]);
@@ -629,7 +629,7 @@ fn scrubbing_a_prototype_delay_sets_it_once_when_let_go() {
         figcraft_doc::proto::Trigger::AfterDelay { ms } => ms,
         _ => panic!("still after a delay"),
     };
-    assert_eq!((ms, undo_steps(&u)), (800, steps + 1));
+    assert_eq!((ms, undo_steps(&u)), (650, steps + 1));
 }
 
 /// Asserts scrubbing the scale panel's width scales the layer live in one undo step.
@@ -642,7 +642,7 @@ fn scrubbing_the_scale_panel_width_scales_live_in_one_undo_step() {
     let from = lead(&u, Id::unique("scale_w"));
     drag(&mut u, from, 20.0, Modifiers::NONE);
     let (_, _, w, h) = geom(&u, a);
-    assert_eq!((w, h, undo_steps(&u)), (60.0, 45.0, steps + 1), "40×30 scaled to a width of 60");
+    assert_eq!((w, h, undo_steps(&u)), (50.0, 37.5, steps + 1), "40×30 scaled to a width of 50");
 }
 
 /// The texts painted in the last frame: what they say, whether they end in an ellipsis, and where

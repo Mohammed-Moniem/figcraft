@@ -550,14 +550,10 @@ pub(crate) fn stroke_props(s: &usvg::Stroke, k: f64) -> figcraft_doc::StrokeProp
         usvg::LineCap::Square => StrokeCap::Square,
         usvg::LineCap::Butt => StrokeCap::None,
     };
-    let mut dashes: Vec<f64> = s.dasharray().unwrap_or(&[]).iter().map(|v| f64::from(*v) * k).collect();
-    if !dashes.is_empty() {
-        let offset = f64::from(s.dashoffset()) * k;
-        // Half a dash in is how a line starts by itself (and how export writes one).
-        if dashes.first().is_none_or(|d| (d / 2.0 - offset).abs() > 1e-3) {
-            dashes = dash_offset(&dashes, offset, cap == StrokeCap::None).unwrap_or(dashes);
-        }
-    }
+    let dashes: Vec<f64> = s.dasharray().unwrap_or(&[]).iter().map(|v| f64::from(*v) * k).collect();
+    // SVG always uses raw-pattern placement, including its default offset0. Native None means
+    // automatic fitting and would change the imported lengths and first/last dash positions.
+    let dash_phase = (!dashes.is_empty()).then_some(f64::from(s.dashoffset()) * k).filter(|phase| phase.is_finite());
     figcraft_doc::StrokeProps {
         weight: f64::from(s.width().get()) * k,
         align: StrokeAlign::Center,
@@ -570,13 +566,15 @@ pub(crate) fn stroke_props(s: &usvg::Stroke, k: f64) -> figcraft_doc::StrokeProp
         },
         miter_limit: f64::from(s.miterlimit().get()),
         dashes,
+        dash_phase,
         ..Default::default()
     }
 }
 
-/// The dash pattern started `offset` into it (dash patterns have no offset of their own). `None`
+/// Legacy pattern rewriting arithmetic, retained for its original test controls. `None`
 /// when it can't be expressed: an offset into a gap needs a zero-length dash first, which only
 /// draws nothing with butt caps.
+#[cfg(test)]
 pub(crate) fn dash_offset(dashes: &[f64], offset: f64, butt: bool) -> Option<Vec<f64>> {
     let total: f64 = dashes.iter().sum();
     if !(total > 0.0 && offset.is_finite()) || dashes.len() % 2 == 1 || dashes.iter().any(|d| *d < 0.0) {

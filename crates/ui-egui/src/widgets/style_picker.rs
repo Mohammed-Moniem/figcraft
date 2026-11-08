@@ -10,7 +10,7 @@
 
 use egui::{Align2, Color32, CornerRadius, Id, Rect, Response, Sense, Stroke, Ui, pos2, vec2};
 use figcraft_color::{Paint, PaintKind};
-use figcraft_doc::{Document, GridKind, Node, NodeId, PublishedLibrary, Style, StyleKind, TextStyle, VariableType, trim_num};
+use figcraft_doc::{Document, GridKind, Node, NodeId, PublishedLibrary, Style, StyleKind, TextStyle, VariableType, WrapStyle, trim_num};
 use figcraft_engine::library;
 use serde_json::{Value, json};
 
@@ -915,6 +915,14 @@ fn text_property_fields(ui: &mut Ui, doc: &Document, style: &Style, def: &TextSt
         line_height_field(ui, doc, style, def, half, area, out);
         let area = Rect::from_min_size(ui.cursor().min, vec2(half, widgets::FIELD_H));
         letter_spacing_field(ui, doc, style, def, half, area, out);
+    });
+    caption(ui, tr("Wrap style"));
+    ui.horizontal(|ui| {
+        for (wrap, label) in [(WrapStyle::Auto, "Auto"), (WrapStyle::Balance, "Balance"), (WrapStyle::Pretty, "Pretty")] {
+            if ui.selectable_label(def.wrap_style == wrap, tr(label)).clicked() {
+                set_text(def, &style.id, out, |d| d.wrap_style = wrap);
+            }
+        }
     });
     (family_resp, style_resp)
 }

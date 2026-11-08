@@ -10,6 +10,8 @@
 
 use std::cell::RefCell;
 
+pub(crate) mod preview;
+
 use egui::{Context, Pos2, Vec2, ViewportBuilder, ViewportCommand, ViewportId};
 use figcraft_engine::{DocState, Session};
 use serde_json::{Value, json};
@@ -51,6 +53,7 @@ pub(crate) struct Pane {
 #[derive(Default)]
 pub struct Windows {
     pub list: Vec<Window>,
+    previews: Vec<preview::Preview>,
     /// The window drawing now (0: the main window).
     pub current: u64,
     /// The window last in front: control requests without a `window` go to it.
@@ -82,13 +85,15 @@ impl Windows {
     }
 
     pub fn exists(&self, id: u64) -> bool {
-        id == 0 || self.list.iter().any(|w| w.id == id)
+        id == 0 || self.list.iter().any(|w| w.id == id) || self.is_preview(id)
     }
 
     /// The document window `id` shows now (`None`: no file): the window drawing now has the
     /// session's active file, the main window between frames its own, every other window its own.
     pub(crate) fn active_doc(&self, session: &Session, id: u64) -> Option<u64> {
-        if id == self.current {
+        if let Some(p) = self.previews.iter().find(|p| p.id == id) {
+            session.docs.iter().find(|d| d.uid == p.uid).map(|d| d.uid)
+        } else if id == self.current {
             session.docs.get(session.active).map(|d| d.uid)
         } else if id == 0 {
             self.main_active
@@ -163,6 +168,12 @@ pub fn take_input(app: &mut FigApp, viewport_id: ViewportId) -> Vec<egui::Event>
         Some(w) => {
             let events = std::mem::take(&mut w.pane.control_input);
             (events, w.pane.control_input_doc.take(), w.active)
+        }
+        None if app.windows.previews.iter().any(|p| viewport(p.id) == viewport_id) => {
+            let Some(p) = app.windows.previews.iter_mut().find(|p| viewport(p.id) == viewport_id) else { return Vec::new() };
+            let events = std::mem::take(&mut p.pane.control_input);
+            let current = app.session.docs.iter().find(|d| d.uid == p.uid).map(|d| d.uid);
+            (events, p.pane.control_input_doc.take(), current)
         }
         None if viewport_id == ViewportId::ROOT => {
             let events = std::mem::take(&mut app.control_input);
@@ -243,6 +254,12 @@ fn forget_control_input(app: &mut FigApp, ctx: &Context, viewport: ViewportId) {
             window.pane.control_input_doc = None;
         }
     }
+    for p in &mut app.windows.previews {
+        if self::viewport(p.id) == viewport {
+            p.pane.control_input = Vec::new();
+            p.pane.control_input_doc = None;
+        }
+    }
     if app.control_input_resources.contains_key(&viewport) {
         ctx.input_mut_for(viewport, |input| {
             input.raw.events = Vec::new();
@@ -253,6 +270,11 @@ fn forget_control_input(app: &mut FigApp, ctx: &Context, viewport: ViewportId) {
         app.applied_input = None;
         app.applied_frame = None;
         app.control_synthetic = false;
+    }
+    // A later window may admit control work after egui has forgotten this viewport.
+    // Its presented-input fence must retire with its owner, never query a dead frame counter.
+    if app.control_presented_input_frame.is_some_and(|(owner, _)| owner == viewport) {
+        app.control_presented_input_frame = None;
     }
     fail_input_acks(app, viewport);
     let mut kept = Vec::new();
@@ -277,6 +299,10 @@ pub(crate) fn release_control_input_resources(app: &mut FigApp) {
     for window in &mut app.windows.list {
         window.pane.control_input = Vec::new();
         window.pane.control_input_doc = None;
+    }
+    for p in &mut app.windows.previews {
+        p.pane.control_input = Vec::new();
+        p.pane.control_input_doc = None;
     }
     app.applied_input = None;
     if let Some(ctx) = &app.ui_context {
@@ -429,6 +455,22 @@ pub fn focus(app: &mut FigApp, ctx: &Context, id: u64) -> Result<Value, String> 
 /// `engine.execute`).
 pub(crate) fn requests(app: &mut FigApp, ctx: &Context) {
     for r in std::mem::take(&mut app.window_requests) {
+        if r.kind == "preview.detach" {
+            // Only the root has every editor pane stored: a child queues the captured UID
+            // instead of cloning a root player temporarily swapped out by its own frame.
+            if app.windows.current != 0 {
+                app.window_requests.push(r);
+                ctx.request_repaint_of(ViewportId::ROOT);
+                continue;
+            }
+            if let Some((uid, start)) =
+                r.data.get("sourceDocument").and_then(Value::as_u64).zip(r.data.get("start").and_then(figcraft_engine::params::id_of))
+                && let Err(error) = preview::detach(app, ctx, uid, start)
+            {
+                app.toast(error);
+            }
+            continue;
+        }
         if r.kind == "session.restore" {
             ctx.request_repaint();
             continue;
@@ -473,6 +515,7 @@ pub fn list(app: &FigApp) -> Value {
             let mut out = json!({
                 "id": id,
                 "main": id == 0,
+                "kind": "editor",
                 "title": title_of(shown),
                 "files": app.session.docs.iter().filter(mine).map(|d| d.doc.name.as_str()).collect::<Vec<_>>(),
                 "active": shown.map(|d| d.doc.name.as_str()),
@@ -483,6 +526,7 @@ pub fn list(app: &FigApp) -> Value {
             }
             out
         })
+        .chain(preview::list(app))
         .collect(),
     )
 }
@@ -652,6 +696,7 @@ fn save_then_close(app: &mut FigApp, ctx: &Context) {
 /// Before the main window draws: windows asked to close close, closed files leave their windows
 /// (a window left with none closes) and the main window shows one of its own files.
 pub(crate) fn begin(app: &mut FigApp, ctx: &Context) {
+    preview::retire(app, ctx);
     app.windows.current = 0;
     app.windows.main.track(ctx);
     crate::restore::begin(app, ctx);
@@ -737,7 +782,11 @@ pub(crate) fn settle(app: &mut FigApp, ctx: &Context, files_before: usize) {
 
 /// Something every window shows changed (the preferences, the theme): the others draw again.
 pub(crate) fn repaint_others(app: &FigApp, ctx: &Context) {
-    for id in std::iter::once(0).chain(app.windows.list.iter().map(|w| w.id)).filter(|id| *id != app.windows.current) {
+    for id in std::iter::once(0)
+        .chain(app.windows.list.iter().map(|w| w.id))
+        .chain(app.windows.previews.iter().map(|p| p.id))
+        .filter(|id| *id != app.windows.current)
+    {
         ctx.request_repaint_of(viewport(id));
     }
 }
@@ -769,6 +818,7 @@ pub(crate) fn show(app: &FigApp, ctx: &Context) {
             }
         });
     }
+    preview::show(app, ctx);
 }
 
 /// A window's state swapped into the app ([`enter`]) until [`leave`] swaps it back out.
@@ -824,7 +874,12 @@ impl Windows {
     /// Windows whose pane holds synthetic input not yet taken by a frame (hidden windows still
     /// need a forced paint for it).
     pub(crate) fn pending_input_viewports(&self) -> Vec<ViewportId> {
-        self.list.iter().filter(|w| !w.pane.control_input.is_empty()).map(|w| viewport(w.id)).collect()
+        self.list
+            .iter()
+            .filter(|w| !w.pane.control_input.is_empty())
+            .map(|w| viewport(w.id))
+            .chain(self.previews.iter().filter(|p| !p.pane.control_input.is_empty()).map(|p| viewport(p.id)))
+            .collect()
     }
 }
 
@@ -832,6 +887,9 @@ impl Windows {
 /// while it draws; `None` when there is no such window. For a window that draws nothing now
 /// (minimized, or occluded: behind other windows or on another Space).
 pub(crate) fn as_window<R>(app: &mut FigApp, id: u64, f: impl FnOnce(&mut FigApp) -> R) -> Option<R> {
+    if app.windows.is_preview(id) {
+        return preview::as_window(app, id, f);
+    }
     if id == 0 {
         // Between frames the app holds the main window's state.
         return Some(f(app));

@@ -16,6 +16,9 @@ use crate::{BatchStep, EngineError, Result, Session, bad, spec};
 mod clipboard;
 mod props;
 mod select;
+mod vector_clipboard;
+#[cfg(test)]
+mod vector_clipboard_tests;
 
 pub use clipboard::{CLIP_CLOSE, CLIP_OPEN, copy_to_clipboard, design_clipboard_buffer, paste_into};
 use clipboard::{copy, copy_props, copy_props_of, cut, paste, paste_design_layers, paste_over, paste_props, paste_replace};
@@ -115,12 +118,24 @@ pub fn specs() -> Vec<CommandSpec> {
             true,
             duplicate
         ),
-        spec!("edit.copy", "Copy", "{ids?}", false, copy),
-        spec!("edit.cut", "Cut", "{ids?}", true, cut),
+        spec!(
+            "edit.copy",
+            "Copy",
+            "{ids?}  in vector edit mode with points or segments selected (and no ids): just those, the segments touching a selected point, as a new vector with the edited layer's look",
+            false,
+            copy
+        ),
+        spec!(
+            "edit.cut",
+            "Cut",
+            "{ids?}  in vector edit mode with points or segments selected (and no ids): copies them as Copy does, then removes them as Delete does; the path splits in the same layer and edit mode stays on",
+            true,
+            cut
+        ),
         spec!(
             "edit.paste",
             "Paste",
-            "{parent?, x?, y? (page coordinates of the pasted top-left)}  a copied main component pastes as an instance of it within its file (cut ones, and pastes into other files, keep the component)",
+            "{parent?, x?, y? (page coordinates of the pasted top-left)}  in vector edit mode (and no parent): the copied vectors' segments and shapes' outlines join the edited vector's network in place, selected, and the layers that have no outline (text, frames, groups) are skipped (`skipped`); a copied main component pastes as an instance of it within its file (cut ones, and pastes into other files, keep the component)",
             true,
             paste
         ),
@@ -418,7 +433,7 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!(
             "export.add",
             "Add export setting",
-            "{ids?, setting? {size: 2x|512w|512h|{by: scale|width|height, value}, suffix?, format?: png|jpg|svg|pdf|webp|xml (Android Vector Drawable), bleed? (PDF: points, or with a unit: \"3mm\", \"0.125in\", \"9pt\"), cropMarks?, bleedMarks?, cmyk? (PDF print options), vdCompat? (XML: bestEffort|exact|ignore)}} (without a setting: 1x, then one scale step up with an \"@2x\"-style suffix)",
+            "{ids?, setting? {size: 2x|512w|512h|{by: scale|width|height, value}, suffix?, format?: png|jpg|svg|pdf|webp|xml (Android Vector Drawable), bleed? (PDF: points, or with a unit: \"3mm\", \"0.125in\", \"9pt\"), cropMarks?, bleedMarks?, cmyk? (PDF print options), vdCompat? (XML: bestEffort|exact|ignore), quality? (JPG: whole number 1-100, default 90), colorProfile? (PNG/JPG/WebP: sameAsFile|srgb|displayP3; converts pixels and tags output without changing the document)}} (without a setting: 1x, then one scale step up with an \"@2x\"-style suffix)",
             true,
             |s, p| {
                 let cmd = "export.add";
@@ -436,7 +451,7 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!(
             "export.update",
             "Edit export setting",
-            "{ids?, index, size? (2x|512w|512h|{by, value}), suffix?, format? (png|jpg|svg|pdf|webp|xml: Android Vector Drawable), bleed? (PDF: points, or with a unit: \"3mm\", \"0.125in\", \"9pt\"), cropMarks?, bleedMarks?, cmyk? (PDF print options), vdCompat? (XML: bestEffort|exact|ignore), contentsOnly?, includeBoundingBox?, svgOutlineText?, svgIdAttribute?, svgSimplifyStroke?}",
+            "{ids?, index, size? (2x|512w|512h|{by, value}), suffix?, format? (png|jpg|svg|pdf|webp|xml: Android Vector Drawable), bleed? (PDF: points, or with a unit: \"3mm\", \"0.125in\", \"9pt\"), cropMarks?, bleedMarks?, cmyk? (PDF print options), vdCompat? (XML: bestEffort|exact|ignore), contentsOnly?, includeBoundingBox?, svgOutlineText?, svgIdAttribute?, svgSimplifyStroke?, quality? (JPG: whole number 1-100, default 90), colorProfile? (PNG/JPG/WebP: sameAsFile|srgb|displayP3; converts pixels and tags output without changing the document)}",
             true,
             |s, p| {
                 let cmd = "export.update";
