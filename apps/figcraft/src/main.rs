@@ -27,6 +27,7 @@ compile_error!("Windows GNU builds must set windows_slim_errors to keep UI Autom
 mod apple_events;
 mod args;
 mod control_auth;
+mod control_budget;
 mod control_server;
 mod file_watch;
 mod gamepad;
@@ -191,7 +192,12 @@ impl eframe::App for App {
     fn on_exit(&mut self) {
         // With the app out of reach (busy), its recovery copies stay for the next start.
         let copies = recovery::lock(&self.recovery).take();
-        with_app(|fig| services::shutdown(fig, services::config_dir().as_deref(), copies));
+        with_app(|fig| {
+            services::shutdown(fig, services::config_dir().as_deref(), copies);
+            // macOS exits before AppKit teardown below. Release actual retained input before
+            // refunding its request resources even when FigApp's destructor will not run.
+            fig.release_control_input_resources();
+        });
         // Everything is kept: end before the windows' teardown, where AppKit's Touch Bar support
         // throws on the content view AccessKit restores (craft-libs#3, #781).
         #[cfg(target_os = "macos")]

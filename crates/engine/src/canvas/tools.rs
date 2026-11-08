@@ -22,7 +22,10 @@ use crate::{Result, Session, textedit};
 mod click;
 mod drag;
 mod draw;
+mod font_size;
 mod handles;
+use font_size::FontSizeStart;
+pub use font_size::TextFontHandle;
 mod keys;
 mod pen;
 mod pointer;
@@ -372,6 +375,8 @@ pub struct Overlay {
     pub measure_box: Option<[f64; 4]>,
     /// Scale tool drag: the factor so far and the point that stays put.
     pub scale: Option<ScaleHint>,
+    /// The dedicated text-size gesture scales typography, preserving the text box.
+    pub text_font_scale: Option<f64>,
     /// The selected ellipse's arc handle under the pointer, and the readout while one is dragged
     /// (see [`crate::arc_handles`]).
     pub arc_hover: Option<ArcHandle>,
@@ -438,6 +443,10 @@ pub(crate) enum Gesture {
         start: Point,
         r: Box<ResizeStart>,
         scale_tool: bool,
+        moved: bool,
+    },
+    TextFontSize {
+        start: Box<FontSizeStart>,
         moved: bool,
     },
     Rotate {

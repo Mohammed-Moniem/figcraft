@@ -1,7 +1,7 @@
 //! Localhost JSON-lines control server: each line `{"id", "method", "params"}` is queued for the UI
 //! thread; the reply line `{"id", "ok", "result" | "error"}` is written when the frame handled it.
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 type Queue = Arc<Mutex<Vec<ControlRequest>>>;
 type CtxSlot = Arc<Mutex<Option<egui::Context>>>;
 
-const MAX_LINE: usize = 32 * 1024 * 1024;
+const MAX_LINE: usize = 4 * 1024 * 1024;
 const MAX_CONNECTIONS: usize = 8;
 const MAX_QUEUED_REQUESTS: usize = 8;
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -31,6 +31,8 @@ const CAPACITY_POLL: Duration = Duration::from_millis(10);
 #[derive(Debug, PartialEq, Eq)]
 enum WaitFailure {
     Timeout,
+    /// An open request was explicitly cancelled before its admission deadline.
+    Cancelled,
     /// The UI side dropped its sender before replying (the app is closing).
     Disconnected,
     /// The UI started the request before the timeout and is still running it: it takes effect
@@ -45,7 +47,15 @@ fn wait_for_reply(rx: &std::sync::mpsc::Receiver<ControlReply>, gate: &RequestGa
     match rx.recv_timeout(timeout) {
         Ok(reply) => Ok(reply),
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => after_timeout(rx, gate),
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(WaitFailure::Disconnected),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            // Reaping a cancelled queue entry drops its sender. That is not evidence that the
+            // window closed; preserve the deadline/cancellation reason when pruning wins.
+            if gate.is_cancelled() {
+                Err(if gate.deadline_elapsed() { WaitFailure::Timeout } else { WaitFailure::Cancelled })
+            } else {
+                Err(WaitFailure::Disconnected)
+            }
+        }
     }
 }
 
@@ -72,6 +82,7 @@ fn request_timeout(v: &Value, default: Duration) -> Duration {
 fn timeout_message(failure: &WaitFailure, needs_frame: bool, waited: Duration) -> String {
     let secs = waited.as_secs_f64().ceil();
     match failure {
+        WaitFailure::Cancelled => "this request was cancelled before the app started it: it was not applied".into(),
         WaitFailure::Disconnected => "the FigCraft window closed before answering".into(),
         WaitFailure::StillRunning => format!(
             "the app is still running this request after {secs} s: it will take effect when it finishes, but its reply is lost. Check the document before retrying"
@@ -338,12 +349,24 @@ fn serve_with_events(out: TcpStream, queue: Queue, ctx: CtxSlot, events: Arc<Eve
     serve_session(out, queue, ctx, events, timeout, None)
 }
 fn serve_session(
+    out: TcpStream,
+    queue: Queue,
+    ctx: CtxSlot,
+    events: Arc<EventLog>,
+    timeout: Duration,
+    auth: Option<Arc<crate::control_auth::Lease>>,
+) -> std::io::Result<()> {
+    serve_budgeted(out, queue, ctx, events, timeout, auth, crate::control_budget::Budget::shared())
+}
+
+fn serve_budgeted(
     mut out: TcpStream,
     queue: Queue,
     ctx: CtxSlot,
     events: Arc<EventLog>,
     timeout: Duration,
     auth: Option<Arc<crate::control_auth::Lease>>,
+    budget: Arc<crate::control_budget::Budget>,
 ) -> std::io::Result<()> {
     if let Some(auth) = auth.as_ref()
         && !auth.authenticate(&mut out)?
@@ -353,31 +376,50 @@ fn serve_session(
     out.set_read_timeout(Some(timeout))?;
     out.set_write_timeout(Some(timeout))?;
     let mut reader = BufReader::new(out.try_clone()?);
-    let mut line = Vec::new();
     loop {
         if auth.as_ref().is_some_and(|a| !a.active()) {
             return Ok(());
         }
-        line.clear();
-        if (&mut reader).take((MAX_LINE + 1) as u64).read_until(b'\n', &mut line)? == 0 {
-            break;
-        }
-        if line.last() == Some(&b'\n') {
-            line.pop();
-        }
-        if line.len() > MAX_LINE {
-            writeln!(out, "{}", json!({"id": null, "ok": false, "error": "message too large"}))?;
-            break;
-        }
-        let Ok(line) = std::str::from_utf8(&line) else { break };
-        if line.trim().is_empty() {
+        // Reap the bounded native queue before admission: cancelled payloads must not exhaust
+        // the very budget a newcomer would need in order to reach the post-parse queue check.
+        prune_native_queue(&queue);
+        let (raw, raw_reservation) = match crate::control_budget::read_frame(&mut reader, &budget, MAX_LINE, timeout)? {
+            crate::control_budget::Frame::Eof => break,
+            crate::control_budget::Frame::Ready(line, reservation) => (line, reservation),
+            crate::control_budget::Frame::Refused(error) => {
+                crate::control_auth::refuse_control(&mut out, error)?;
+                break;
+            }
+        };
+        if raw.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        let reply = match serde_json::from_str::<Value>(line) {
-            Ok(v) => {
-                let id = v.get("id").cloned().unwrap_or(Value::Null);
-                let method = v.get("method").and_then(Value::as_str).unwrap_or("").to_string();
-                let params = v.get("params").cloned().unwrap_or(json!({}));
+        // Reserve expansion before serde allocates. Keep an owner outside the gate scope until
+        // the final reply write finishes; queued/deferred UI owners may live longer than this.
+        let Some(resource) = budget.parsed(&raw) else {
+            crate::control_auth::refuse_control(&mut out, "control memory budget exhausted")?;
+            break;
+        };
+        #[cfg(test)]
+        budget.parses.fetch_add(1, Ordering::Relaxed);
+        let parsed = serde_json::from_slice::<Value>(&raw);
+        drop(raw);
+        drop(raw_reservation);
+        let reply = match parsed {
+            Ok(mut v) => {
+                let waits = request_timeout(&v, timeout);
+                let (id, method, params) = if let Some(fields) = v.as_object_mut() {
+                    let id = fields.remove("id").unwrap_or(Value::Null);
+                    let method = match fields.remove("method") {
+                        Some(Value::String(method)) => method,
+                        _ => String::new(),
+                    };
+                    let params = fields.remove("params").unwrap_or(json!({}));
+                    (id, method, params)
+                } else {
+                    (Value::Null, String::new(), json!({}))
+                };
+                drop(v);
                 if auth.as_ref().is_some_and(|a| !a.active()) {
                     return Ok(());
                 }
@@ -391,9 +433,8 @@ fn serve_session(
                     writeln!(out, "{reply}")?;
                     continue;
                 }
-                let waits = request_timeout(&v, timeout);
                 let (tx, rx) = std::sync::mpsc::channel();
-                let gate = RequestGate::with_timeout(waits);
+                let gate = RequestGate::with_timeout_and_resource(waits, resource.clone());
                 let mut pending = queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 pending.retain(|request| !request.is_cancelled());
                 if pending.len() >= MAX_QUEUED_REQUESTS {
@@ -425,13 +466,20 @@ fn serve_session(
                 // A line that isn't JSON ends the connection: a web page can make the browser send
                 // an HTTP request here, and its header lines must not let the JSON lines of its body
                 // through as commands.
-                writeln!(out, "{}", json!({"id": null, "ok": false, "error": format!("bad JSON: {e}")}))?;
+                crate::control_auth::refuse_control(&mut out, &format!("bad JSON: {e}"))?;
                 break;
             }
         };
+        // A timeout/closed peer must not leave native queued payloads waiting for a UI tick.
+        // Deferred UI and Running owners remain outside this queue and retain their resources.
+        prune_native_queue(&queue);
         writeln!(out, "{reply}")?;
     }
     Ok(())
+}
+
+fn prune_native_queue(queue: &Queue) {
+    queue.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|request| !request.is_cancelled());
 }
 
 /// `events.poll {after?, timeoutMs?, topics?, limit?}`: read the shared log, waiting up to 25 s.
@@ -444,3 +492,7 @@ fn event_poll(log: &EventLog, params: &Value) -> Result<Value, String> {
 #[cfg(test)]
 #[path = "control_server_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "control_server_budget_tests.rs"]
+mod budget_tests;

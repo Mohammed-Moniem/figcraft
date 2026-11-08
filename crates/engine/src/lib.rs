@@ -246,6 +246,8 @@ mod board_tools_tests;
 #[cfg(test)]
 mod boolean_cap_tests;
 #[cfg(test)]
+mod boolean_rounding_tests;
+#[cfg(test)]
 mod booleans_tests;
 #[cfg(test)]
 mod bound_alpha_tests;
@@ -703,3 +705,6 @@ mod ui_accent_pref_tests;
 
 #[cfg(test)]
 mod menu_keep_open_tests;
+
+#[cfg(test)]
+mod text_font_handle_tests;

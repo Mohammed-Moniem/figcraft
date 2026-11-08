@@ -846,6 +846,18 @@ pub(crate) struct PendingAck {
     pub(crate) viewport: egui::ViewportId,
     pub(crate) tx: std::sync::mpsc::Sender<ControlReply>,
     pub(crate) reply: ControlReply,
+    /// The transport may time out while this admitted input still awaits a presented frame.
+    pub(crate) state: RequestGate,
+}
+
+/// egui retains both raw and derived event vectors after a pass. The current batch remains
+/// charged after its acknowledgement; the old batch is retired only after a later real UI pass
+/// replaces that input. This covers our raw-input handoff/replay, not arbitrary widget storage.
+#[derive(Default)]
+pub(crate) struct ControlInputResources {
+    pub(crate) current: Vec<RequestGate>,
+    pub(crate) replaced: Vec<RequestGate>,
+    pub(crate) pass: Option<u64>,
 }
 
 /// The whole FigCraft UI.
@@ -904,6 +916,8 @@ pub struct FigApp {
     pub(crate) applied_acks: Vec<PendingAck>,
     /// The batch taken into this frame's raw input, kept so a discarded pass gives it back.
     pub(crate) applied_input: Option<Vec<egui::Event>>,
+    /// Resource owners for each viewport's current raw input and the input being replaced.
+    pub(crate) control_input_resources: std::collections::HashMap<egui::ViewportId, ControlInputResources>,
     /// `handle("ui.input")` queued raw events whose acknowledgement waits for the applied pass
     /// (controller-only input is applied at once and needs no fence).
     pub(crate) control_input_queued: bool,
@@ -956,3 +970,6 @@ mod ui_accent_tests;
 
 #[cfg(test)]
 mod pixel_grid_ui_tests;
+
+#[cfg(test)]
+mod text_font_handle_tests;

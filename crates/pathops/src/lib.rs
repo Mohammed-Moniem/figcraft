@@ -26,6 +26,7 @@ mod ops_tests;
 mod points;
 #[cfg(test)]
 mod rounded_side_strokes_tests;
+mod rounding;
 #[cfg(test)]
 mod sides_tests;
 pub mod width;
@@ -36,6 +37,7 @@ use figcraft_doc::{BoolOp, StrokeAlign, StrokeCap, StrokeJoin, StrokeProps, Vect
 use figcraft_geom::kurbo::{self, BezPath, Cap, Join, PathEl, PathSeg, Point, Shape, Vec2};
 
 pub use budget::{Complexity, FoldBudget, MAX_CROSSINGS, MAX_FOLD_SEGMENTS, MAX_SEGMENTS, complexity};
+pub use rounding::round_boolean_result;
 
 #[derive(Debug, PartialEq)]
 pub enum PathOpsError {

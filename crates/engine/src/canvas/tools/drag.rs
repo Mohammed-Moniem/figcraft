@@ -49,6 +49,11 @@ impl Session {
             self.tool.overlay.shape = shape_hint(&doc, id, handle, ev.zoom);
             return Ok(());
         }
+        if let Some(start) = self.text_font_start(ev) {
+            self.begin_interaction("Font size")?;
+            self.tool.gesture = Gesture::TextFontSize { start: Box::new(start), moved: false };
+            return Ok(());
+        }
         if let Some(h) = handle_at(&doc, &sel, ev.p(), ev.zoom).filter(|_| edits) {
             let ids = roots(&doc, &sel);
             if let Handle::Rotate(_) = h {
@@ -254,6 +259,7 @@ impl Session {
                 Ok(())
             }
             Gesture::Move { start, moved: false, .. } | Gesture::Resize { start, moved: false, .. } if within_slop(ev, *start) => Ok(()),
+            Gesture::TextFontSize { start, moved: false } if within_slop(ev, start.point) => Ok(()),
             Gesture::Move { start, ids, targets, duplicate, .. } => {
                 let (d, guides) = self.snapped_move(ev, *start, targets);
                 let ids = ids.clone();
@@ -376,6 +382,11 @@ impl Session {
                 if self.refused(&self.selection(), false) {
                     self.tool.overlay.cursor = Cursor::NotAllowed;
                 }
+                return res;
+            }
+            Gesture::TextFontSize { start, .. } => {
+                let res = self.text_font_drag(ev, start);
+                self.tool.gesture = Gesture::TextFontSize { start: start.clone(), moved: true };
                 return res;
             }
             Gesture::Rotate { center, start_angle, ids } => {

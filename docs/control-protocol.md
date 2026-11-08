@@ -32,13 +32,36 @@ that is not JSON gets `{"id": null, "ok": false, "error": "bad JSON: …"}` and 
 HTTP request a web page makes the browser send here never runs). The implementation is in
 `crates/ui-egui/src/control.rs` (methods) and `apps/figcraft/src/control_server.rs` (socket).
 
-A request line is limited to **32 MiB before the newline**, including whitespace. The reader stops
-at the first excess byte, replies `{"id": null, "ok": false, "error": "message too large"}`, then
-closes the connection without consuming the rest of the frame. The server accepts at most **8
-active connections**; additional connections are closed immediately. Socket reads and writes each
-have a **60 s inactivity timeout**, so idle clients and clients that stop reading release their
-worker. This bounds blocked socket operations, not the total duration of a frame arriving slowly.
-Clients can reconnect after an idle timeout (the attached MCP backend already does).
+A request line is limited to **4 MiB before the newline**, including whitespace. Oversized input
+gets `{"id": null, "ok": false, "error": "message too large"}` and the connection closes. The server
+admits at most **8 workers per listener**; additional peers wait in the OS listen backlog until
+capacity becomes free. Authentication retains its separate absolute two-second deadline. Reading
+each subsequent frame has an **absolute 60 s deadline**, including a frame arriving slowly;
+socket writes retain their **60 s inactivity timeout**. Clients can reconnect after a timeout.
+
+All native control sessions and listener generations share a **64 MiB ingress admission budget**.
+Raw buffer capacity, including old/new overlap during growth, is reserved before allocation. An
+allocation-free lexical scan then reserves an expansion envelope before JSON parsing: 4096 bytes
+per string/key, scalar or opened container, plus twelve times the wire bytes and 4096 bytes of
+fixed overhead. This deliberately conservative policy charges duplicate/unknown fields too and
+refuses deeply nested or structurally dense input before serde expands it. Consequently a frame
+below 4 MiB can still be refused with `"control memory budget exhausted"`.
+
+Reservations follow real queued, running, screenshot, delayed input and reply owners through
+transport timeout; completing a gate alone does not refund its payload. Refusal sends a complete
+small JSON line and closes without dispatching the frame; unread input is discarded only within
+the existing 4096-byte/50 ms cleanup bounds. After owners release capacity, clients may reconnect
+and retry. Prefer file paths over embedding large documents in requests. This is a conservative
+ingress allocation envelope, **not a process RSS cap**: fixed worker/socket buffers, allocator
+metadata, command output, document state and engine journals are separate.
+
+Cancelled native queue entries are reaped before new frame admission and after a reply wait, so
+recovery does not require a UI tick or another successful parse. Pruning an expired sender reports
+its deadline; explicit cancellation reports that the request was not applied. Native app teardown
+stops the control transport before clearing queued input and retained egui input vectors.
+The attached CLI/MCP backend discards an explicitly refused null-ID connection immediately, even
+when FIN has not arrived yet. It reconnects for the caller's next request and never replays the
+refused request; ordinary numeric-ID UI errors keep their existing connection.
 Replies have no size limit on the app's side. The attached MCP backend reads them up to **512 MiB
 before the newline** and drops the connection on a longer one (see [MCP server](mcp.md)).
 

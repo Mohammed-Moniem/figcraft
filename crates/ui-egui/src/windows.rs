@@ -153,6 +153,12 @@ pub fn guard(app: &mut FigApp, ctx: &Context, f: impl FnOnce(&mut FigApp)) {
 /// Control-channel input events (`ui.input`) for the window `viewport` draws next. A batch queued
 /// for another document is dropped rather than replayed into the new one.
 pub fn take_input(app: &mut FigApp, viewport_id: ViewportId) -> Vec<egui::Event> {
+    if let Some(resources) = app.control_input_resources.get_mut(&viewport_id) {
+        // The raw-input hook precedes egui's begin_pass. Keep the old input charged until the
+        // real UI pass has replaced it; an empty hook alone does not release that storage.
+        resources.replaced.append(&mut resources.current);
+        resources.pass = None;
+    }
     let (mut events, tagged, current) = match app.windows.list.iter_mut().find(|w| viewport(w.id) == viewport_id) {
         Some(w) => {
             let events = std::mem::take(&mut w.pane.control_input);
@@ -171,6 +177,7 @@ pub fn take_input(app: &mut FigApp, viewport_id: ViewportId) -> Vec<egui::Event>
     if !events.is_empty() && tagged != current {
         // The file changed before the batch reached a frame: say so once instead of replaying it
         // into the new document. Only this window's own acknowledgements belong to the batch.
+        drop(events);
         fail_input_acks(app, viewport_id);
         return Vec::new();
     }
@@ -178,6 +185,11 @@ pub fn take_input(app: &mut FigApp, viewport_id: ViewportId) -> Vec<egui::Event>
         // The frame that applies these must not read or replace the user's system clipboard.
         app.control_synthetic = true;
         let acks = app.take_input_acks(viewport_id);
+        for ack in &acks {
+            if ack.state.retains_resource() {
+                app.control_input_resources.entry(viewport_id).or_default().current.push(ack.state.clone());
+            }
+        }
         app.applied_acks.extend(acks);
         app.applied_input = Some(events.clone());
         app.applied_frame = Some(viewport_id);
@@ -208,11 +220,83 @@ pub(crate) fn fail_input_acks(app: &mut FigApp, viewport: ViewportId) {
         if ack.viewport == viewport {
             let _ =
                 ack.tx.send(crate::ControlReply { id: ack.reply.id, result: Err("the document changed before the input could be applied".into()) });
+            drop(ack.state);
         } else {
             kept.push(ack);
         }
     }
     app.input_acks = kept;
+}
+
+/// A closed viewport cannot consume another raw-input hook. Drop its retained event strings
+/// before releasing their resources, and settle acknowledgements that can no longer present.
+fn forget_control_input(app: &mut FigApp, ctx: &Context, viewport: ViewportId) {
+    // A pane may still be present when this helper is called. Its queued/replayed text must go
+    // before acknowledgements release the resource that paid for those strings.
+    if viewport == self::viewport(app.windows.current) {
+        app.control_input = Vec::new();
+        app.control_input_doc = None;
+    }
+    for window in &mut app.windows.list {
+        if self::viewport(window.id) == viewport {
+            window.pane.control_input = Vec::new();
+            window.pane.control_input_doc = None;
+        }
+    }
+    if app.control_input_resources.contains_key(&viewport) {
+        ctx.input_mut_for(viewport, |input| {
+            input.raw.events = Vec::new();
+            input.events = Vec::new();
+        });
+    }
+    if app.applied_frame == Some(viewport) {
+        app.applied_input = None;
+        app.applied_frame = None;
+        app.control_synthetic = false;
+    }
+    fail_input_acks(app, viewport);
+    let mut kept = Vec::new();
+    for ack in app.applied_acks.drain(..) {
+        if ack.viewport == viewport {
+            let _ =
+                ack.tx.send(crate::ControlReply { id: ack.reply.id, result: Err("the window closed before the input could be presented".into()) });
+            drop(ack.state);
+        } else {
+            kept.push(ack);
+        }
+    }
+    app.applied_acks = kept;
+    app.control_input_resources.remove(&viewport);
+}
+
+/// Teardown is different from a normal frame: no future hook will replace the Context's input.
+/// Drop every app-owned event copy before the final resource-bearing gates/acknowledgements.
+pub(crate) fn release_control_input_resources(app: &mut FigApp) {
+    app.control_input = Vec::new();
+    app.control_input_doc = None;
+    for window in &mut app.windows.list {
+        window.pane.control_input = Vec::new();
+        window.pane.control_input_doc = None;
+    }
+    app.applied_input = None;
+    if let Some(ctx) = &app.ui_context {
+        for viewport in app.control_input_resources.keys() {
+            ctx.input_mut_for(*viewport, |input| {
+                input.raw.events = Vec::new();
+                input.events = Vec::new();
+            });
+        }
+    }
+    app.applied_frame = None;
+    app.control_input_queued = false;
+    app.control_synthetic = false;
+    for request in &app.control_queue {
+        request.state.cancel_if_open();
+    }
+    app.control_queue = Vec::new();
+    app.input_acks = Vec::new();
+    app.applied_acks = Vec::new();
+    app.control_input_resources = Default::default();
 }
 
 fn title_of(ds: Option<&DocState>) -> String {
@@ -586,11 +670,20 @@ pub(crate) fn begin(app: &mut FigApp, ctx: &Context) {
         if id != 0 {
             app.ime.end_viewport(viewport(id));
             app.windows.list.retain(|w| w.id != id);
+            forget_control_input(app, ctx, viewport(id));
             continue;
         }
         // The main window takes over another window: its files, panels and place on screen.
         let mut w = app.windows.list.remove(0);
         exchange(app, &mut w.pane);
+        // The main window takes the child's queued batch with its pane. Its acknowledgement now
+        // belongs to the root viewport, while the closed child's previous raw input is discarded.
+        for ack in &mut app.input_acks {
+            if ack.viewport == viewport(w.id) {
+                ack.viewport = ViewportId::ROOT;
+            }
+        }
+        forget_control_input(app, ctx, viewport(w.id));
         if let Some(p) = w.geo.pos {
             ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::OuterPosition(p / ctx.zoom_factor()));
         }
@@ -609,6 +702,7 @@ pub(crate) fn begin(app: &mut FigApp, ctx: &Context) {
             // A window left without files is closed: forget its IME context so a later window
             // reusing the viewport identity starts a fresh generation.
             app.ime.end_viewport(viewport(id));
+            forget_control_input(app, ctx, viewport(id));
         }
     }
     if !app.windows.exists(app.windows.focused) {
@@ -752,6 +846,7 @@ pub(crate) fn as_window<R>(app: &mut FigApp, id: u64, f: impl FnOnce(&mut FigApp
 /// One frame of window `id`, with its state swapped in.
 fn draw(app: &mut FigApp, id: u64, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
+    app.ui_context = Some(ctx.clone());
     let files_before = app.session.docs.len();
     let prefs = app.session.prefs.clone();
     let Some(e) = enter(app, id) else { return };
@@ -765,6 +860,7 @@ fn draw(app: &mut FigApp, id: u64, ui: &mut egui::Ui) {
     // per viewport: `App::ui` only runs for the root, so the child does it here.
     // Within the swap, so a panic leaves every window its own state.
     guard(app, &ctx, |app| {
+        app.release_replaced_input_resources(&ctx);
         app.viewport_setup(&ctx);
         app.frame(ui)
     });

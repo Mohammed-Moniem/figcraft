@@ -79,7 +79,10 @@ impl Session {
             return Ok(());
         }
         // The second press began a move, a resize, a shape or a marquee: a double-click isn't one.
-        if matches!(self.tool.gesture, Gesture::Move { .. } | Gesture::Resize { .. } | Gesture::Draw { .. } | Gesture::Marquee { .. }) {
+        if matches!(
+            self.tool.gesture,
+            Gesture::Move { .. } | Gesture::Resize { .. } | Gesture::TextFontSize { .. } | Gesture::Draw { .. } | Gesture::Marquee { .. }
+        ) {
             self.tool.gesture = Gesture::None;
             self.tool.overlay.marquee = None;
             self.cancel_interaction()?;

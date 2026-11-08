@@ -13,7 +13,8 @@ impl FigApp {
         if !self.control_input.is_empty() && self.control_input_doc != doc {
             // A queued batch belongs to the file that was open when it was injected; it cannot be
             // merged with one for the file showing now. Its acknowledgement says so.
-            self.control_input.clear();
+            // Release the old event allocation before its acknowledgement refunds admission.
+            self.control_input = Vec::new();
             let viewport = crate::windows::viewport(self.windows.current);
             crate::windows::fail_input_acks(self, viewport);
         }

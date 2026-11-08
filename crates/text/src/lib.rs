@@ -162,6 +162,8 @@ mod behaviour_tests;
 #[cfg(test)]
 mod cache_tests;
 #[cfg(test)]
+mod cjk_justify_tests;
+#[cfg(test)]
 mod layout_dedupe_tests;
 #[cfg(test)]
 mod line_separator_tests;

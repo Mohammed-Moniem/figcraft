@@ -337,7 +337,11 @@ fn node_outline_at(doc: &Document, n: &Node, depth: usize) -> Option<(BezPath, F
                 })
                 .collect();
             // Past the path operations' caps the group has no outline: it draws without its result.
-            crate::boolean::fold_cached(&operands).map(|p| (p, FillRule::EvenOdd))
+            let path = crate::boolean::fold_cached(&operands)?;
+            let radius = n.corners.uniform().filter(|radius| radius.is_finite() && *radius > 0.0).unwrap_or(0.0);
+            // Default zero stays on the original path without a descendant walk or rounding.
+            let path = if radius > 0.0 && doc.has_corner_radius(n.id) { crate::boolean::rounded_cached(&path, radius)? } else { path };
+            Some((path, FillRule::EvenOdd))
         }
         NodeKind::Text(_) => {
             let (l, dy) = figcraft_text::layout_node(n)?;

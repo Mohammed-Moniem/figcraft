@@ -370,6 +370,15 @@ pub(super) fn paste_props(s: &mut Session, p: &Value) -> Result<Value> {
         if !doc.get(i)?.kind.has_corner_radius() {
             m.remove("cornerRadius");
             m.remove("cornerSmoothing");
+        } else if matches!(doc.get(i)?.kind, NodeKind::BooleanOp { .. }) {
+            // A Boolean has one result radius. Unsupported independent corners must not
+            // prevent the rest of the copied appearance from being pasted, as before.
+            let independent =
+                m.get("cornerRadius").and_then(Value::as_array).is_some_and(|radii| radii.windows(2).any(|pair| pair.first() != pair.last()));
+            if independent || !doc.has_corner_radius(i) {
+                m.remove("cornerRadius");
+            }
+            m.remove("cornerSmoothing");
         }
         crate::cmd::props::apply("edit.pasteProperties", doc, i, &m)?;
     }

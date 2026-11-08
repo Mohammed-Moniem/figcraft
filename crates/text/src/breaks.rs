@@ -87,6 +87,12 @@ pub(crate) fn break_between(a: char, b: char, keep_all: bool) -> bool {
     }
 }
 
+/// An inter-character justification opportunity. Spaces already receive their own expansion;
+/// a CJK pair follows the same punctuation and KeepAll policy as line breaking.
+pub(crate) fn cjk_justify_opportunity(a: char, b: char, keep_all: bool) -> bool {
+    !is_space(a) && !is_space(b) && (class(a) == Class::Ideo || class(b) == Class::Ideo) && break_between(a, b, keep_all)
+}
+
 /// Whether char `c` is a breakable space (it hangs at a line's end and doesn't count for its width).
 pub(crate) fn is_space(c: char) -> bool {
     class(c) == Class::Space

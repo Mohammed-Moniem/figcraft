@@ -269,6 +269,87 @@ impl Item {
     }
 }
 
+/// Extra character gaps before logical items, with their neutral bidi levels. Every cluster
+/// stays whole, including a cluster shaped into several glyphs or split across rich styles.
+fn character_gap_levels(items: &[Item], cluster_start: &[bool], keep_all: bool) -> Vec<Option<u8>> {
+    let mut gaps = vec![None; items.len()];
+    let mut previous: Option<(&Item, char)> = None;
+    for (k, item) in items.iter().enumerate() {
+        // Direction controls change ordering, never the number of typographic characters.
+        if matches!(item.ch, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}') {
+            continue;
+        }
+        let starts = cluster_start.get(item.char_start).copied().unwrap_or(false);
+        let base = if starts { item.ch } else { previous.map_or(item.ch, |(_, base)| base) };
+        if let Some((before, before_base)) = previous
+            && starts
+            && before.char_end <= item.char_start
+            && crate::breaks::cjk_justify_opportunity(before_base, base, keep_all)
+            && let Some(slot) = gaps.get_mut(k)
+        {
+            // A neutral separator is outside either neighbor's deeper directional embedding.
+            *slot = Some(before.level.min(item.level));
+        }
+        previous = Some((item, base));
+    }
+    gaps
+}
+
+/// Place already-shaped items; extra neutral slots are only needed by expanding CJK lines.
+fn place_line_glyphs(
+    glyphs: &mut Vec<Glyph>,
+    styles: &[TextStyle],
+    items: &[Item],
+    pen: &mut f64,
+    baseline: f64,
+    extra: f64,
+    character_gaps: &[Option<u8>],
+    level: impl Fn(usize, &Item) -> u8,
+    has_bidi: bool,
+) {
+    let mut place = |it: &Item, pen: &mut f64| {
+        if is_line_break(it.ch) {
+            return;
+        }
+        glyphs.extend(glyph_at(styles, it, *pen, baseline));
+        *pen += it.adv;
+        if it.stretches() {
+            *pen += extra;
+        }
+    };
+    if character_gaps.iter().any(Option::is_some) && extra > 0.0 {
+        // Even slots are glyph items, odd slots their intervening neutral separators. L2
+        // reorders both together, so a gap never lands inside a reversed or nested word.
+        let mut levels = Vec::with_capacity(items.len().saturating_mul(2));
+        for (k, it) in items.iter().enumerate() {
+            if let Some(before) = k.checked_sub(1).and_then(|i| items.get(i)) {
+                let neutral = character_gaps.get(k).copied().flatten().unwrap_or_else(|| level(k - 1, before).min(level(k, it)));
+                levels.push(neutral);
+            }
+            levels.push(level(k, it));
+        }
+        for slot in visual_order(&levels) {
+            if slot % 2 == 0 {
+                if let Some(it) = items.get(slot / 2) {
+                    place(it, pen);
+                }
+            } else if character_gaps.get(slot / 2 + 1).is_some_and(Option::is_some) {
+                *pen += extra;
+            }
+        }
+    } else {
+        let order: Vec<usize> = if has_bidi {
+            let levels: Vec<u8> = items.iter().enumerate().map(|(k, it)| level(k, it)).collect();
+            visual_order(&levels)
+        } else {
+            (0..items.len()).collect()
+        };
+        for it in order.iter().filter_map(|k| items.get(*k)) {
+            place(it, pen);
+        }
+    }
+}
+
 /// Bidi embedding levels per char, and whether each char's paragraph runs right to left.
 pub(crate) struct Bidi {
     pub(crate) levels: Vec<u8>,
@@ -1283,7 +1364,14 @@ fn layout_live(text: &TextData, box_width: Option<f64>, box_height: Option<f64>)
             items.get(vis_end.wrapping_sub(1)).filter(|it| hang_end && !rtl_line && vis_end > *s + 1 && closes(it.ch)).map_or(0.0, |it| it.adv);
         let gstart = out.glyphs.len();
         // Justify: extra space per gap.
-        let gaps = items.get(*s..vis_end).unwrap_or(&[]).iter().filter(|it| it.stretches()).count();
+        let visible = items.get(*s..vis_end).unwrap_or(&[]);
+        let character_gaps = if text.align_h == TextAlignH::Justified && wrap.is_some() && !para_end && !line_break_after(&items, *e) {
+            character_gap_levels(visible, &cluster_start, policy.keep_all)
+        } else {
+            Vec::new()
+        };
+        let character_count = character_gaps.iter().filter(|gap| gap.is_some()).count();
+        let gaps = visible.iter().filter(|it| it.stretches()).count() + character_count;
         let justify_extra = match (text.align_h, wrap) {
             (TextAlignH::Justified, Some(maxw)) if !para_end && !line_break_after(&items, *e) && gaps > 0 => {
                 ((maxw - line_indent + hang_l + hang_r - width) / gaps as f64).max(0.0)
@@ -1366,23 +1454,8 @@ fn layout_live(text: &TextData, box_width: Option<f64>, box_height: Option<f64>)
         // Right-to-left runs are placed in visual order; trailing spaces take the paragraph's
         // direction (rule L1).
         let line_items = items.get(*s..*e).unwrap_or(&[]);
-        let order: Vec<usize> = if bidi.is_some() {
-            let para_level = u8::from(rtl_line);
-            let levels: Vec<u8> = line_items.iter().enumerate().map(|(k, it)| if *s + k >= vis_end { para_level } else { it.level }).collect();
-            visual_order(&levels)
-        } else {
-            (0..line_items.len()).collect()
-        };
-        for it in order.iter().filter_map(|k| line_items.get(*k)) {
-            if is_line_break(it.ch) {
-                continue;
-            }
-            out.glyphs.extend(glyph_at(&styles, it, pen, baseline));
-            pen += it.adv;
-            if it.stretches() {
-                pen += justify_extra;
-            }
-        }
+        let level = |k: usize, it: &Item| if *s + k >= vis_end { u8::from(rtl_line) } else { it.level };
+        place_line_glyphs(&mut out.glyphs, &styles, line_items, &mut pen, baseline, justify_extra, &character_gaps, level, bidi.is_some());
         let char_start = items.get(*s).map(|it| it.char_start).unwrap_or_else(|| chars.len());
         let char_end = items.get(e.saturating_sub(1)).map(|it| it.char_end).unwrap_or(char_start).max(char_start);
         out.lines.push(Line {

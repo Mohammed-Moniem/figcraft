@@ -13,6 +13,7 @@ pub mod board;
 mod board_route;
 pub mod colors;
 pub mod comments;
+mod corner_eligibility;
 pub mod design_review;
 pub mod facilitation;
 pub mod geometry;

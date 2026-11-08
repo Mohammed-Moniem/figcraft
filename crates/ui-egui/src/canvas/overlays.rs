@@ -345,6 +345,9 @@ fn selection_overlay(
         if let Some(hint) = scale {
             label = format!("{label} · {}x", fmt(hint.factor.abs()));
         }
+        if let Some(factor) = app.session.tool.overlay.text_font_scale {
+            label = format!("{} · {}x", tr("Font size"), fmt(factor));
+        }
         // A layer smaller than its handles on screen shows just its outline (they still answer
         // just outside it).
         let tiny = figcraft_engine::tools::box_sides_px(&b, zoom).1 < figcraft_engine::tools::SMALL_BOX_PX;
@@ -372,6 +375,15 @@ fn selection_overlay(
             handles,
             (!measuring && connector.is_none()).then_some(label),
         );
+        if !measuring
+            && !cropping
+            && painter.ctx().input(|i| i.modifiers.is_none())
+            && let Some(handle) = app.session.text_font_handle()
+        {
+            let c = app.to_screen(handle.at[0], handle.at[1]);
+            painter.circle_filled(c, 4.0, Color32::WHITE);
+            painter.circle_stroke(c, 4.0, stroke(col, 1.5));
+        }
         // Its path handles, one for each portion that can be dragged.
         let paths = if app.session.tool.dev_mode { Vec::new() } else { figcraft_engine::board::selected_connector_handles(doc, sel, zoom) };
         for (_, at) in paths {

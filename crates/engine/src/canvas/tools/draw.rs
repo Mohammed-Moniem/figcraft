@@ -117,6 +117,7 @@ impl Session {
         self.tool.overlay.marquee = None;
         self.tool.overlay.guides.clear();
         self.tool.overlay.scale = None;
+        self.tool.overlay.text_font_scale = None;
         self.tool.overlay.arc = None;
         self.tool.overlay.shape = None;
         self.tool.overlay.measure_box = None;
@@ -183,7 +184,7 @@ impl Session {
                     }
                 }
             }
-            Gesture::Resize { .. } | Gesture::Rotate { .. } | Gesture::Arc { .. } | Gesture::Shape { .. } => {
+            Gesture::Resize { .. } | Gesture::TextFontSize { .. } | Gesture::Rotate { .. } | Gesture::Arc { .. } | Gesture::Shape { .. } => {
                 // Layers inside an instance keep their main's size and rotation.
                 if self.refused(&self.selection(), false) {
                     self.cancel_interaction()?;

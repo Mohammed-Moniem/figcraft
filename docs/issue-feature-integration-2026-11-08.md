@@ -81,8 +81,9 @@ the 185 open bugs and feature requests, close upstream issues, or establish whol
   Curved connectors also preserve exactly two valid ordered parent-space cubic handles, with
   bounded coordinates/tangents/transforms and saved-vector precedence. Optional axis semantics
   remain unclaimed. The curve follow-up passed 661 unit and four integration format tests with
-  two existing ignored tests, strict affected Clippy and formatting; matching native acceptance
-  remains pending. Imported paths remain editable vectors rather than live Board attachments.
+  two existing ignored tests, strict affected Clippy and formatting. A subsequent matching native
+  build preserved the original elbow and saved cubic through archive/reopen, with viewed app and
+  export captures. Imported paths remain editable vectors rather than live Board attachments.
 - [#1916](https://github.com/storytold/figcraft/issues/1916): native automatic Board connector
   centerlines start four page units outside the attachment border. Manual endpoints remain exact.
   Native file loading settles derived paths before the clean baseline; authoritative live and
@@ -148,11 +149,40 @@ the 185 open bugs and feature requests, close upstream issues, or establish whol
   three added command/actual-field controls pass in the complete isolated UI suite: 1,542 passed,
   no failures and one existing ignored test, with strict UI quality checks. The save service retains
   its existing error policy; this establishes no stronger disk-durability guarantee.
+- [#2015](https://github.com/storytold/figcraft/issues/2015): [prototype edge panning](prototype-edge-pan.md)
+  keeps an owned connection drag moving toward an offscreen target while the pointer is held
+  inside the unoccluded canvas edge. Camera motion alone does not edit the document. Escape,
+  lost focus and changed document/page/source ownership retire it; a valid drop remains one Undo.
+  Seven actual egui controls and the complete isolated UI suite pass, including stationary holds,
+  zoom/direction controls and touch-style release. Matching app acceptance remains pending.
+- [#1970](https://github.com/storytold/figcraft/issues/1970): scoped CJK inter-character
+  justification preserves glyphs and advances while distributing eligible visual gaps. Mixed and
+  nested-direction words, punctuation, KeepAll, whitespace and grapheme controls are covered.
+  All 178 isolated text tests and strict affected quality checks pass with pinned fonts.
+  This does not establish complete Unicode/CSS behavior or another editor's numerical parity.
+- [#1563](https://github.com/storytold/figcraft/issues/1563): the text font-size handle changes
+  a selected plain text layer's size from its local axis in Move mode, including rotation and zoom.
+  Supported pixel line height scales proportionally; Auto and percentage values retain their mode.
+  Existing box/parent-layout constraints, one-step Undo and Escape are preserved. Isolated engine
+  and actual egui controls pass; matching app pointer and visual acceptance remains pending.
+- [#978](https://github.com/storytold/figcraft/issues/978): [uniform live Boolean-result radius](boolean-radius.md)
+  rounds an eligible computed result while retaining editable operands, holes, hit testing and
+  raster/SVG/PDF output. Native and experimental `.fig` roundtrips retain the radius. Appearance
+  paste keeps supported paints/effects when independent corners are unsupported. Penpot export
+  explicitly warns that it omits result rounding. Seventeen final-source workflows, strict affected
+  checks and layers pass; prior full affected and UI checks retain their earlier source identity.
+  Independent corners, smoothing and arbitrary bounding-box handles remain outside this scope.
 
 The combined source also reconciles the other local development line's frozen ownership, touch,
 control-session, project-backup, pure-query, document teardown and capture-progress repairs. An
 updater modal also owns its opening-frame keys before ordinary canvas/text and deferred Save
 dispatch; its separate lifecycle tests protect uncommitted fields and editor resume.
+The #1111 follow-up also adds bounded shared ingress admission and resource ownership across
+queued/running native control, input, screenshots and replies. Its 4 MiB frame and conservative
+64 MiB logical accounting envelope are not process-memory, document or export-size guarantees.
+Absolute frame deadlines, cancellation, teardown and truthful terminal refusal/reconnect controls
+are covered. The original line passed its full check and scoped native recovery acceptance;
+their receipts retain that producer's identity. This merge needs its own combined validation.
 Those checks retain their original scope;
 the feature merge requires fresh combined validation. A first attempt passed formatting and
 workspace Clippy but exposed three native Cut regressions. Six focused tests pass after the
@@ -197,8 +227,14 @@ control query. This retains its exact source identity and establishes neither ph
 nor native acceptance. The first whole-source attempt failed on local socket permission; the
 unchanged loopback-enabled rerun passed formatting and strict workspace Clippy and recorded 6,120
 named test passes, two name-save assertion failures and 25 ignored tests before stopping. Both
-failures reproduced the duplicate write described above. The latest curve, guide, menu, name-save
-and test merges require a fresh whole-source check and matching native/browser acceptance.
+failures reproduced the duplicate write described above. The subsequent curve, guide, menu and
+name-save source passed a complete combined check: 6,294 named passing records, no failures and
+27 existing ignored tests. Matching macOS ARM64 native runs passed saved connectors and actual
+menu/name input with viewed captures; the browser passed 30 scoped assertions and 36 captures,
+with no page/console errors or external network attempts. These are recorded for that exact earlier
+source. Its optimized WASM artifact still exceeded the historical 24 MiB budget; that gate remains
+failed. The subsequently merged parent admission, edge-pan, CJK, font-handle and Boolean changes
+require a fresh whole-source check and matching app acceptance; earlier results do not qualify them.
 
 The earlier local issue milestone passed a full check with 5,831 named pass records, 27 ignored
 tests, WASM checks and plugin build/smoke checks, plus scoped native synthetic visual acceptance

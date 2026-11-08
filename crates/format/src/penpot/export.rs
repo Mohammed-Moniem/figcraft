@@ -721,10 +721,20 @@ impl<'a> Exporter<'a> {
         }
     }
 
+    fn warn_boolean_radius(&mut self, id: NodeId, node: &Node) {
+        if matches!(node.kind, NodeKind::BooleanOp { .. })
+            && node.corners.uniform().is_some_and(|radius| radius.is_finite() && radius > 0.0)
+            && self.doc.has_corner_radius(id)
+        {
+            self.warn("Boolean result corner radii are not exported to Penpot; Boolean operands remain editable without result rounding");
+        }
+    }
+
     fn shape(&mut self, id: NodeId, parent: &str, frame: &str, page_id: &str, objects: &mut Vec<(String, Value)>) -> Option<String> {
         let node = self.node(id)?;
         let pid = self.ids.get(&id)?.clone();
         let typ = penpot_type(node)?;
+        self.warn_boolean_radius(id, node);
         let world = self.doc.world_transform(id);
         let (w, h) = (node.width.max(0.01), node.height.max(0.01));
         let [a, b, c, d, ..] = world.as_coeffs();

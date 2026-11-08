@@ -256,6 +256,11 @@ impl Backend for Attached {
         if v.get("ok").and_then(Value::as_bool) == Some(true) {
             Ok(v.get("result").cloned().unwrap_or(Value::Null))
         } else {
+            // A preparse refusal closes the connection without echoing our numeric ID. Drop it
+            // before the next call can race FIN; the refused request is never replayed.
+            if v.get("id").is_some_and(Value::is_null) && v.get("ok").and_then(Value::as_bool) == Some(false) {
+                self.conn = None;
+            }
             Err(v.get("error").and_then(Value::as_str).unwrap_or("unknown error").to_string())
         }
     }

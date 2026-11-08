@@ -184,3 +184,101 @@ fn polygons_and_stars_take_corner_smoothing() {
         assert_eq!(u.app.session.undo_depth().0, history + 1, "{cmd}: one undo step");
     }
 }
+
+fn boolean_radius_frames(ui: &mut Ui, count: usize) {
+    for _ in 0..count {
+        ui.frame(vec![]);
+    }
+}
+
+fn boolean_radius_ui_scene(ellipse_only: bool) -> (Ui, NodeId, [NodeId; 2]) {
+    let mut s = Session::new();
+    let command = if ellipse_only { "shape.ellipse" } else { "shape.rectangle" };
+    let bottom = NodeId(s.execute(command, &json!({"x":20,"y":20,"width":120,"height":100})).unwrap()["id"].as_u64().unwrap());
+    let cut = NodeId(s.execute(command, &json!({"x":90,"y":70,"width":70,"height":70})).unwrap()["id"].as_u64().unwrap());
+    let group = NodeId(s.execute("bool.subtract", &json!({"ids":[bottom,cut]})).unwrap()["id"].as_u64().unwrap());
+    s.execute("select.set", &json!({"ids":[group]})).unwrap();
+    let mut ui = Ui::new(s);
+    ui.ctx.enable_accesskit();
+    boolean_radius_frames(&mut ui, 4);
+    (ui, group, [bottom, cut])
+}
+
+#[test]
+fn boolean_radius_ui_exposes_a_uniform_field_and_commits_without_flattening() {
+    let (mut ui, group, children) = boolean_radius_ui_scene(false);
+    let output = ui.frame_output(vec![]);
+    let nodes = output.platform_output.accesskit_update.unwrap().nodes;
+    let field = nodes.iter().map(|(_, node)| node).find(|node| node.role() == Role::SpinButton && node.label() == Some("Corner radius"));
+    let field = field.expect("a rectangle-containing live Boolean exposes its uniform radius field");
+    let bounds = field.bounds().unwrap();
+    let at = pos2(((bounds.x0 + bounds.x1) / 2.0) as f32, ((bounds.y0 + bounds.y1) / 2.0) as f32);
+    assert!(ui.ctx.content_rect().contains(at), "field must be reachable in the real panel");
+    assert!(!nodes.iter().any(|(_, n)| n.role() == Role::Button && matches!(n.label(), Some("Individual corners" | "Corner smoothing"))));
+    let original = ui.app.session.doc().unwrap().clone();
+    let history = ui.app.session.undo_depth().0;
+    click(&mut ui, at);
+    ui.frame(vec![Event::Text("12".into())]);
+    enter(&mut ui);
+    ui.frame(vec![]);
+    let doc = ui.app.session.doc().unwrap();
+    assert_eq!(doc.node(group).unwrap().corners.radii, [12.0; 4]);
+    assert!(matches!(doc.node(group).unwrap().kind, figcraft_doc::NodeKind::BooleanOp { .. }));
+    for child in children {
+        assert_eq!(doc.node(child), original.node(child));
+    }
+    assert_eq!(ui.app.session.undo_depth().0, history + 1);
+    ui.app.session.undo().unwrap();
+    assert_eq!(ui.app.session.doc().unwrap(), &original);
+}
+
+#[test]
+fn boolean_radius_ui_keeps_ellipse_only_controls_hidden() {
+    let (mut ui, _, _) = boolean_radius_ui_scene(true);
+    let output = ui.frame_output(vec![]);
+    let nodes = output.platform_output.accesskit_update.unwrap().nodes;
+    assert!(!nodes.iter().any(|(_, node)| node.role() == Role::SpinButton && node.label() == Some("Corner radius")));
+    assert!(!nodes.iter().any(|(_, n)| n.role() == Role::Button && matches!(n.label(), Some("Individual corners" | "Corner smoothing"))));
+}
+
+fn boolean_radius_field_point(ui: &mut Ui) -> Pos2 {
+    let output = ui.frame_output(vec![]);
+    let nodes = output.platform_output.accesskit_update.unwrap().nodes;
+    let field = nodes.iter().map(|(_, node)| node).find(|node| node.role() == Role::SpinButton && node.label() == Some("Corner radius")).unwrap();
+    let bounds = field.bounds().unwrap();
+    pos2(((bounds.x0 + bounds.x1) / 2.0) as f32, ((bounds.y0 + bounds.y1) / 2.0) as f32)
+}
+
+#[test]
+fn boolean_radius_ui_draft_retires_across_other_selections_and_a_hidden_interval() {
+    for hidden in [false, true] {
+        let (mut ui, group, _) = boolean_radius_ui_scene(false);
+        let a = NodeId(ui.app.session.execute("shape.rectangle", &json!({"x":300,"y":20,"width":120,"height":100})).unwrap()["id"].as_u64().unwrap());
+        let b = NodeId(ui.app.session.execute("shape.rectangle", &json!({"x":370,"y":70,"width":70,"height":70})).unwrap()["id"].as_u64().unwrap());
+        let other = NodeId(ui.app.session.execute("bool.subtract", &json!({"ids":[a,b]})).unwrap()["id"].as_u64().unwrap());
+        ui.app.session.execute("select.set", &json!({"ids":[group]})).unwrap();
+        boolean_radius_frames(&mut ui, 2);
+        let at = boolean_radius_field_point(&mut ui);
+        click(&mut ui, at);
+        ui.frame(vec![Event::Text("44".into())]);
+        assert_eq!(radii(&ui, group), [0.0; 4], "unfinished input is still a draft");
+        if hidden {
+            ui.app.session.execute("select.none", &json!({})).unwrap();
+        } else {
+            ui.app.session.execute("select.set", &json!({"ids":[other]})).unwrap();
+        }
+        boolean_radius_frames(&mut ui, 2);
+        ui.app.session.execute("select.set", &json!({"ids":[group]})).unwrap();
+        boolean_radius_frames(&mut ui, 2);
+        let doc = ui.app.session.doc().unwrap().clone();
+        let history = ui.app.session.undo_depth();
+        let at = boolean_radius_field_point(&mut ui);
+        click(&mut ui, at);
+        enter(&mut ui);
+        ui.frame(vec![]);
+        assert_eq!(radii(&ui, group), [0.0; 4], "the retired44 draft cannot be committed into a later opening");
+        assert_eq!(radii(&ui, other), [0.0; 4]);
+        assert_eq!(ui.app.session.doc().unwrap(), &doc);
+        assert_eq!(ui.app.session.undo_depth(), history);
+    }
+}

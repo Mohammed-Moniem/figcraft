@@ -227,6 +227,8 @@ impl Session {
         self.tool.overlay.shape_hover = shape_hover;
         if matches!(tool, ToolId::Move | ToolId::Scale) && on_edited {
             cursor = Cursor::Text;
+        } else if let Some(start) = self.text_font_start(ev) {
+            cursor = Cursor::Resize(start.angle);
         } else if matches!(tool, ToolId::Move | ToolId::Scale) && arc_hover.is_none() && shape_hover.is_none() {
             if let Some(h) = handle_at(&doc, &sel, ev.p(), ev.zoom).filter(|_| !self.tool.dev_mode) {
                 cursor = resize_cursor(&doc, &sel, h);

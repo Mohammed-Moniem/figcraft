@@ -72,6 +72,9 @@ pub enum RequestState {
 #[derive(Clone, Default)]
 pub struct RequestGate {
     state: Arc<Mutex<RequestStatus>>,
+    /// Payload ownership is separate from cancellation state: an idle transport's registry may
+    /// keep a cancellation handle after the last request/reply allocation has been released.
+    _resource: Option<Arc<dyn Send + Sync>>,
 }
 
 #[derive(Default)]
@@ -101,7 +104,26 @@ impl RequestGate {
     /// A monotonic admission deadline. Checked under the same lock as start/commit, so a paused
     /// browser's late timer cannot admit expired work after the page resumes.
     pub fn with_timeout(timeout: std::time::Duration) -> Self {
-        Self { state: Arc::new(Mutex::new(RequestStatus { state: RequestState::Open, deadline: Some((web_time::Instant::now(), timeout)) })) }
+        Self {
+            state: Arc::new(Mutex::new(RequestStatus { state: RequestState::Open, deadline: Some((web_time::Instant::now(), timeout)) })),
+            _resource: None,
+        }
+    }
+
+    /// Retain a transport-owned resource until every payload-owning gate clone is dropped.
+    /// Cancellation and replies settle work, but cannot release allocations still held by it.
+    pub fn with_timeout_and_resource(timeout: std::time::Duration, resource: Arc<dyn Send + Sync>) -> Self {
+        Self { _resource: Some(resource), ..Self::with_timeout(timeout) }
+    }
+
+    /// Share cancellation/deadline state without retaining this request's payload resource.
+    /// Long-lived cancellation registries must use this rather than an owning clone.
+    pub fn cancellation_handle(&self) -> Self {
+        Self { state: Arc::clone(&self.state), _resource: None }
+    }
+
+    pub(crate) fn retains_resource(&self) -> bool {
+        self._resource.is_some()
     }
 
     /// Whether this transport's wait elapsed, even when work already started and is not cancellable.
@@ -848,7 +870,7 @@ fn route_queued(app: &mut FigApp, ctx: &Context, viewport: egui::ViewportId, now
     if r.method == "ui.input" && std::mem::take(&mut app.control_input_queued) {
         // Acknowledge once the pass that applies the batch is presented, never from a sizing
         // pass whose input is thrown away.
-        app.input_acks.push(crate::PendingAck { viewport, tx: r.reply, reply: ControlReply { id: r.id, result: res } });
+        app.input_acks.push(crate::PendingAck { viewport, tx: r.reply, reply: ControlReply { id: r.id, result: res }, state: r.state });
     } else {
         let _ = r.reply.send(ControlReply { id: r.id, result: res });
     }
@@ -1579,15 +1601,16 @@ pub fn handle(app: &mut FigApp, ctx: &Context, method: &str, p: &Value) -> Resul
                 app.session.document_uid(target).map_err(|error| format!("CONTROL_DOCUMENT_CONFLICT: {error}"))?;
             }
             let cmd = p.get("command").and_then(Value::as_str).ok_or("`command` required")?;
-            let params = p.get("params").cloned().unwrap_or(json!({}));
+            let empty_params = json!({});
+            let params = p.get("params").unwrap_or(&empty_params);
             let layers_generation = app.session.clipboard.layers_generation;
             let mcp_before = (app.session.prefs.mcp_enabled, app.session.prefs.mcp_port);
             let agent = p.get("agent").and_then(Value::as_str);
             let r = in_document(app, p, |s| match expected {
-                Some((document, revision)) => s.execute_as_if_revision(agent, cmd, &params, document, revision).map_err(|e| e.to_string()),
-                None => s.execute_as(agent, cmd, &params).map_err(|e| e.to_string()),
+                Some((document, revision)) => s.execute_as_if_revision(agent, cmd, params, document, revision).map_err(|e| e.to_string()),
+                None => s.execute_as(agent, cmd, params).map_err(|e| e.to_string()),
             });
-            app.sync_mcp_preferences(mcp_before, cmd, &params, r.is_ok());
+            app.sync_mcp_preferences(mcp_before, cmd, params, r.is_ok());
             app.clear_comment_draft_after_tool_set(cmd, r.is_ok());
             app.invalidate_synthetic_copy(layers_generation);
             // Programmatic calls never open dialogs.

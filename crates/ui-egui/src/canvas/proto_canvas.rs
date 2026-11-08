@@ -12,12 +12,19 @@ use crate::{FigApp, RightTab};
 
 mod overlay_ghost;
 
+#[cfg(test)]
+mod edge_pan_tests;
+
 const HANDLE_R: f32 = 7.0;
 
 /// A connection being dragged out of a layer's handle.
 #[derive(Clone, Copy)]
 struct Drag {
     source: NodeId,
+    document: u64,
+    page: NodeId,
+    viewport: egui::ViewportId,
+    last_frame: u64,
     from: Pos2,
     pos: Pos2,
 }
@@ -150,6 +157,35 @@ fn plus_handle(painter: &egui::Painter, c: Pos2, hot: bool) {
     painter.line_segment([c - vec2(0.0, 3.5), c + vec2(0.0, 3.5)], Stroke::new(1.5, Color32::WHITE));
 }
 
+/// Move the camera only within the unobstructed canvas edge while its connection owns the press.
+/// Speed is in screen points, with a bounded frame step so a stalled frame cannot jump far.
+fn pan_connection(app: &mut FigApp, ctx: &egui::Context, resp: &egui::Response, pos: Pos2) {
+    let rect = app.canvas.rect;
+    if !pos.is_finite() || !rect.contains(pos) || !resp.contains_pointer() {
+        return;
+    }
+    let axis = |at: f32, lo: f32, hi: f32| {
+        let margin = 32.0_f32.min((hi - lo) * 0.25);
+        if margin <= 0.0 { 0.0 } else { ((at - (hi - margin)) / margin).clamp(0.0, 1.0) - (((lo + margin) - at) / margin).clamp(0.0, 1.0) }
+    };
+    let velocity = vec2(axis(pos.x, rect.left(), rect.right()), axis(pos.y, rect.top(), rect.bottom()));
+    let velocity = if velocity.length() > 1.0 { velocity.normalized() } else { velocity };
+    let dt = ctx.input(|i| i.stable_dt);
+    if velocity == egui::Vec2::ZERO || !dt.is_finite() || dt <= 0.0 {
+        return;
+    }
+    if let Ok(ds) = app.session.ds_mut() {
+        let scale = 480.0 * f64::from(dt.min(1.0 / 30.0)) / ds.view.zoom.max(1e-6);
+        let cx = ds.view.cx + f64::from(velocity.x) * scale;
+        let cy = ds.view.cy + f64::from(velocity.y) * scale;
+        if cx.is_finite() && cy.is_finite() {
+            ds.view.cx = cx;
+            ds.view.cy = cy;
+            ds.revision += 1;
+        }
+    }
+}
+
 /// Draw connections, handles and a connection being dragged.
 pub fn draw(app: &FigApp, painter: &egui::Painter) {
     if !active(app) {
@@ -239,20 +275,33 @@ pub fn input(app: &mut FigApp, ui: &egui::Ui, resp: &egui::Response) -> bool {
         overlay_ghost::end(app, &ctx);
         return false;
     }
-    let (pos, pressed, down, released) = ctx.input(|i| {
+    let (pos, pressed, down, released, cancel) = ctx.input(|i| {
+        let released = i.pointer.button_released(egui::PointerButton::Primary);
         (
-            i.pointer.hover_pos(),
+            if released { i.pointer.interact_pos().or_else(|| i.pointer.hover_pos()) } else { i.pointer.hover_pos() },
             i.pointer.button_pressed(egui::PointerButton::Primary),
             i.pointer.primary_down(),
-            i.pointer.button_released(egui::PointerButton::Primary),
+            released,
+            !i.focused || i.events.iter().any(|e| matches!(e, egui::Event::WindowFocused(false))) || i.key_pressed(egui::Key::Escape),
         )
     });
     if drag.is_none() && overlay_ghost::input(app, &ctx, pos, pos.is_some_and(|p| app.canvas.rect.contains(p)) && resp.hovered()) {
         return true;
     }
     let Ok(ds) = app.session.ds() else { return false };
-    let (doc, page, sel) = (ds.doc.clone(), ds.page, ds.selection.clone());
+    let (doc, page, sel, document) = (ds.doc.clone(), ds.page, ds.selection.clone(), ds.uid);
     if let Some(mut d) = drag {
+        // Stored egui state must never pan or create a link in a different document/window.
+        if cancel
+            || pos.is_none()
+            || d.document != document
+            || d.page != page
+            || d.viewport != ctx.viewport_id()
+            || doc.page_of(d.source) != Some(page)
+        {
+            ctx.data_mut(|m| m.remove::<Drag>(drag_id()));
+            return true;
+        }
         if let Some(p) = pos {
             d.pos = p;
         }
@@ -267,6 +316,17 @@ pub fn input(app: &mut FigApp, ui: &egui::Ui, resp: &egui::Response) -> bool {
                 crate::proto_panel::open_editor(&ctx, Some((d.source, k)));
             }
         } else {
+            let frame = ctx.cumulative_frame_nr();
+            // A discarded egui pass may run again with the same input and time.
+            if d.last_frame != frame {
+                pan_connection(app, &ctx, resp, d.pos);
+                d.last_frame = frame;
+            }
+            let Some((_, from)) = handles(app, &doc, &[d.source]).into_iter().next().filter(|(_, p)| p.is_finite()) else {
+                ctx.data_mut(|m| m.remove::<Drag>(drag_id()));
+                return true;
+            };
+            d.from = from;
             ctx.data_mut(|m| m.insert_temp(drag_id(), d));
         }
         return true;
@@ -283,7 +343,8 @@ pub fn input(app: &mut FigApp, ui: &egui::Ui, resp: &egui::Response) -> bool {
         return false;
     }
     if let Some((source, from)) = over_handle {
-        ctx.data_mut(|m| m.insert_temp(drag_id(), Drag { source, from, pos }));
+        let drag = Drag { source, document, page, viewport: ctx.viewport_id(), last_frame: ctx.cumulative_frame_nr(), from, pos };
+        ctx.data_mut(|m| m.insert_temp(drag_id(), drag));
         return true;
     }
     let hit = noodles(app, &ctx, &doc, page)

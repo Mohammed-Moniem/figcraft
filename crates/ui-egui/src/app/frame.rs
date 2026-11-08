@@ -109,6 +109,7 @@ impl FigApp {
         self.applied_frame = None;
         for ack in self.applied_acks.drain(..) {
             let _ = ack.tx.send(ack.reply);
+            drop(ack.state);
         }
         self.control_synthetic = false;
     }

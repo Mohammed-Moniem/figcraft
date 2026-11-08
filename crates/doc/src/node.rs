@@ -397,7 +397,8 @@ impl NodeKind {
         )
     }
 
-    /// Kinds whose corners can be rounded from the panel.
+    /// Kinds that store a corner radius. Boolean controls and geometry use the document-aware
+    /// [`crate::Document::has_corner_radius`] to check their operands.
     pub fn has_corner_radius(&self) -> bool {
         matches!(
             self,
@@ -410,17 +411,19 @@ impl NodeKind {
                 | NodeKind::Star { .. }
                 | NodeKind::Vector { .. }
                 | NodeKind::Section { .. }
+                | NodeKind::BooleanOp { .. }
         )
     }
 
     /// Kinds with a radius per corner (the others round every corner alike).
     pub fn has_independent_corners(&self) -> bool {
-        self.has_corner_radius() && !matches!(self, NodeKind::Polygon { .. } | NodeKind::Star { .. } | NodeKind::Vector { .. })
+        self.has_corner_radius()
+            && !matches!(self, NodeKind::Polygon { .. } | NodeKind::Star { .. } | NodeKind::Vector { .. } | NodeKind::BooleanOp { .. })
     }
 
     /// Kinds whose rounded corners are drawn with corner smoothing (a vector's rounded points are drawn without it).
     pub fn has_corner_smoothing(&self) -> bool {
-        self.has_corner_radius() && !matches!(self, NodeKind::Vector { .. })
+        self.has_corner_radius() && !matches!(self, NodeKind::Vector { .. } | NodeKind::BooleanOp { .. })
     }
 
     pub fn text(&self) -> Option<&TextData> {

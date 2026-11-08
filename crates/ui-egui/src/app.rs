@@ -18,6 +18,14 @@ mod frame;
 mod ime;
 
 impl FigApp {
+    /// Stop the control transport and release its input when the app is shutting down.
+    /// A host may keep egui's Context alive after this app; remove its retained input copies
+    /// before refunding their resource owners. Native hosts that exit without Drop call this.
+    pub fn release_control_input_resources(&mut self) {
+        self.services.mcp_server_apply(false, 0);
+        windows::release_control_input_resources(self);
+    }
+
     /// Construct `FigApp` from a session and services, taking panel widths and pages height
     /// from preferences and initializing UI, canvas, clocks, capture/IME and transient channel
     /// state.
@@ -56,6 +64,7 @@ impl FigApp {
             input_acks: Vec::new(),
             applied_acks: Vec::new(),
             applied_input: None,
+            control_input_resources: Default::default(),
             control_input_queued: false,
             applied_frame: None,
             control_presented_input_frame: None,
@@ -83,6 +92,24 @@ impl FigApp {
     /// every child window (`windows::draw`), never on a logic-only tick.
     fn ui_setup(&mut self, ctx: &egui::Context) {
         self.viewport_setup(ctx);
+    }
+
+    /// Called inside each actual UI pass, after egui's begin_pass replaced the previous input.
+    /// RawInput::take moves its events, so a discarded rerun also releases the old input copies;
+    /// its pending acknowledgement still owns any resource needed through presentation.
+    pub(crate) fn release_replaced_input_resources(&mut self, ctx: &egui::Context) {
+        let pass = ctx.cumulative_pass_nr();
+        let empty = self.control_input_resources.get_mut(&ctx.viewport_id()).is_some_and(|resources| {
+            resources.replaced.clear();
+            if resources.pass.is_some_and(|previous| previous != pass) {
+                resources.current.clear();
+            }
+            resources.pass = Some(pass);
+            resources.current.is_empty()
+        });
+        if empty {
+            self.control_input_resources.remove(&ctx.viewport_id());
+        }
     }
 
     /// The app-global part of [`Self::ui_setup`] that every window's frame needs: language, fonts,
@@ -170,6 +197,7 @@ impl FigApp {
         #[cfg(not(target_arch = "wasm32"))]
         let t0 = std::time::Instant::now();
         let ctx = ui.ctx().clone();
+        self.release_replaced_input_resources(&ctx);
         self.ui_context = Some(ctx.clone());
         // `App::logic` already ticked this pass; direct harnesses do not call it. The marker only
         // covers the tick that shares this pass: clearing it here keeps a direct `App::ui` harness
@@ -503,6 +531,12 @@ impl FigApp {
         // field or an open palette owns the platform IME instead; the early `home`/present paths
         // above make the same single idle observation.
         self.observe_ime(&ctx, !typing && !self.field_focus && self.ui.palette.is_none());
+    }
+}
+
+impl Drop for FigApp {
+    fn drop(&mut self) {
+        self.release_control_input_resources();
     }
 }
 

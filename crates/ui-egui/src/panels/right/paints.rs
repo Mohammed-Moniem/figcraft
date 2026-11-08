@@ -1,14 +1,48 @@
 use super::menu::{blend_menu, context_popup, menu_check, menu_item, menu_popup, preview_blend, row, row_context_menu, row_rect};
 use super::stroke::width_profile_row;
 use super::{
-    Align2, BlendMode, CornerRadius, Document, FIELD_H, FieldEdit, FigApp, Icon, Id, Lead, ListDrag, MaskType, Node, NodeId, NodeKind, Paint,
+    Align2, Arc, BlendMode, CornerRadius, Document, FIELD_H, FieldEdit, FigApp, Icon, Id, Lead, ListDrag, MaskType, Node, NodeId, NodeKind, Paint,
     PaintKind, Rect, Sense, Stroke, StrokeAlign, StyleSlot, Tip, Tokens, Ui, Value, VariableType, common, icons, json, moved_index, pos2, regular,
     removed_index, style_picker, tr, trf, vec2, widgets,
 };
 
+#[derive(Clone)]
+struct BooleanRadiusField {
+    owner: Option<Id>,
+    frame: u64,
+}
+
+/// New Boolean radius fields belong to one document/selection/viewport. Retire a typed draft
+/// when that owner changes or the field was absent for a frame, including A→B→A selections.
+fn radius_field_id(app: &FigApp, ui: &Ui, sel: &[NodeId], boolean: bool) -> Id {
+    let ctx = ui.ctx();
+    let viewport = ctx.viewport_id();
+    let frame = ctx.cumulative_frame_nr();
+    let uid = app.session.ds().map_or(0, |ds| ds.uid);
+    let owner = boolean.then(|| Id::unique(("boolean_radius", viewport, uid, sel)));
+    let key = Id::unique(("boolean_radius_owner", viewport));
+    let retired = ctx.data_mut(|d| {
+        let previous = d.get_temp::<BooleanRadiusField>(key);
+        let retired =
+            previous.as_ref().filter(|p| p.owner != owner || (p.frame != frame && p.frame.checked_add(1) != Some(frame))).and_then(|p| p.owner);
+        d.insert_temp(key, BooleanRadiusField { owner, frame });
+        retired
+    });
+    if let Some(old) = retired {
+        ctx.data_mut(|d| {
+            d.remove::<String>(old.with("editing"));
+            d.remove::<String>(old.with("kept"));
+            d.remove::<bool>(old.with("selectall"));
+            d.remove::<egui::text_edit::TextEditState>(old.with("te"));
+        });
+        ctx.memory_mut(|m| m.surrender_focus(old.with("te")));
+    }
+    owner.unwrap_or_else(|| Id::unique("ap_rad"))
+}
+
 /// Draw visibility/blend/mask, opacity, uniform or per-corner radius, corner smoothing and
 /// the blend-mode row.
-pub(super) fn appearance(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[NodeId]) {
+pub(super) fn appearance(app: &mut FigApp, ui: &mut Ui, doc: &Arc<Document>, sel: &[NodeId]) {
     let ids = sel.to_vec();
     let visible = common(doc, sel, |n| n.visible).unwrap_or(true);
     let hdr = widgets::section_header(
@@ -50,7 +84,12 @@ pub(super) fn appearance(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[N
     }
     let op_of = |n: &Node| f64::from(n.opacity) * 100.0;
     let op = common(doc, sel, op_of);
-    let radius_ok = crate::selection_cache::every(doc, sel, |n| n.kind.has_corner_radius());
+    let radius_ok = crate::selection_cache::cached(ui.ctx(), "corner-radius-eligibility", doc, sel, &[], || {
+        crate::selection_cache::every(doc, sel, |n| doc.has_corner_radius(n.id))
+    });
+    let boolean_radius =
+        radius_ok && crate::selection_cache::with_nodes(doc, sel, |nodes| nodes.flatten().any(|n| matches!(n.kind, NodeKind::BooleanOp { .. })));
+    let radius_id = radius_field_id(app, ui, sel, boolean_radius);
     // Only rectangles and frames round each corner on its own.
     let indep_ok = radius_ok && crate::selection_cache::every(doc, sel, |n| n.kind.has_independent_corners());
     // For polygons and stars the same panel holds only the Corner smoothing row.
@@ -67,7 +106,7 @@ pub(super) fn appearance(app: &mut FigApp, ui: &mut Ui, doc: &Document, sel: &[N
                 ui,
                 &ids,
                 "cornerRadius",
-                Id::unique("ap_rad"),
+                radius_id,
                 Lead::Icon(Icon::CornerRadius, tr("Corner radius")),
                 r.flatten(),
                 "",

@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::*;
-use std::io::Read;
+use std::io::{BufRead, Read};
 use std::net::Shutdown;
 use std::sync::mpsc;
 use std::time::Instant;
@@ -245,6 +245,37 @@ fn queue() -> Queue {
 
 fn context() -> CtxSlot {
     Arc::new(Mutex::new(None))
+}
+
+/// Regression for #1111. Eight actual sockets send compact, allocation-amplifying JSON. The
+/// fixture is small enough to run on the original implementation without stressing host RAM.
+#[test]
+fn shared_budget_dense_tcp_frames_are_refused_before_dispatch() {
+    let pending = queue();
+    let mut workers = Vec::new();
+    let mut clients = Vec::new();
+    for id in 0..8 {
+        let (mut client, server) = pair();
+        let pending = pending.clone();
+        workers.push(std::thread::spawn(move || serve(server, pending, context(), Duration::from_millis(100)).unwrap()));
+        let mut frame = format!("{{\"id\":{id},\"method\":\"engine.commands\",\"params\":{{\"unused\":[");
+        for _ in 0..25_000 {
+            frame.push_str("null,");
+        }
+        frame.push_str("null]}}\n");
+        client.write_all(frame.as_bytes()).unwrap();
+        clients.push(BufReader::new(client));
+    }
+    let replies: Vec<_> = clients.iter_mut().map(reply).collect();
+    drop(clients);
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    assert!(
+        replies.iter().all(|reply| reply["error"].as_str().is_some_and(|error| error.contains("memory budget"))),
+        "all dense frames must fail the shared pre-parse memory admission: {replies:?}"
+    );
+    assert!(pending.lock().unwrap().is_empty(), "refused input must not reach UI dispatch");
 }
 
 fn reply(reader: &mut BufReader<TcpStream>) -> Value {
@@ -579,6 +610,28 @@ fn a_disconnected_reply_channel_is_not_reported_as_a_timeout() {
     drop(tx);
     assert!(matches!(wait_for_reply(&rx, &gate, Duration::from_secs(1)), Err(WaitFailure::Disconnected)));
     assert_eq!(gate.state(), RequestState::Open, "a closed app is not a cancel decision");
+}
+
+#[test]
+fn pruning_an_expired_sender_reports_deadline_not_a_closed_window() {
+    let gate = RequestGate::with_timeout(Duration::ZERO);
+    let (tx, rx) = mpsc::channel::<ControlReply>();
+    assert!(gate.is_cancelled());
+    drop(tx);
+    assert_eq!(wait_for_reply(&rx, &gate, Duration::from_secs(1)).err().unwrap(), WaitFailure::Timeout);
+}
+
+#[test]
+fn pruning_an_explicitly_cancelled_sender_reports_no_application() {
+    let gate = RequestGate::with_timeout(Duration::from_secs(60));
+    gate.cancel_if_open();
+    let (tx, rx) = mpsc::channel::<ControlReply>();
+    drop(tx);
+    let failure = wait_for_reply(&rx, &gate, Duration::from_secs(1)).err().unwrap();
+    assert_eq!(failure, WaitFailure::Cancelled);
+    let message = timeout_message(&failure, false, Duration::from_secs(60));
+    assert!(message.contains("cancelled") && message.contains("not applied"));
+    assert!(!message.contains("window closed") && !message.contains("timed out"));
 }
 
 /// #1673: a request the UI already started can't be cancelled any more. Its timeout says it is

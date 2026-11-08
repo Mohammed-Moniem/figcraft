@@ -109,6 +109,36 @@ pub fn fold_cached(operands: &[(BezPath, BoolOp)]) -> Option<BezPath> {
     }
 }
 
+/// The radius belongs to the final result, independently of the reusable operand prefixes.
+/// Cache it by geometry and radius in the same bounded path cache; edits to either cannot
+/// reuse an old rounded outline. Callers keep radius-zero paths on the original fast path.
+pub(crate) fn rounded_cached(path: &BezPath, radius: f64) -> Option<BezPath> {
+    let mut hasher = DefaultHasher::new();
+    b"boolean-result-radius".hash(&mut hasher);
+    hash_path(path, &mut hasher);
+    radius.to_bits().hash(&mut hasher);
+    let key = hasher.finish();
+    if locked(refused()).get(key).is_some() {
+        return None;
+    }
+    if let Some(cached) = locked(cache()).get(key) {
+        return Some((*cached).clone());
+    }
+    let rounded = match figcraft_pathops::round_boolean_result(path, radius) {
+        Ok(path) => path,
+        Err(PathOpsError::TooComplex) => {
+            if !WARNED.swap(true, Ordering::Relaxed) {
+                log::warn!("render: a boolean group's rounded result is left out: {}", PathOpsError::TooComplex);
+            }
+            locked(refused()).insert(key, Arc::default());
+            return None;
+        }
+        Err(PathOpsError::BadInput) => BezPath::new(),
+    };
+    locked(cache()).insert(key, Arc::new(rounded.clone()));
+    Some(rounded)
+}
+
 /// `keys[i]`: the cache key of the fold of operands `0..=i`.
 fn fold_keys(operands: &[(BezPath, BoolOp)]) -> Vec<u64> {
     let mut h = DefaultHasher::new();

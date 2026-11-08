@@ -99,6 +99,14 @@ fn close_refused_auth(stream: &mut TcpStream, auth_deadline: Instant) -> std::io
     )?;
     Ok(())
 }
+
+/// Finish a control framing/admission refusal without admitting unread pipelined commands.
+/// The complete small response precedes FIN; cleanup retains the authentication drain bounds.
+pub(crate) fn refuse_control(stream: &mut TcpStream, error: &str) -> std::io::Result<()> {
+    let deadline = Instant::now() + Duration::from_millis(250);
+    write_auth_reply(&mut AuthReplyWriter { stream, deadline }, &json!({"id": null, "ok": false, "error": error}))?;
+    close_refused_auth(stream, deadline)
+}
 pub struct Lease {
     path: PathBuf,
     token: String,
@@ -143,7 +151,7 @@ impl Lease {
             gate.cancel_if_open();
             return false;
         }
-        requests.push(gate.clone());
+        requests.push(gate.cancellation_handle());
         true
     }
 
@@ -507,6 +515,22 @@ mod tests {
         assert!(held[1..].iter().all(|gate| gate.state() == RequestState::Cancelled));
         assert_eq!(replacement.state(), RequestState::Cancelled);
         assert!(lease.requests.lock().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cancellation_registry_does_not_keep_payload_budget_alive() {
+        let dir = dir("request-resources");
+        let lease = Lease::create(&dir, 39795).unwrap();
+        let resource = std::sync::Arc::new(());
+        let weak = std::sync::Arc::downgrade(&resource);
+        let gate = RequestGate::with_timeout_and_resource(Duration::from_secs(60), resource);
+        assert!(lease.register_request(&gate));
+        assert!(weak.upgrade().is_some());
+        drop(gate);
+        assert!(weak.upgrade().is_none(), "state-only cancellation entries must not hold an absent payload's reservation");
+        assert_eq!(lease.requests.lock().unwrap().len(), 1, "the registry entry really is still present");
+        lease.retire();
         let _ = std::fs::remove_dir_all(dir);
     }
 
