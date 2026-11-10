@@ -34,7 +34,7 @@ pub(super) fn sync_instance_depth(doc: &mut Document, inst: NodeId, depth: usize
         let nid = doc.alloc_id();
         map.insert(s, nid);
     }
-    let Copies { nodes: new_nodes, nested, mut remeasure } = copy_layers(doc, inst, &src, &map, &old, &edited, eff_props);
+    let Copies { nodes: new_nodes, nested, mut remeasure } = copy_layers(doc, inst, &src, &map, &old, &edited, (component, eff_props));
     for n in new_nodes {
         let (id, parent) = (n.id, n.parent);
         if insert_linked(doc, n).is_err()
@@ -136,10 +136,10 @@ fn copy_layers(
     map: &BTreeMap<NodeId, NodeId>,
     old: &BTreeMap<NodeId, std::sync::Arc<Node>>,
     edited: &BTreeSet<NodeId>,
-    props: BTreeMap<String, Value>,
+    props: (NodeId, BTreeMap<String, Value>),
 ) -> Copies {
     let mut enclosing: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::from([(inst, vec![inst])]);
-    let mut inst_props: BTreeMap<NodeId, BTreeMap<String, Value>> = BTreeMap::from([(inst, props)]);
+    let mut inst_props: BTreeMap<NodeId, (NodeId, BTreeMap<String, Value>)> = BTreeMap::from([(inst, props)]);
     let mut out = Copies { nodes: Vec::new(), nested: Vec::new(), remeasure: Vec::new() };
     for s in src {
         let Some(orig) = doc.node(*s) else { continue };
@@ -169,7 +169,7 @@ fn copy_layers(
         let enc = enclosing.get(&parent).cloned().unwrap_or_default();
         apply_enclosing_props(doc, &mut n, orig, &enc, &inst_props);
         if let NodeKind::Instance { component: c, props } = &n.kind {
-            inst_props.insert(nid, props.clone());
+            inst_props.insert(nid, (*c, props.clone()));
             let mut e = enc;
             e.push(nid);
             enclosing.insert(nid, e);
@@ -253,14 +253,27 @@ fn rebuild_nested(doc: &mut Document, nested: Vec<NodeId>, old: &BTreeMap<NodeId
     }
 }
 
-fn apply_enclosing_props(doc: &Document, n: &mut Node, orig: &Node, enc: &[NodeId], inst_props: &BTreeMap<NodeId, BTreeMap<String, Value>>) {
+fn apply_enclosing_props(
+    doc: &Document,
+    n: &mut Node,
+    orig: &Node,
+    enc: &[NodeId],
+    inst_props: &BTreeMap<NodeId, (NodeId, BTreeMap<String, Value>)>,
+) {
     let mut chain: Vec<&Node> = vec![orig];
     while chain.len() < enc.len() {
         let Some(next) = chain.last().and_then(|c| c.source).and_then(|x| doc.node(x)) else { break };
         chain.push(next);
     }
     for (j, level) in chain.iter().enumerate().rev() {
-        let Some(props) = enc.get(j).and_then(|e| inst_props.get(e)) else { continue };
+        if level.prop_refs.is_empty() {
+            continue;
+        }
+        // Instance-owned slot content can skip a source hop without skipping an enclosing
+        // instance. Resolve each binding in its defining component's property namespace;
+        // positional source-chain/enclosing-depth pairing can apply the wrong instance.
+        let Some(owner) = owning_component(doc, level.id) else { continue };
+        let Some((_, props)) = enc.iter().rev().filter_map(|e| inst_props.get(e)).find(|(component, _)| *component == owner) else { continue };
         for (field, prop) in &level.prop_refs {
             let g = field_group(field);
             if n.overrides.contains(g) || (j > 0 && orig.overrides.contains(g)) {

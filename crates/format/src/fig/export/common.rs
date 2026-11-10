@@ -7,6 +7,19 @@ use super::{
 /// Longest kept description of such a layer (bytes of JSON).
 const MAX_STASH: usize = 1 << 20;
 
+#[cfg(test)]
+std::thread_local! { static OUTLINE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+#[cfg(test)]
+pub(super) fn outline_calls(reset: bool) -> usize {
+    OUTLINE_CALLS.with(|calls| {
+        let count = calls.get();
+        if reset {
+            calls.set(0);
+        }
+        count
+    })
+}
+
 /// Whether a width profile reaches further on one side of the path than on the other.
 pub(super) fn one_sided(p: &figcraft_doc::WidthProfile) -> bool {
     p.points.iter().any(|q| q.bias.abs() > 1e-6)
@@ -15,7 +28,7 @@ pub(super) fn one_sided(p: &figcraft_doc::WidthProfile) -> bool {
 /// A shape whose stroke is wider on one side of its path, as the area that stroke paints (a vector
 /// filled with the stroke's paints), with what it was as JSON: its kind, paints and stroke. Only
 /// for shapes that show nothing but that stroke; `None` for every other layer.
-pub(super) fn outlined(n: &Node) -> Option<(Node, String)> {
+pub(super) fn outlined(n: &Node, budget: &mut super::budget::Budget) -> Option<(Node, String)> {
     let sp = &n.stroke;
     let shape = matches!(
         n.kind,
@@ -32,13 +45,21 @@ pub(super) fn outlined(n: &Node) -> Option<(Node, String)> {
     {
         return None;
     }
-    let path = figcraft_doc::geometry::stroke_geometry(n)?;
+    if !budget.node_source(n) || !budget.reserve(1024, 64) {
+        return None;
+    }
+    let path = budget.outline_path(n)?;
     let net = match &n.kind {
         NodeKind::Vector { network } => Some(network),
         _ => None,
     };
+    #[cfg(test)]
+    OUTLINE_CALLS.with(|calls| calls.set(calls.get() + 1));
     let area = figcraft_pathops::stroke_outline_of(&path, sp, figcraft_doc::geometry::is_closed(n), net);
     if area.elements().is_empty() || area.elements().len() > MAX_NETWORK / 4 {
+        return None;
+    }
+    if !budget.items(area.elements().len(), 256, 16) || !budget.source(&(&n.kind, &n.fills, &n.strokes, &n.stroke)) {
         return None;
     }
     let original = serde_json::json!({"kind": n.kind, "fills": n.fills, "strokes": n.strokes, "stroke": n.stroke}).to_string();

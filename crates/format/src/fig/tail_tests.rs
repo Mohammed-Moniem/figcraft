@@ -863,3 +863,93 @@ fn write_fixture() {
         std::fs::write(out, zip_file(&tail_canvas())).unwrap();
     }
 }
+
+#[test]
+fn issue_2114_layer_radius_fills_only_missing_point_radii_without_refitting() {
+    let (before, _) = import(&tail_canvas(), "Tail").unwrap();
+    let mut message = tail_message();
+    let Kv::Array(nodes) = field_mut(&mut message, "nodeChanges").unwrap() else { panic!() };
+    let wave = nodes.iter_mut().find(|n| n.get("name").and_then(Kv::str) == Some("Wave")).unwrap();
+    let Kv::Object(fields) = wave else { panic!() };
+    fields.push(("cornerRadius", f(6.0)));
+    let Kv::Array(styles) = field_mut(field_mut(wave, "vectorData").unwrap(), "styleOverrideTable").unwrap() else { panic!() };
+    let Kv::Object(sharp) = &mut styles[2] else { panic!() };
+    sharp.push(("cornerRadius", f(0.0)));
+    let (after, _) = import(&canvas(&schema(), &message), "Tail").unwrap();
+    assert_eq!(network_of(&before, "Wave").vertices.iter().map(|v| v.radius).collect::<Vec<_>>(), [0.0, 4.0, 0.0, 0.0]);
+    assert_eq!(network_of(&after, "Wave").vertices.iter().map(|v| v.radius).collect::<Vec<_>>(), [6.0, 4.0, 6.0, 0.0]);
+    let mut expected = network_of(&before, "Wave").clone();
+    for (point, radius) in expected.vertices.iter_mut().zip([6.0, 4.0, 6.0, 0.0]) {
+        point.radius = radius;
+    }
+    assert_eq!(network_of(&after, "Wave"), &expected, "points, handles, joins and regions do not refit");
+    let (a, b) = (named(&before, "Wave"), named(&after, "Wave"));
+    assert_eq!((a.width, a.height, a.transform), (b.width, b.height, b.transform));
+    for node in before.nodes().filter(|n| n.name != "Wave") {
+        assert_eq!(serde_json::to_value(node).unwrap(), serde_json::to_value(after.node(node.id).unwrap()).unwrap(), "{}", node.name);
+    }
+}
+
+#[test]
+fn issue_2114_vector_data_stays_authoritative_and_outline_fallback_stays_sharp() {
+    let (before, _) = import(&tail_canvas(), "Tail").unwrap();
+    let mut message = tail_message();
+    let Kv::Array(nodes) = field_mut(&mut message, "nodeChanges").unwrap() else { panic!() };
+    for name in ["Wave", "Broken"] {
+        let Kv::Object(fields) = nodes.iter_mut().find(|n| n.get("name").and_then(Kv::str) == Some(name)).unwrap() else { panic!() };
+        fields.push(("cornerRadius", f(6.0)));
+    }
+    let (valid, warnings) = import(&canvas(&schema(), &message), "Tail").unwrap();
+    assert_eq!(network_of(&valid, "Wave").vertices.len(), 4, "editable square wins over its triangle outline");
+    assert_eq!(network_of(&valid, "Broken"), network_of(&before, "Broken"), "damaged vectorData retains the existing outline path");
+    assert!(warnings.iter().any(|w| w.contains("damaged vector networks import as outlines")));
+    let Kv::Array(nodes) = field_mut(&mut message, "nodeChanges").unwrap() else { panic!() };
+    let Kv::Object(fields) = nodes.iter_mut().find(|n| n.get("name").and_then(Kv::str) == Some("Wave")).unwrap() else { panic!() };
+    fields.retain(|(key, _)| *key != "vectorData");
+    let (missing, _) = import(&canvas(&schema(), &message), "Tail").unwrap();
+    let wave = network_of(&missing, "Wave");
+    assert_eq!(wave.vertices.len(), 3, "missing vectorData uses the triangle outline");
+    assert!(wave.vertices.iter().all(|p| p.radius == 0.0), "the importer does not round fallback path geometry");
+}
+
+#[test]
+fn issue_2114_public_native_network_missing_zero_and_null_radius_keep_decoder_rules() {
+    for (radius, expected, fallback) in
+        [(None, 0.0, false), (Some(serde_json::json!(0)), 0.0, false), (Some(serde_json::json!(3)), 3.0, false), (Some(Value::Null), 0.0, true)]
+    {
+        let mut first = serde_json::json!({"x": 0, "y": 0});
+        if let Some(radius) = radius {
+            first["radius"] = radius;
+        }
+        let json = serde_json::json!({"document": {"id": "0:0", "type": "DOCUMENT", "children": [{"id": "0:1", "type": "CANVAS", "children": [{
+            "id": "1:1", "type": "VECTOR", "name": "V", "size": {"x": 10, "y": 10}, "relativeTransform": [[1, 0, 0], [0, 1, 0]],
+            "cornerRadius": 9, "fills": [], "strokes": [], "fillGeometry": [{"path": "M0 0L10 0L10 10Z"}],
+            "vectorNetwork": {"vertices": [first, {"x": 7, "y": 0}, {"x": 0, "y": 9}], "segments": [{"a": 0, "b": 1}, {"a": 1, "b": 2}, {"a": 2, "b": 0}]}
+        }]}]}});
+        let (doc, warnings) = crate::rest::import(&json, &crate::rest::no_images).unwrap();
+        let net = network_of(&doc, "V");
+        assert_eq!(net.vertices[0].radius, expected);
+        assert_eq!(net.vertices[1].x, if fallback { 10.0 } else { 7.0 });
+        assert_eq!(warnings.iter().any(|w| w.contains("vector networks import as outlines")), fallback);
+    }
+}
+
+#[test]
+fn issue_2114_missing_point_settings_warning_matches_effective_layer_radius() {
+    let old_warning = "some vector points refer to point settings missing from the file; they use the layer's joins and plain corners";
+    let rounded_warning = "some vector points refer to point settings missing from the file; they use the layer's joins and corner radius";
+    for radius in [None, Some(0.0), Some(-2.0), Some(6.0)] {
+        let mut message = tail_message();
+        let Kv::Array(nodes) = field_mut(&mut message, "nodeChanges").unwrap() else { panic!() };
+        let fallback = nodes.iter_mut().find(|node| node.get("name").and_then(Kv::str) == Some("Join Fallbacks")).unwrap();
+        if let Some(radius) = radius {
+            let Kv::Object(fields) = fallback else { panic!() };
+            fields.push(("cornerRadius", f(radius)));
+        }
+        let (doc, warnings) = import(&canvas(&schema(), &message), "Warning control").unwrap();
+        let positive = radius.is_some_and(|radius| radius > 0.0);
+        assert_eq!(warnings.iter().any(|warning| warning == old_warning), !positive, "{radius:?}: {warnings:?}");
+        assert_eq!(warnings.iter().any(|warning| warning == rounded_warning), positive, "{radius:?}: {warnings:?}");
+        assert!(network_of(&doc, "Join Fallbacks").vertices.iter().all(|point| point.radius == if positive { 6.0 } else { 0.0 }));
+    }
+}

@@ -8,6 +8,9 @@ use super::{
 impl<'d> Exporter<'d> {
     /// Write layer `id` (child `index` of the layer with GUID `parent_guid`) and its subtree.
     pub(super) fn emit(&mut self, id: NodeId, parent_guid: Kv<'static>, index: usize, parent: Option<&Node>, depth: usize) {
+        if self.budget.failed() {
+            return;
+        }
         let doc = self.doc;
         let (Some(&local), Some(n)) = (self.ids.get(&id), doc.node(id)) else { return };
         if depth > MAX_DEPTH {
@@ -20,6 +23,9 @@ impl<'d> Exporter<'d> {
             ("parentIndex", o(vec![("guid", parent_guid), ("position", s(&position(index)))])),
         ];
         let children = if let NodeKind::Page { background, prototype, .. } = &n.kind {
+            if !self.budget.row() || !self.budget.node_source(n) {
+                return;
+            }
             f.extend([("type", e("CANVAS")), ("name", s(&n.name))]);
             f.extend(root_fields());
             f.extend([("backgroundColor", color(*background)), ("backgroundOpacity", fl(background.a.into())), ("backgroundEnabled", b(true))]);
@@ -46,8 +52,11 @@ impl<'d> Exporter<'d> {
     /// (no type, no instance or component data). Returns whether its children are written as
     /// layers (an instance's come from its main).
     pub(super) fn layer(&mut self, n: &Node, parent: Option<&Node>, f: &mut Fields, nested: bool) -> bool {
+        if !self.budget.row() || !self.budget.node_source(n) {
+            return false;
+        }
         let doc = self.doc;
-        if let Some((outline, original)) = outlined(n) {
+        if let Some((outline, original)) = outlined(n, &mut self.budget) {
             // The format's variable width is the same on both sides of the path: a stroke wider on
             // one side is written as the area it paints, with the stroke itself kept as plugin data
             // (which the import puts back).
@@ -55,6 +64,9 @@ impl<'d> Exporter<'d> {
             let children = self.layer(&outline, parent, f, nested);
             f.push(("pluginData", arr(vec![o(vec![("pluginID", s(STASH.0)), ("value", s(&original)), ("key", s(STASH.1))])])));
             return children;
+        }
+        if self.budget.failed() {
+            return false;
         }
         let main = match &n.kind {
             NodeKind::Instance { component, .. } => {
@@ -171,6 +183,7 @@ impl<'d> Exporter<'d> {
         }
         let boxy = n.kind.is_frame_like() || matches!(n.kind, NodeKind::Rectangle | NodeKind::Section { .. });
         if (boxy || matches!(n.kind, NodeKind::Ellipse { .. } | NodeKind::Polygon { .. } | NodeKind::Star { .. }))
+            && self.budget.path_source(n)
             && let Some(p) = figcraft_doc::geometry::shape_path(n)
         {
             self.geometry("fillGeometry", &p, WindingRule::NonZero, f);
@@ -197,6 +210,9 @@ impl<'d> Exporter<'d> {
             };
             f.extend([("mask", b(true)), ("maskType", e(ty))]);
         }
+        if !self.budget.comparisons(&n.bound, self.doc.variables.variables.len().saturating_add(1)) {
+            return;
+        }
         let bound = self.bound(n);
         // Text whose own style sets fills paints with them (the layer's fills only show through
         // runs); a variable bound to the layer's fill colours the layer's.
@@ -211,23 +227,7 @@ impl<'d> Exporter<'d> {
             let effects = n.effects.iter().enumerate().map(|(i, x)| self.effect(x, i, &bound)).collect();
             f.push(("effects", arr(effects)));
         }
-        if n.kind.has_corner_radius() {
-            let r = n.corners.radii;
-            f.push(("cornerRadius", fl(r[0])));
-            let differ = r.iter().any(|x| *x != r[0]);
-            if n.kind.has_independent_corners() && (differ || r[0] > 0.0) {
-                f.extend(differ.then(|| ("rectangleCornerRadiiIndependent", b(true))));
-                f.extend([
-                    ("rectangleTopLeftCornerRadius", fl(r[0])),
-                    ("rectangleTopRightCornerRadius", fl(r[1])),
-                    ("rectangleBottomRightCornerRadius", fl(r[2])),
-                    ("rectangleBottomLeftCornerRadius", fl(r[3])),
-                ]);
-            }
-            if n.corners.smoothing > 0.0 {
-                f.push(("cornerSmoothing", fl(n.corners.smoothing)));
-            }
-        }
+        Self::corner_fields(n, f);
         let h = match n.constraints.horizontal {
             HConstraint::Left => "MIN",
             HConstraint::Right => "MAX",
@@ -274,9 +274,15 @@ impl<'d> Exporter<'d> {
             f.push(("exportSettings", arr(n.exports.iter().map(export_setting).collect())));
         }
         self.prototype(n, f);
-        let (entries, refs): (Vec<Kv>, Vec<Kv>) = n.prop_refs.iter().filter_map(|(field, prop)| self.prop_ref(n, field, prop)).unzip();
+        if let Some(duration) = self.motion.duration(n.id) {
+            f.push(("timelineDuration", Kv::Uint(duration)));
+        }
+        let (mut entries, refs): (Vec<Kv>, Vec<Kv>) = n.prop_refs.iter().filter_map(|(field, prop)| self.prop_ref(n, field, prop)).unzip();
+        entries.extend(self.motion.binding(n.id));
         if !entries.is_empty() {
             f.push(("parameterConsumptionMap", o(vec![("entries", arr(entries))])));
+        }
+        if !refs.is_empty() {
             f.push(("componentPropRefs", arr(refs)));
         }
         let text = matches!(n.kind, NodeKind::Text(_));
@@ -317,6 +323,27 @@ impl<'d> Exporter<'d> {
         }
         if !n.plugin_data.is_empty() {
             self.warn("plugin data was left out");
+        }
+    }
+
+    /// Layer corner radii and smoothing in their existing wire-field order.
+    fn corner_fields(n: &Node, f: &mut Fields) {
+        if n.kind.has_corner_radius() {
+            let r = n.corners.radii;
+            f.push(("cornerRadius", fl(r[0])));
+            let differ = r.iter().any(|x| *x != r[0]);
+            if n.kind.has_independent_corners() && (differ || r[0] > 0.0) {
+                f.extend(differ.then(|| ("rectangleCornerRadiiIndependent", b(true))));
+                f.extend([
+                    ("rectangleTopLeftCornerRadius", fl(r[0])),
+                    ("rectangleTopRightCornerRadius", fl(r[1])),
+                    ("rectangleBottomRightCornerRadius", fl(r[2])),
+                    ("rectangleBottomLeftCornerRadius", fl(r[3])),
+                ]);
+            }
+            if n.corners.smoothing > 0.0 {
+                f.push(("cornerSmoothing", fl(n.corners.smoothing)));
+            }
         }
     }
 

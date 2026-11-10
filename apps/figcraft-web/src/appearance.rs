@@ -2,15 +2,24 @@
 //! owner, joined-capability, plugin, document, account or native-path data.
 
 use figcraft_engine::{Prefs, Session, pixel_grid};
+use figcraft_ui_egui::{LEFT_PANEL, PANEL_DEFAULT, RIGHT_PANEL};
 use serde_json::{Value, json};
 
 pub const STATE_KEY: &str = "figcraft.preferences.v1";
 // Covers both bounded shortcut platforms (512 commands, eight keys, 80 bytes per chord), plus
-// their known command ids and the five scalar preferences. Check before parsing or writing.
+// their known command ids and bounded appearance preferences. Check before parsing or writing.
 pub const MAX_STATE_BYTES: usize = 1024 * 1024;
 
 fn accent(rgb: [u8; 3]) -> String {
     format!("#{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2])
+}
+
+/// Clamp before narrowing to f32, so a finite JSON number cannot overflow into infinity.
+fn panel_width(value: Option<f64>, limits: std::ops::RangeInclusive<f32>) -> f32 {
+    value
+        .filter(|width| width.is_finite())
+        .map(|width| width.clamp(f64::from(*limits.start()), f64::from(*limits.end())) as f32)
+        .unwrap_or(PANEL_DEFAULT)
 }
 
 /// An absent record is a new visit. An unreadable or unsupported record is retained verbatim:
@@ -42,6 +51,13 @@ pub fn restore(session: &mut Session, input: &str) -> bool {
     session.prefs.accent = value["accent"].as_str().and_then(Prefs::parse_accent).map(accent).unwrap_or(defaults.accent);
     session.prefs.number_wheel = value["number_wheel"].as_bool().unwrap_or(defaults.number_wheel);
     session.prefs.keep_menu_open = value["keep_menu_open"].as_bool().unwrap_or(defaults.keep_menu_open);
+    // Legacy version-one records have no widths. Invalid sides default independently; finite
+    // old/out-of-range widths use the same limits as a native preference and a UI edge drag.
+    let widths = value["panel_widths"].as_array().filter(|widths| widths.len() == 2);
+    session.prefs.panel_widths = (
+        panel_width(widths.and_then(|widths| widths.first()).and_then(Value::as_f64), LEFT_PANEL),
+        panel_width(widths.and_then(|widths| widths.get(1)).and_then(Value::as_f64), RIGHT_PANEL),
+    );
     // This existing typed reader enforces per-platform budgets, known commands, reserved keys
     // and conflicting owners; assigning raw shortcut maps would bypass those checks.
     session.prefs.shortcuts = serde_json::from_value(value["shortcuts"].clone()).unwrap_or_default();
@@ -56,6 +72,10 @@ pub fn store(prefs: &Prefs, write: impl FnOnce(&str) -> bool) -> bool {
         "accent":accent(prefs.accent_rgb()),
         "number_wheel":prefs.number_wheel,
         "keep_menu_open":prefs.keep_menu_open,
+        "panel_widths":[
+            panel_width(Some(f64::from(prefs.panel_widths.0)), LEFT_PANEL),
+            panel_width(Some(f64::from(prefs.panel_widths.1)), RIGHT_PANEL),
+        ],
         "shortcuts":prefs.shortcuts,
     })
     .to_string();
@@ -75,6 +95,7 @@ mod tests {
         s.prefs.pixel_grid_size = 0.125;
         s.prefs.accent = "#0d99ff".into();
         s.prefs.number_wheel = true;
+        s.prefs.panel_widths = (450.0, 500.0);
         for platform in [Platform::Mac, Platform::Other] {
             assert!(s.prefs.shortcuts.set("shape.rectangle", vec!["Alt+F8".into()], platform, false).unwrap().is_empty());
         }
@@ -91,7 +112,7 @@ mod tests {
     }
 
     #[test]
-    fn appearance_record_has_exactly_six_nonsecret_fields_and_a_version() {
+    fn appearance_record_has_exactly_seven_nonsecret_fields_and_a_version() {
         let mut s = configured();
         s.prefs.publish_server = "wss://private.invalid/?token=synthetic-server-secret".into();
         s.prefs.recent_files = vec!["/synthetic/private/native-path.figcraft".into()];
@@ -120,7 +141,10 @@ mod tests {
         let value: Value = serde_json::from_str(&text).unwrap();
         let mut keys: Vec<&str> = value.as_object().unwrap().keys().map(String::as_str).collect();
         keys.sort_unstable();
-        assert_eq!(keys, ["accent", "keep_menu_open", "number_wheel", "pixel_grid_size", "selection_outline_opacity", "shortcuts", "version"]);
+        assert_eq!(
+            keys,
+            ["accent", "keep_menu_open", "number_wheel", "panel_widths", "pixel_grid_size", "selection_outline_opacity", "shortcuts", "version"]
+        );
         assert_eq!(value["version"], 1);
         assert_eq!(value["accent"], "#0D99FF");
         assert!(text.len() <= super::MAX_STATE_BYTES);
@@ -144,6 +168,7 @@ mod tests {
             assert_eq!(after.prefs.pixel_grid_size, 0.125);
             assert_eq!(after.prefs.accent, "#0D99FF");
             assert_eq!(after.prefs.number_wheel, on);
+            assert_eq!(after.prefs.panel_widths, before.prefs.panel_widths);
             assert_eq!(after.prefs.shortcuts, before.prefs.shortcuts);
             assert_eq!(after.prefs.publish_server, "wss://host-selected.invalid/Proxy/");
             assert_eq!(after.prefs.user_name, "Visit-only host author");
@@ -284,5 +309,76 @@ mod tests {
         let mut s = Session::new();
         assert!(super::restore(&mut s, r#"{"version":1}"#));
         assert_eq!(serde_json::to_value(&s.prefs).unwrap()["keep_menu_open"], false);
+    }
+
+    #[test]
+    fn panel_widths_roundtrip_both_sides_without_replacing_host_or_document_state() {
+        for widths in [(450.0, 500.0), (240.0, 240.0), (310.5, 333.25)] {
+            let mut before = configured();
+            before.prefs.panel_widths = widths;
+            let text = encode(&before.prefs);
+            let value: Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(value["panel_widths"][0].as_f64(), Some(f64::from(widths.0)));
+            assert_eq!(value["panel_widths"][1].as_f64(), Some(f64::from(widths.1)));
+            let mut after = Session::new();
+            after.prefs.publish_server = "wss://host-retained.invalid/".into();
+            let document = after.doc().unwrap().clone();
+            assert!(super::restore(&mut after, &text));
+            assert_eq!(after.prefs.panel_widths, widths);
+            assert_eq!(after.prefs.publish_server, "wss://host-retained.invalid/");
+            assert_eq!(after.doc().unwrap(), &document);
+            assert_eq!(after.undo_depth(), (0, 0));
+            assert!(!after.ds().unwrap().is_dirty());
+        }
+    }
+
+    #[test]
+    fn legacy_or_invalid_panel_pairs_default_without_losing_valid_neighbors() {
+        for widths in [Value::Null, json!("wide"), json!([]), json!([300]), json!([300, 400, 500]), json!({"left":300,"right":400})] {
+            let mut s = configured();
+            let value = json!({"version":1,"panel_widths":widths,"pixel_grid_size":0.125,"keep_menu_open":true});
+            assert!(super::restore(&mut s, &value.to_string()));
+            assert_eq!(s.prefs.panel_widths, (240.0, 240.0));
+            assert_eq!(s.prefs.pixel_grid_size, 0.125);
+            assert!(s.prefs.keep_menu_open);
+        }
+        let mut s = configured();
+        assert!(super::restore(&mut s, r#"{"version":1,"pixel_grid_size":0.125}"#));
+        assert_eq!(s.prefs.panel_widths, (240.0, 240.0), "legacy version-one record has no widths");
+        assert_eq!(s.prefs.pixel_grid_size, 0.125);
+    }
+
+    #[test]
+    fn stored_panel_widths_clamp_finite_values_and_default_bad_sides_independently() {
+        for (widths, expected) in [
+            (json!([200, 600]), (240.0, 500.0)),
+            (json!([480, 200]), (450.0, 240.0)),
+            (json!([f64::MAX, -f64::MAX]), (450.0, 240.0)),
+            (json!(["wide", 500]), (240.0, 500.0)),
+            (json!([310.5, null]), (310.5, 240.0)),
+            (json!([false, 333.25]), (240.0, 333.25)),
+        ] {
+            let mut s = Session::new();
+            assert!(super::restore(&mut s, &json!({"version":1,"panel_widths":widths,"pixel_grid_size":0.125}).to_string()));
+            assert_eq!(s.prefs.panel_widths, expected, "{widths}");
+            assert_eq!(s.prefs.pixel_grid_size, 0.125);
+        }
+    }
+
+    #[test]
+    fn programmatic_panel_widths_store_only_finite_clamped_values() {
+        for (widths, expected) in
+            [((f32::NAN, f32::INFINITY), (240.0, 240.0)), ((-5.0, 500.25), (240.0, 500.0)), ((450.25, f32::NEG_INFINITY), (450.0, 240.0))]
+        {
+            let mut s = Session::new();
+            s.prefs.panel_widths = widths;
+            let text = encode(&s.prefs);
+            let mut restored = Session::new();
+            assert!(super::restore(&mut restored, &text));
+            assert_eq!(restored.prefs.panel_widths, expected);
+            let value: Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(value["panel_widths"][0].as_f64(), Some(f64::from(expected.0)));
+            assert_eq!(value["panel_widths"][1].as_f64(), Some(f64::from(expected.1)));
+        }
     }
 }

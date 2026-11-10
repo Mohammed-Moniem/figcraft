@@ -599,6 +599,8 @@ mod shortcut_parity_tests;
 #[cfg(test)]
 mod sketch_import_tests;
 #[cfg(test)]
+mod slot_inherited_properties_tests;
+#[cfg(test)]
 mod slot_tests;
 #[cfg(test)]
 mod spelling_tests;

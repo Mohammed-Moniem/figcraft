@@ -100,6 +100,8 @@ pub struct CanvasState {
     pub preview_frames: u64,
     pub refined_frames: u64,
     dragging: bool,
+    /// The document whose primary press the canvas accepted. Never carry it into another tab.
+    drag_document: Option<u64>,
     space_pan: bool,
     middle_pan: Option<(Pos2, f64, f64)>,
     /// The zoom tool (Z held): zooming out (Alt) or in, and where its drag started.
@@ -157,6 +159,7 @@ impl Default for CanvasState {
             preview_frames: 0,
             refined_frames: 0,
             dragging: false,
+            drag_document: None,
             space_pan: false,
             middle_pan: None,
             cursor: None,

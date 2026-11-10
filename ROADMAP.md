@@ -1,5 +1,18 @@
 # FigCraft Roadmap
 
+Local composition, 2026-11-08: reviewed native Motion interchange, inherited-slot text
+properties (#2124), sharp-point export-work accounting (#2114), document-owned drag
+retirement and browser panel-width persistence are locally merged. Their original/repaired
+controls and full combined CI pass on macOS ARM64 (6,977 tests; 27 existing ignored). Matching
+retained builds and launched validation remain pending.
+[Scope and remaining checks](docs/native-format-slot-runtime-composition.md). The 18:43 UTC audit
+contains 200 open issues and 201 tracked records; all bugs and feature requests remain in progress.
+
+Local point-edit integration, 2026-11-08: selected-point alignment and distribution (#2109), and
+missing point-radius fallback with sharp-point preservation (#2114), have passing isolated
+controls. [Scope and validation](docs/vector-point-alignment-and-radius.md). Fresh combined CI
+and matching launched acceptance remain pending; the 197-issue inventory is still unfinished.
+
 Local issue integration, 2026-11-07: whole ellipses use four anchors (#2080); experimental `.fig`
 exports open the viewer's page unless an opening page was chosen explicitly (#2045); selection
 outlines can be hidden while editing (#1319); import-size refusals name their limit (#574/#1786);

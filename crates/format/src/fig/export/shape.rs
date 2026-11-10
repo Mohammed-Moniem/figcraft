@@ -9,6 +9,16 @@ impl<'d> Exporter<'d> {
     /// Text: its style, box settings, and characters with their styled runs. `fills`: the layer's
     /// (what runs without fills of their own show when the text's own style sets other fills).
     pub(super) fn text(&mut self, td: &TextData, fills: &[Paint], f: &mut Fields) {
+        let runs = td.runs.len().saturating_add(1);
+        let comparisons = runs.checked_mul(runs);
+        if comparisons.is_none_or(|work| !self.budget.reserve(0, work))
+            || !self.budget.comparisons(td, runs)
+            || !self.budget.source(td)
+            || !self.budget.items(td.characters.len().min(MAX_CHARS.saturating_mul(4)), 64, 2)
+            || !self.budget.items(td.paragraph_count(), 512, 16)
+        {
+            return;
+        }
         style_fields(&td.style, f);
         let (ha, va) = (
             match td.align_h {
@@ -157,6 +167,22 @@ impl<'d> Exporter<'d> {
     /// The editable network (with per-point corner radii, handle mirroring and end caps) and,
     /// when it has filled areas, their outline.
     pub(super) fn vector(&mut self, n: &Node, net: &VectorNetwork, f: &mut Fields) {
+        let elements = net
+            .vertices
+            .len()
+            .saturating_add(net.segments.len())
+            .saturating_add(net.regions.iter().flat_map(|r| &r.loops).fold(0usize, |n, row| n.saturating_add(row.len())));
+        let styled = net
+            .vertices
+            .iter()
+            .filter(|v| v.radius > 0.0 || n.corners.radii[0] > 0.0 || v.mirror.is_some() || v.cap.is_some() || v.join.is_some())
+            .count();
+        if !self.budget.source(net)
+            || !self.budget.items(elements, 256, 16)
+            || styled.checked_mul(styled).is_none_or(|work| !self.budget.reserve(0, work))
+        {
+            return;
+        }
         if net.regions.iter().any(|region| region.fills.is_some() || region.paint_space.is_some()) {
             self.warn("vector region paints were left out of the .fig export");
         }
@@ -194,7 +220,8 @@ impl<'d> Exporter<'d> {
                 .enumerate()
                 .map(|(i, v)| {
                     let mut st: Fields = Vec::new();
-                    if v.radius > 0.0 {
+                    // A sharp point must override a positive layer-radius fallback on import.
+                    if v.radius > 0.0 || n.corners.radii[0] > 0.0 {
                         st.push(("cornerRadius", fl(v.radius)));
                     }
                     if let Some(m) = v.mirror {
@@ -257,13 +284,17 @@ impl<'d> Exporter<'d> {
             if net.regions.iter().any(|r| r.winding != winding) {
                 self.warn("vectors whose filled areas use different winding rules use the first one's in their outline");
             }
-            self.geometry("fillGeometry", &net.fill_path(), winding, f);
+            if net.vertices.iter().any(|v| v.radius > 0.0) {
+                self.warn("cached rounded-vector fill outlines were omitted; editable vector geometry is retained");
+            } else if self.budget.path_source(n) {
+                self.geometry("fillGeometry", &net.fill_path(), winding, f);
+            }
         }
     }
 
     /// `fillGeometry` or `strokeGeometry` (`key`) from a local path.
     pub(super) fn geometry(&mut self, key: &'static str, p: &BezPath, winding: WindingRule, f: &mut Fields) {
-        if p.elements().is_empty() {
+        if p.elements().is_empty() || !self.budget.items(p.elements().len(), 64, 4) {
             return;
         }
         if let Some(i) = self.blob(path_blob(p)) {
@@ -284,6 +315,9 @@ impl<'d> Exporter<'d> {
         }
         let whole = matches!(n.kind, NodeKind::Ellipse { sweep, inner, .. } if inner == 0.0 && figcraft_doc::geom::full_sweep(sweep));
         if boxy || whole {
+            if !self.budget.items(256, 128, 8) {
+                return;
+            }
             let (out, inset) = match sp.align {
                 StrokeAlign::Inside => (0.0, weight),
                 StrokeAlign::Center => (weight / 2.0, weight / 2.0),
@@ -308,12 +342,32 @@ impl<'d> Exporter<'d> {
             ring.extend(grown(-inset).iter().flat_map(|p| p.elements().iter().copied()));
             self.geometry("strokeGeometry", &ring, WindingRule::EvenOdd, f);
         } else if sp.align == StrokeAlign::Center {
+            if matches!(&n.kind, NodeKind::Vector { network } if network.vertices.iter().any(|v| v.radius > 0.0)) {
+                self.warn("cached rounded-vector stroke outlines were omitted; editable stroke settings are retained");
+                return;
+            }
+            if !self.budget.path_source(n) {
+                return;
+            }
             let path = match &n.kind {
                 NodeKind::Vector { network } => Some(network.stroke_path()),
                 NodeKind::Text(_) => None,
                 _ => figcraft_doc::geometry::shape_path(n),
             };
             let Some(path) = path.filter(|p| !p.elements().is_empty()) else { return };
+            // Kurbo's cubic offset fitter has adaptive, unbounded expansion. A cache is
+            // optional: preserve its editable stroke instead of entering that fitter.
+            if path
+                .elements()
+                .iter()
+                .any(|e| matches!(e, figcraft_doc::geom::kurbo::PathEl::QuadTo(..) | figcraft_doc::geom::kurbo::PathEl::CurveTo(..)))
+            {
+                self.warn("cached curved stroke outlines were omitted; editable stroke settings are retained");
+                return;
+            }
+            if !self.budget.items(path.elements().len().saturating_add(1), 32768, 2048) {
+                return;
+            }
             use figcraft_doc::geom::kurbo::{Cap, Join, Stroke, StrokeOpts, stroke};
             let cap = match sp.cap_start {
                 StrokeCap::Round => Cap::Round,
@@ -333,6 +387,9 @@ impl<'d> Exporter<'d> {
 
     /// Add a blob; its index (`None` once the blobs would make the file too large).
     fn blob(&mut self, bytes: Vec<u8>) -> Option<u32> {
+        if self.budget.failed() {
+            return None;
+        }
         if let Some(i) = self.blobs.get(&bytes) {
             return Some(*i);
         }

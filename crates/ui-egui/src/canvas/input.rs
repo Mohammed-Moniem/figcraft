@@ -236,7 +236,27 @@ fn pan_view(app: &mut FigApp, ctx: &egui::Context, resp: &egui::Response, pos: P
     false
 }
 
+/// Retire the captured press before it can pan or send a Move into another document.
+fn retire_foreign_drag(app: &mut FigApp) -> bool {
+    let Some(document) = app.canvas.drag_document else { return false };
+    if app.session.ds().is_ok_and(|ds| ds.uid == document) {
+        return false;
+    }
+    app.canvas.dragging = false;
+    app.canvas.drag_document = None;
+    app.canvas.pressure = None;
+    app.canvas.last_pointer = None;
+    app.canvas.last_hover = None;
+    if let Err(error) = app.session.drop_gesture_in_document(document) {
+        app.toast(error.to_string());
+    }
+    true
+}
+
 pub(super) fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> bool {
+    if retire_foreign_drag(app) {
+        return true;
+    }
     let gesture = handled_gesture(app, ui, resp);
     if matches!(gesture, touch::Verdict::Swallow) {
         return true;
@@ -445,7 +465,10 @@ fn send(app: &mut FigApp, kind: PointerKind, pos: Pos2, m: &egui::Modifiers) {
     if hover && app.canvas.last_hover.as_ref().is_some_and(|k| *k == HoverKey::of(app, ev.clone())) {
         return;
     }
-    if kind == PointerKind::Up {
+    if kind == PointerKind::Down {
+        app.canvas.drag_document = app.session.ds().ok().map(|ds| ds.uid);
+    } else if kind == PointerKind::Up {
+        app.canvas.drag_document = None;
         app.canvas.pressure = None;
     }
     app.canvas.last_pointer = Some(Point::new(ev.x, ev.y));

@@ -1,7 +1,12 @@
 # Local feature integration, 8 November 2026
 
 Status: **IN_PROGRESS**. This batch implements the following scoped changes; it does not complete
-the refreshed 197 open bugs and feature requests, close upstream issues, or establish whole-product parity.
+the 18:43 UTC inventory of 200 open bugs and feature requests (201 tracked records, including one upstream closure), close upstream issues, or establish whole-product parity.
+
+The latest [native-format, slot-property and runtime composition](native-format-slot-runtime-composition.md)
+has passing scoped original/repaired controls and a full combined CI pass on macOS ARM64:
+6,977 tests passed, with no failures and 27 existing ignored tests. Matching retained artifacts and
+launched acceptance remain pending. Earlier evidence below stays bound to its original source.
 
 The combined runtime follow-up preserves K-derived ownership through the public `edit.undo`
 and `edit.redo` commands. Their restored snapshot differences no longer become fresh local edits;
@@ -345,3 +350,12 @@ The earlier local issue milestone passed a full check with 5,831 named pass reco
 tests, WASM checks and plugin build/smoke checks, plus scoped native synthetic visual acceptance
 on macOS ARM64. That evidence predates this feature batch. Each feature has scoped regressions;
 the new combined source still requires its own full check and native visual acceptance.
+
+## Selected vector points and imported radii
+
+The next local integration adds selected-point alignment/distribution (#2109) and layer-radius
+fallback for missing vector point radii (#2114). Explicit sharp points and supplier scales are
+preserved. The identical-test original run had 23 failures; the repair passes all 29 controls,
+plus isolated formatting, strict affected-crate Clippy and layering. See
+[behavior and remaining acceptance](vector-point-alignment-and-radius.md). Fresh full combined
+CI, matching artifacts and launched application validation are pending.

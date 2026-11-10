@@ -736,3 +736,58 @@ fn provenance_scaled_branch_keeps_fitted_geometry_and_unknown_text_units() {
     assert_eq!(observed_field(&record, "size")["resolution"], "computed-fit");
     assert_eq!(observed_field(&record, "fontSize")["supplier"]["scale"], 0.5);
 }
+
+fn issue_2114_fallback_nodes() -> Vec<Kv<'static>> {
+    let mut nodes = point_radius_nodes();
+    let vector = nodes.pop().unwrap();
+    let data = set(point_radius_vector_data(40.0), "styleOverrideTable", arr(vec![o(vec![("styleID", f(1.0))])]));
+    nodes.push(set(set(vector, "cornerRadius", f(40.0)), "vectorData", data));
+    nodes
+}
+
+#[test]
+fn issue_2114_layer_radius_scales_once_through_nested_instances() {
+    let mut nodes = issue_2114_fallback_nodes();
+    nodes.push(instance(9, (1, "\""), "Half fallback", 5, (100.0, 100.0), Some(0.5), vec![]));
+    nodes.push(node(8, Some((1, "#")), "SYMBOL", "Outer fallback", vec![("size", xy(200.0, 200.0))]));
+    nodes.push(instance(10, (8, "!"), "Inner fallback", 5, (100.0, 100.0), Some(0.5), vec![]));
+    nodes.push(instance(11, (1, "$"), "Quarter fallback", 8, (100.0, 100.0), Some(0.5), vec![]));
+    let doc = point_radius_import(nodes);
+    assert_eq!(first_point_radius(&doc, "Corner main"), 40.0);
+    assert_eq!(first_point_radius(&doc, "Half fallback"), 20.0);
+    let nested = first_child(&doc, "Quarter fallback");
+    let NodeKind::Vector { network } = &doc.node(nested.children[0]).unwrap().kind else { panic!() };
+    assert_eq!(network.vertices[0].radius, 10.0);
+}
+
+#[test]
+fn issue_2114_layer_and_point_radii_keep_their_own_supplier_scales() {
+    let mut nodes = issue_2114_fallback_nodes();
+    let path = || o(vec![("guids", arr(vec![g(6)]))]);
+    let own_layer = o(vec![("guidPath", path()), ("cornerRadius", f(7.0))]);
+    nodes.push(instance(9, (1, "\""), "Own layer fallback", 5, (100.0, 100.0), Some(0.5), vec![("derivedSymbolData", arr(vec![own_layer]))]));
+    let data = set(point_radius_vector_data(40.0), "styleOverrideTable", arr(vec![o(vec![("styleID", f(1.0))])]));
+    let own_data = o(vec![("guidPath", path()), ("vectorData", data)]);
+    nodes.push(instance(10, (1, "#"), "Own data inherited layer", 5, (100.0, 100.0), Some(0.5), vec![("derivedSymbolData", arr(vec![own_data]))]));
+    let own_point = o(vec![("guidPath", path()), ("cornerRadius", f(9.0)), ("vectorData", point_radius_vector_data(7.0))]);
+    nodes.push(instance(11, (1, "$"), "Own point wins", 5, (100.0, 100.0), Some(0.5), vec![("derivedSymbolData", arr(vec![own_point]))]));
+    let doc = point_radius_import(nodes);
+    assert_eq!(first_point_radius(&doc, "Own layer fallback"), 7.0, "an instance-owned layer value is already scaled");
+    assert_eq!(first_point_radius(&doc, "Own data inherited layer"), 20.0, "the main layer value still uses its own 0.5 factor");
+    assert_eq!(first_point_radius(&doc, "Own point wins"), 7.0, "an instance-owned point value uses the vectorData supplier");
+    assert_eq!(first_point_radius(&doc, "Corner main"), 40.0);
+}
+
+#[test]
+fn issue_2114_shared_network_cache_distinguishes_layer_radius_overrides() {
+    let mut nodes = issue_2114_fallback_nodes();
+    for (id, name, radius) in [(9, "Six", 6.0), (10, "Nine", 9.0), (11, "Sharp", 0.0)] {
+        let row = o(vec![("guidPath", o(vec![("guids", arr(vec![g(6)]))])), ("cornerRadius", f(radius))]);
+        nodes.push(instance(id, (1, &id.to_string()), name, 5, (200.0, 200.0), Some(1.0), vec![("derivedSymbolData", arr(vec![row]))]));
+    }
+    let doc = point_radius_import(nodes);
+    assert_eq!(first_point_radius(&doc, "Corner main"), 40.0);
+    assert_eq!(first_point_radius(&doc, "Six"), 6.0);
+    assert_eq!(first_point_radius(&doc, "Nine"), 9.0);
+    assert_eq!(first_point_radius(&doc, "Sharp"), 0.0, "an explicit zero layer override is sharp");
+}

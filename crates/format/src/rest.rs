@@ -165,7 +165,7 @@ pub fn import(v: &Value, images: ImageResolver) -> Result<(Document, Vec<String>
 /// in the file JSON (a `meta` with `variableCollections`, or `variableCollections` and
 /// `variables` at the top level) are read too; the first definition of an id wins.
 pub fn import_with(v: &Value, variables: Option<&Value>, images: ImageResolver) -> Result<(Document, Vec<String>), FormatError> {
-    import_parts(v, variables, images, Vec::new(), MAX_NODES, false)
+    import_parts(v, variables, images, Vec::new(), MAX_NODES, false, None)
 }
 
 /// Internal .fig JSON path: GUID provenance is not part of the public REST import contract.
@@ -184,7 +184,22 @@ pub(crate) fn import_with_networks(
     networks: Vec<Option<VectorNetwork>>,
     max_nodes: usize,
 ) -> Result<(Document, Vec<String>), FormatError> {
-    import_parts(v, None, images, networks, max_nodes, true)
+    import_parts(v, None, images, networks, max_nodes, true, None)
+}
+
+/// Native-only sidecar, parsed from bounded Kiwi before the message is dropped. Ordinary REST
+/// JSON cannot create it; applying it after `finish` requires exact imported native GUIDs.
+pub(crate) fn import_with_native_motion(
+    v: &Value,
+    images: ImageResolver,
+    networks: Vec<Option<VectorNetwork>>,
+    max_nodes: usize,
+    motion: crate::fig::motion::NativeMotion,
+) -> Result<(Document, Vec<String>), FormatError> {
+    if motion.is_empty() {
+        return import_with_networks(v, images, networks, max_nodes);
+    }
+    import_parts(v, None, images, networks, max_nodes, true, Some(motion))
 }
 
 /// [`import_with_networks`] for imports other than `.fig` (no `.fig` source identities): the
@@ -195,7 +210,7 @@ pub(crate) fn import_with_networks_plain(
     networks: Vec<Option<VectorNetwork>>,
     max_nodes: usize,
 ) -> Result<(Document, Vec<String>), FormatError> {
-    import_parts(v, None, images, networks, max_nodes, false)
+    import_parts(v, None, images, networks, max_nodes, false, None)
 }
 
 fn import_parts(
@@ -205,6 +220,7 @@ fn import_parts(
     networks: Vec<Option<VectorNetwork>>,
     max_nodes: usize,
     fig_sources: bool,
+    motion: Option<crate::fig::motion::NativeMotion>,
 ) -> Result<(Document, Vec<String>), FormatError> {
     let entries: Vec<&Value> = if is_document(v) { vec![v] } else { nodes_entries(v).collect() };
     if entries.is_empty() {
@@ -270,6 +286,11 @@ fn import_parts(
     cx.doc.current_page = cx.doc.first_page();
     cx.styles_take_bindings();
     cx.finish();
+    if let Some(motion) = motion {
+        for warning in motion.apply(&mut cx.doc, &cx.ids) {
+            cx.warn(warning);
+        }
+    }
     let warnings = cx.warnings.finish();
     Ok((cx.doc, warnings))
 }

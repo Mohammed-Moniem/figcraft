@@ -1947,3 +1947,38 @@ fn history_comparison_accepts_actual_nonunit_fig_import_but_still_checks_authore
     changed.node_mut(copied.id).unwrap().height += 20.0;
     must_reject_authored_difference(&doc, &changed, "changed geometry on actual scaled import");
 }
+
+#[test]
+fn issue_2114_fig_round_trip_keeps_explicit_sharp_points_on_a_rounded_vector() {
+    let mut doc = Document::new("Sharp point overrides");
+    let page = doc.pages[0];
+    let points = [Point::new(0.0, 0.0), Point::new(100.0, 0.0), Point::new(100.0, 100.0), Point::new(0.0, 100.0)];
+    let mut network = VectorNetwork::from_points(&points, true);
+    for (point, radius) in network.vertices.iter_mut().zip([8.0, 0.0, 8.0, 0.0]) {
+        point.radius = radius;
+    }
+    let vector = doc.create(page, NodeKind::Vector { network }, "Mixed corners", 10.0, 20.0, 100.0, 100.0).unwrap();
+    doc.node_mut(vector).unwrap().corners.radii = [8.0; 4];
+    let rectangle = doc.create(page, NodeKind::Rectangle, "Unrelated rectangle", 150.0, 20.0, 40.0, 30.0).unwrap();
+    doc.node_mut(rectangle).unwrap().corners.radii = [5.0; 4];
+    let before = crate::to_json(&doc).unwrap();
+    let (bytes, _) = export(&doc, None).unwrap();
+    let archive = Archive::open(&bytes).unwrap();
+    let (schema, message) = decode_canvas(&archive.canvas).unwrap();
+    let message = schema.decode_message(schema.find("Message").unwrap(), &message).unwrap();
+    let layer = message.get("nodeChanges").unwrap().list().iter().find(|n| n.get("name").and_then(Kv::str) == Some("Mixed corners")).unwrap();
+    let data = layer.get("vectorData").unwrap();
+    let blob = data.get("vectorNetworkBlob").and_then(Kv::f64).unwrap() as usize;
+    let wire = super::network::decode(message.get("blobs").unwrap().list()[blob].get("bytes").and_then(Kv::bytes).unwrap()).unwrap();
+    let styles = data.get("styleOverrideTable").unwrap().list();
+    for (point, radius) in wire.vertices.iter().zip([8.0, 0.0, 8.0, 0.0]) {
+        let style = styles.iter().find(|style| style.get("styleID").and_then(Kv::f64) == Some(f64::from(point.style)));
+        assert_eq!(style.and_then(|s| s.get("cornerRadius")).and_then(Kv::f64), Some(radius), "zero is an explicit point override in the wire data");
+    }
+    let (back, warnings) = round_trip(&doc, "sharp point overrides");
+    // The bounded exporter omits only the derived outline, retaining the editable network.
+    assert_eq!(warnings, ["cached rounded-vector fill outlines were omitted; editable vector geometry is retained"]);
+    assert_eq!(crate::to_json(&doc).unwrap(), before, "export leaves native serialization unchanged");
+    let NodeKind::Vector { network } = &back.nodes().find(|n| n.name == "Mixed corners").unwrap().kind else { panic!() };
+    assert_eq!(network.vertices.iter().map(|p| p.radius).collect::<Vec<_>>(), [8.0, 0.0, 8.0, 0.0]);
+}

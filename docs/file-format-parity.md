@@ -1,5 +1,35 @@
 # File format parity
 
+Local native Motion import subset, 2026-11-08: `.fig` import retains editable visible linear XY
+Position keys for direct rectangles in one unambiguous top-level frame per page, with identity
+linear transforms, no auto layout, explicit linear easing and zero spatial path handles. The
+inward Scale subset additionally reads visible direct uniform ratios `0 < k <= 100`, neutral
+ratio1, with the observed cubic timing handles `(0.5,0,0.5,1)`, identity static linear base,
+and absent custom-pivot/spatial metadata. Its native-shaped regression controls pass; genuine
+two-page native runtime validation is still pending. Native
+microsecond clocks must convert exactly to whole milliseconds within 1..600000ms; keys span the
+frame duration, and relative translation is added to the rectangle's unchanged static base.
+The frame's duration becomes the owning page timeline. Absent native fps/playback settings use
+60fps and once playback with an explicit limitation warning. This subset comes from an original
+synthetic native Figma control and original native-shaped tests; broader C06 acceptance remains
+open. Unsupported properties, hidden/preset/paint/effect bindings, unrecognized easing, motion paths,
+ambiguous/nested/offset timelines and invalid or over-budget graphs are counted with reasons.
+The outward candidate writes editable Linear XY Position only, for that direct visible rectangle
+subset with exact full-span whole-ms keys and a declared page duration. Track/key resources use a
+separate GUID namespace and share the existing hidden asset canvas; component property maps and
+ordinary variable bindings remain separate and retained. Native fps/loop defaults remain
+unverified: the candidate accepts source60fps/once and explicitly warns that these settings are
+not encoded. Omitted keyframes, clips and timeline settings have counted reasons and a `.figcraft`
+save alternative. Independent native-graph/local-runtime checks and actual Figma reimport are
+separate acceptance steps; this candidate alone is not all-property, easing, timeline or export parity.
+
+The candidate also bounds complete source/tree, auxiliary/inline rows, generated values, exact
+uncompressed encoding and compression/archive buffer growth before allocation. The shared work
+and byte limits may refuse a complex export rather than allocate an unbounded intermediate.
+Cached curved or rounded-vector outlines that require adaptive expansion are omitted with a
+warning while editable geometry/stroke settings remain; unsupported one-sided outline expansion
+is refused. Static files without Motion retain no Motion warning.
+
 Local candidate, 2026-11-08: [mobile export folder layouts](mobile-export-layout.md) (#1689)
 add Flutter resolution-aware image folders, iOS image sets with `Contents.json`, and Android
 density folders or an explicitly selected Vector Drawable. Their conventions follow the public

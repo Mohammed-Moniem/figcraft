@@ -284,4 +284,42 @@ mod tests {
         save(&mut items, &s, &mut storage);
         assert_eq!(saved_name(&items), "Original local name", "the save boundary cannot distinguish an exact same-name commit from other prefs");
     }
+
+    #[test]
+    fn browser_panel_widths_reload_then_fit_narrow_and_return_wide_without_resaving_the_fit() {
+        use figcraft_ui_egui::{CANVAS_MIN, FigApp, NoServices};
+
+        let mut before = configured();
+        before.prefs.panel_widths = (450.0, 500.0);
+        let mut items = BTreeMap::new();
+        let mut storage = load(&mut Session::new(), &items);
+        save(&mut items, &before, &mut storage);
+        let mut after = Session::new();
+        load(&mut after, &items);
+        assert_eq!(after.prefs.panel_widths, (450.0, 500.0), "actual browser storage orchestration");
+        let mut app = FigApp::new(after, Box::new(NoServices));
+        let ctx = egui::Context::default();
+        let mut frame = 0;
+        for width in [800.0, 1440.0] {
+            for _ in 0..4 {
+                frame += 1;
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 900.0))),
+                    time: Some(f64::from(frame) / 60.0),
+                    ..Default::default()
+                };
+                ctx.run_ui(input, |ui| app.ui(ui)).textures_delta.clear();
+            }
+            assert!(app.canvas.rect.width() >= CANVAS_MIN);
+            assert_eq!((app.ui.left_width, app.ui.right_width), (450.0, 500.0));
+            assert_eq!(app.session.prefs.panel_widths, (450.0, 500.0), "fitting is not a new preference");
+            save(&mut items, &app.session, &mut storage);
+            let mut reload = Session::new();
+            load(&mut reload, &items);
+            assert_eq!(reload.prefs.panel_widths, (450.0, 500.0));
+            assert_eq!(reload.undo_depth(), (0, 0));
+            assert!(!reload.ds().unwrap().is_dirty());
+        }
+        assert_eq!(app.canvas.rect.width(), 1440.0 - 56.0 - 450.0 - 500.0, "wide again uses both retained widths");
+    }
 }

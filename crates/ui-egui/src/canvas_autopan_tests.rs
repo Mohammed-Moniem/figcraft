@@ -256,3 +256,64 @@ fn a_discarded_egui_pass_does_not_pan_the_same_owned_drag_twice() {
     assert!((pan - 520.0 * DT).abs() < 0.5, "one frame pans once, including a discarded pass: {pan}");
     release(&mut u, at);
 }
+
+#[test]
+fn a_held_edge_drag_cannot_pan_a_new_document_during_its_first_layout() {
+    // New files first fit their empty canvas. Compare against that actual UI layout,
+    // not their pre-layout ViewState defaults or a manually assigned camera centre.
+    let mut idle = setup();
+    run(&mut idle, "file.new", json!({"name": "Idle recipient control"}));
+    idle.frame(vec![]);
+    let fitted = centre(&idle);
+
+    let mut u = setup();
+    let (_, p) = centred_rect(&mut u);
+    let origin = u.app.session.ds().unwrap().uid;
+    let before = u.app.session.doc().unwrap().clone();
+    let from = pick_up(&mut u, p);
+    let at = pos2(u.app.canvas.rect.right() - 2.0, from.y);
+    hold(&mut u, at, 4);
+    assert!(centre(&u).0 > 0.0, "the original owner actually acquired edge pan");
+
+    run(&mut u, "file.new", json!({"name": "Held recipient"}));
+    let recipient = u.app.session.ds().unwrap().uid;
+    let empty = u.app.session.ds().unwrap().doc.clone();
+    u.frame(vec![]);
+    assert_eq!(centre(&u), fitted, "not even the first frame may pan the new owner");
+    for _ in 0..20 {
+        u.frame(vec![]);
+    }
+    release(&mut u, at);
+    assert_eq!(centre(&u), fitted, "holding and releasing cannot resume the old drag");
+    let ds = u.app.session.ds().unwrap();
+    assert_eq!(ds.uid, recipient);
+    assert!(std::sync::Arc::ptr_eq(&empty, &ds.doc), "the recipient document stays untouched");
+    assert_eq!(u.app.session.undo_depth(), (0, 0));
+    assert!(!u.app.session.tool.busy(), "the carried tool gesture was retired");
+    let old = u.app.session.docs.iter().find(|ds| ds.uid == origin).unwrap();
+    assert_eq!(*old.doc, before, "only the originating document's uncommitted preview is cancelled");
+    assert!(u.app.ui.toast.is_none(), "no stale Move reaches the new document");
+}
+
+#[test]
+fn closing_the_held_edge_drags_document_cannot_pan_the_remaining_document() {
+    let mut u = setup();
+    let recipient = u.app.session.ds().unwrap().uid;
+    let fitted = centre(&u);
+    let empty = u.app.session.ds().unwrap().doc.clone();
+    run(&mut u, "file.new", json!({"name": "Closing drag owner"}));
+    u.frame(vec![]);
+    let (_, p) = centred_rect(&mut u);
+    let from = pick_up(&mut u, p);
+    let at = pos2(u.app.canvas.rect.right() - 2.0, from.y);
+    hold(&mut u, at, 4);
+    run(&mut u, "file.close", json!({"force": true}));
+    u.frame(vec![]);
+    assert_eq!(u.app.session.ds().unwrap().uid, recipient);
+    assert_eq!(centre(&u), fitted, "closing the source must not pan the remaining owner");
+    release(&mut u, at);
+    assert_eq!(centre(&u), fitted);
+    assert!(std::sync::Arc::ptr_eq(&empty, &u.app.session.ds().unwrap().doc));
+    assert_eq!(u.app.session.undo_depth(), (0, 0));
+    assert!(!u.app.session.tool.busy());
+}

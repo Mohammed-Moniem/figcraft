@@ -679,13 +679,20 @@ impl<'a> Mapper<'a> {
             size.zip(norm).filter(|(s, n)| s.is_finite() && *n > 1e-9).map_or(1.0, |(s, n)| s / n)
         };
         let (sx, sy) = (scale("x"), scale("y"));
+        let layer_radius = v.len("cornerRadius");
         let vertices: Vec<Value> = net
             .vertices
             .iter()
             .map(|p| {
                 let mut out = json!({"x": p.x * sx, "y": p.y * sy});
                 let st = style(p.style);
-                if let Some(r) = st.and_then(|s| num(s, "cornerRadius")).and_then(|r| scaled(r, vector_scale)).filter(|r| *r > 0.0) {
+                // A present point field (including zero) overrides the layer. Each supplier
+                // owns its scale: the layer fallback is already in physical units.
+                let radius = match st.and_then(|s| s.get("cornerRadius")) {
+                    Some(value) => value.f64().and_then(|r| scaled(r, vector_scale)),
+                    None => layer_radius,
+                };
+                if let Some(r) = radius.filter(|r| *r > 0.0) {
                     out["radius"] = json!(r);
                 }
                 match st.and_then(|s| s.get("handleMirroring")).and_then(Kv::str) {
@@ -766,7 +773,11 @@ impl<'a> Mapper<'a> {
         let unknown_join = net.vertices.iter().any(|p| point_join(p).is_some_and(|j| !j.str().is_some_and(known)));
         let unsupported_join = net.vertices.iter().any(|p| point_join(p).and_then(Kv::str).is_some_and(|j| known(j) && j != layer_join));
         if unresolved_style {
-            self.warn("some vector points refer to point settings missing from the file; they use the layer's joins and plain corners");
+            if layer_radius.is_some_and(|radius| radius > 0.0) {
+                self.warn("some vector points refer to point settings missing from the file; they use the layer's joins and corner radius");
+            } else {
+                self.warn("some vector points refer to point settings missing from the file; they use the layer's joins and plain corners");
+            }
         }
         if unknown_join {
             self.warn("vector points with unknown stroke joins use the layer join");
@@ -801,7 +812,7 @@ impl<'a> Mapper<'a> {
             o.insert("vectorNetwork".into(), entry);
             return true;
         }
-        let key = (blob_id, sx.to_bits(), sy.to_bits(), std::ptr::from_ref(vd) as usize);
+        let key = (blob_id, sx.to_bits(), sy.to_bits(), std::ptr::from_ref(vd) as usize, layer_radius.unwrap_or(0.0).to_bits());
         let id = match self.network_ids.get(&key) {
             Some(id) => *id,
             None => {

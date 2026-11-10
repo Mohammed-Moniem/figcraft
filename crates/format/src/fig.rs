@@ -32,8 +32,13 @@ mod layer_cap_tests;
 mod map;
 #[cfg(test)]
 mod missing_image_tests;
+pub(crate) mod motion;
 #[cfg(test)]
 mod motion_export_loss_tests;
+#[cfg(test)]
+mod motion_export_tests;
+#[cfg(test)]
+mod motion_import_tests;
 mod network;
 #[cfg(test)]
 mod paste_style_tests;
@@ -151,13 +156,14 @@ fn import_with_image_limit(bytes: &[u8], name: &str, image_limit: u64) -> Result
     })?;
     let max_nodes = layer_budget(packed);
     drop(message);
+    let motion = motion::NativeMotion::read(&msg, max_nodes);
     let file_name = archive.file_name.as_deref().filter(|n| !n.trim().is_empty()).unwrap_or(name);
     let (json, mut warnings, networks) = map::to_rest(&msg, file_name, max_nodes);
     // The message goes before the layers are built, so the images it carries are copied out first.
     let embedded = embedded_copies(&msg);
     drop(msg);
     let images = |r: &str| archive.image(r).or_else(|| embedded.get(r).map(|b| b.to_vec()));
-    let (mut doc, more) = crate::rest::import_with_networks(&json, &images, networks, max_nodes)?;
+    let (mut doc, more) = crate::rest::import_with_native_motion(&json, &images, networks, max_nodes, motion)?;
     let skipped = archive.image_budget.skipped.get();
     if skipped > 0 {
         warnings.push(format!("{skipped} ZIP image(s) skipped by the total ZIP image byte budget ({image_limit} bytes)"));

@@ -172,6 +172,133 @@ pub fn transform_in_edit_mode(s: &mut Session, p: &Value, f: impl FnOnce(&PointB
     Some(s.doc_mut().and_then(|doc| transform_points(doc, ve.id, &b.points, m)).map(|()| json!({"ok": true})))
 }
 
+/// The edge or centre of the selected points' box used by the shared alignment commands.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PointAlign {
+    Left,
+    HCenter,
+    Right,
+    Top,
+    VCenter,
+    Bottom,
+}
+
+/// Explicit layer targets keep the layer parser's authority; null means absent there too.
+fn names_layers(p: &Value) -> bool {
+    ["ids", "id"].iter().any(|key| get(p, key).is_some_and(|value| !value.is_null()))
+}
+
+/// One layer uses its own axes; selected points in several layers use page axes.
+fn edit_box(doc: &Document, ve: &VectorEdit) -> Option<PointBox> {
+    let selected = if ve.others_selected() { layers_box(doc, ve) } else { point_box(doc, ve) };
+    selected.filter(|b| b.point_count() > 0)
+}
+
+/// The exact points these commands move, including selected segments' ends in other layers.
+pub fn edit_point_count(doc: &Document, ve: &VectorEdit) -> usize {
+    edit_box(doc, ve).map_or(0, |b| b.point_count())
+}
+
+/// Selected vertex identities and their positions in the selection box's coordinates.
+fn box_points(doc: &Document, ve: &VectorEdit, b: &PointBox) -> Vec<(NodeId, usize, Point)> {
+    let inverse = b.frame.inverse();
+    std::iter::once((ve.id, &b.points))
+        .chain(b.others.iter().map(|(id, points)| (*id, points)))
+        .flat_map(|(id, points)| {
+            let world = doc.world_transform(id);
+            points.iter().filter_map(move |index| network(doc, id)?.vertices.get(*index).map(|point| (id, *index, inverse * (world * point.point()))))
+        })
+        .collect()
+}
+
+/// Convert a translation along the box's axes to a page translation (no origin component).
+fn box_offset(frame: Affine, x: f64, y: f64) -> figcraft_geom::Vec2 {
+    let [a, b, c, d, _, _] = frame.as_coeffs();
+    figcraft_geom::Vec2::new(a * x + c * y, b * x + d * y)
+}
+
+/// Validate all translations before editing, then move points with their relative handles and
+/// refit each layer once. The public command wrapper records the combined edit as one Undo.
+fn apply_point_offsets(doc: &mut Document, offsets: &[(NodeId, usize, figcraft_geom::Vec2)], command: &str) -> Result<()> {
+    let mut layers: std::collections::BTreeMap<NodeId, Vec<(usize, figcraft_geom::Vec2)>> = std::collections::BTreeMap::new();
+    for (id, index, offset) in offsets {
+        let delta = super::local_offset(doc.world_transform(*id), *offset);
+        let Some(point) = network(doc, *id).and_then(|net| net.vertices.get(*index)) else { continue };
+        let target = point.point() + delta;
+        if ![delta.x, delta.y, target.x, target.y].iter().all(|value| value.is_finite()) {
+            return Err(bad(command, "selected points cannot be moved in this coordinate frame"));
+        }
+        if delta != figcraft_geom::Vec2::ZERO {
+            layers.entry(*id).or_default().push((*index, delta));
+        }
+    }
+    for (id, points) in layers {
+        edit(doc, id, |net| {
+            for (index, delta) in points {
+                ops::move_vertices(net, &[index], delta);
+            }
+        })?;
+    }
+    Ok(())
+}
+
+/// Align selected points without layer targets. Empty/single-point selections are no-ops even
+/// inside a frame; they never fall through to aligning the edited layer itself.
+pub fn align_points_in_edit_mode(s: &mut Session, p: &Value, how: PointAlign) -> Option<Result<Value>> {
+    if names_layers(p) {
+        return None;
+    }
+    let ve = editing(s).ok()?;
+    let Some(b) = edit_box(s.doc().ok()?, &ve).filter(|b| b.point_count() >= 2) else { return Some(Ok(json!({"ok": true}))) };
+    let offsets: Vec<_> = box_points(s.doc().ok()?, &ve, &b)
+        .into_iter()
+        .filter_map(|(id, index, point)| {
+            let (x, y) = match how {
+                PointAlign::Left => (-point.x, 0.0),
+                PointAlign::HCenter => (b.width / 2.0 - point.x, 0.0),
+                PointAlign::Right => (b.width - point.x, 0.0),
+                PointAlign::Top => (0.0, -point.y),
+                PointAlign::VCenter => (0.0, b.height / 2.0 - point.y),
+                PointAlign::Bottom => (0.0, b.height - point.y),
+            };
+            let offset = box_offset(b.frame, x, y);
+            (offset != figcraft_geom::Vec2::ZERO).then_some((id, index, offset))
+        })
+        .collect();
+    if offsets.is_empty() {
+        return Some(Ok(json!({"ok": true})));
+    }
+    Some(s.doc_mut().and_then(|doc| apply_point_offsets(doc, &offsets, "align")).map(|()| json!({"ok": true})))
+}
+
+/// Distribute three or more selected points evenly between the outermost points. Layer spacing
+/// parameters do not replace this point contract; explicit layer targets keep their old route.
+pub fn distribute_points_in_edit_mode(s: &mut Session, p: &Value, horizontal: bool) -> Option<Result<Value>> {
+    if names_layers(p) {
+        return None;
+    }
+    let ve = editing(s).ok()?;
+    let Some(b) = edit_box(s.doc().ok()?, &ve).filter(|b| b.point_count() >= 3) else { return Some(Ok(json!({"ok": true}))) };
+    let mut points = box_points(s.doc().ok()?, &ve, &b);
+    let coordinate = |point: Point| if horizontal { point.x } else { point.y };
+    points.sort_by(|a, b| coordinate(a.2).total_cmp(&coordinate(b.2)));
+    let extent = if horizontal { b.width } else { b.height };
+    let last = points.len().saturating_sub(1).max(1) as f64;
+    let offsets: Vec<_> = points
+        .iter()
+        .enumerate()
+        .filter_map(|(rank, (id, index, point))| {
+            let delta = extent * (rank as f64 / last) - coordinate(*point);
+            let offset = if horizontal { box_offset(b.frame, delta, 0.0) } else { box_offset(b.frame, 0.0, delta) };
+            (offset != figcraft_geom::Vec2::ZERO).then_some((*id, *index, offset))
+        })
+        .collect();
+    if offsets.is_empty() {
+        return Some(Ok(json!({"ok": true})));
+    }
+    Some(s.doc_mut().and_then(|doc| apply_point_offsets(doc, &offsets, "distribute")).map(|()| json!({"ok": true})))
+}
+
 /// The selected points' box, or an error naming `cmd`.
 fn selected_box(s: &Session, cmd: &str) -> Result<(VectorEdit, PointBox)> {
     let ve = editing(s)?;

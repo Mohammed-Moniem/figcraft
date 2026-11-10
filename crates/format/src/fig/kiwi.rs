@@ -446,6 +446,12 @@ impl<'s> Decoder<'s, '_> {
 pub mod encode {
     use super::{BUILTINS, Field, Kind, KiwiError, Kv, MAX_DEPTH, Schema, Type, err};
 
+    /// Phase-one oracle adapter to the unchanged actual encoder, not a budget implementation.
+    #[cfg(test)]
+    pub(crate) fn message_with_test_cap(s: &Schema, def: usize, v: &Kv, max_bytes: usize) -> Result<Vec<u8>, KiwiError> {
+        message_within(s, def, v, max_bytes)
+    }
+
     #[derive(Default)]
     pub struct Writer(pub Vec<u8>);
 
@@ -532,12 +538,128 @@ pub mod encode {
     /// required, in order). Fails on what doesn't fit the schema: unknown fields or enum names,
     /// missing struct fields, wrong types, numbers out of range, non-finite floats.
     pub fn message(s: &Schema, def: usize, v: &Kv) -> Result<Vec<u8>, KiwiError> {
-        let mut w = Writer::default();
-        encode_def(s, def, v, &mut w, 0)?;
-        Ok(w.0)
+        message_within_work(s, def, v, usize::MAX, usize::MAX)
     }
 
-    fn encode_def(s: &Schema, i: usize, v: &Kv, w: &mut Writer, depth: usize) -> Result<(), KiwiError> {
+    /// Measure the identical schema-aware walk before reserving a bounded output buffer.
+    /// The second pass checks every write as well, so future writer changes cannot bypass it.
+    pub fn message_within(s: &Schema, def: usize, v: &Kv, max_bytes: usize) -> Result<Vec<u8>, KiwiError> {
+        message_within_work(s, def, v, max_bytes, 4_000_000)
+    }
+
+    pub(crate) fn message_within_work(s: &Schema, def: usize, v: &Kv, max_bytes: usize, max_work: usize) -> Result<Vec<u8>, KiwiError> {
+        let mut count = MessageWriter::new(None, max_bytes, max_work);
+        encode_def(s, def, v, &mut count, 0)?;
+        if count.visits.checked_mul(2).is_none_or(|work| work > max_work) {
+            return err("encode: counting/writing work budget exceeded before allocation");
+        }
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(count.len).map_err(|_| KiwiError::Invalid("encode: output allocation refused".into()))?;
+        let mut write = MessageWriter::new(Some(bytes), count.len, max_work);
+        write.visits = count.visits;
+        encode_def(s, def, v, &mut write, 0)?;
+        write.data.ok_or_else(|| KiwiError::Invalid("encode: missing output buffer".into()))
+    }
+
+    struct MessageWriter {
+        data: Option<Vec<u8>>,
+        len: usize,
+        limit: usize,
+        visits: usize,
+        max_work: usize,
+    }
+
+    impl MessageWriter {
+        fn new(data: Option<Vec<u8>>, limit: usize, max_work: usize) -> Self {
+            Self { data, len: 0, limit, visits: 0, max_work }
+        }
+
+        fn visit(&mut self) -> Result<(), KiwiError> {
+            self.visits = self.visits.saturating_add(1);
+            if self.visits > self.max_work {
+                return err("encode: value/work budget exceeded");
+            }
+            Ok(())
+        }
+
+        fn bytes(&mut self, bytes: &[u8]) -> Result<(), KiwiError> {
+            let next = self
+                .len
+                .checked_add(bytes.len())
+                .filter(|n| *n <= self.limit)
+                .ok_or_else(|| KiwiError::Invalid("encode: output byte budget exceeded".into()))?;
+            if let Some(data) = &mut self.data {
+                data.extend_from_slice(bytes);
+            }
+            self.len = next;
+            Ok(())
+        }
+
+        fn byte(&mut self, byte: u8) -> Result<(), KiwiError> {
+            self.bytes(&[byte])
+        }
+
+        fn var_uint(&mut self, mut value: u32) -> Result<(), KiwiError> {
+            let mut bytes = [0u8; 5];
+            let mut len = 0;
+            loop {
+                let rest = value >> 7;
+                bytes[len] = (value as u8 & 127) | if rest == 0 { 0 } else { 128 };
+                len += 1;
+                if rest == 0 {
+                    break;
+                }
+                value = rest;
+            }
+            self.bytes(&bytes[..len])
+        }
+
+        fn var_int(&mut self, value: i32) -> Result<(), KiwiError> {
+            self.var_uint(((value << 1) ^ (value >> 31)) as u32)
+        }
+
+        fn var_uint64(&mut self, mut value: u64) -> Result<(), KiwiError> {
+            let mut bytes = [0u8; 9];
+            let mut len = 0;
+            while len < 8 {
+                bytes[len] = (value as u8 & 127) | if value >> 7 == 0 { 0 } else { 128 };
+                len += 1;
+                value >>= 7;
+                if value == 0 {
+                    return self.bytes(&bytes[..len]);
+                }
+            }
+            bytes[8] = value as u8;
+            self.bytes(&bytes)
+        }
+
+        fn var_int64(&mut self, value: i64) -> Result<(), KiwiError> {
+            self.var_uint64(((value << 1) ^ (value >> 63)) as u64)
+        }
+
+        fn var_float(&mut self, value: f32) -> Result<(), KiwiError> {
+            let bits = value.to_bits().rotate_right(23);
+            if bits & 255 == 0 { self.byte(0) } else { self.bytes(&bits.to_le_bytes()) }
+        }
+
+        fn string(&mut self, value: &str) -> Result<(), KiwiError> {
+            // Bound source scanning too, even when NUL removal would yield a tiny string.
+            if self.max_work != usize::MAX && value.len() > 256 * 1024 * 1024 {
+                return err("encode: string scan budget exceeded");
+            }
+            self.visits = self.visits.saturating_add(value.len().div_ceil(64));
+            if self.visits > self.max_work {
+                return err("encode: string scan work budget exceeded");
+            }
+            for segment in value.as_bytes().split(|byte| *byte == 0) {
+                self.bytes(segment)?;
+            }
+            self.byte(0)
+        }
+    }
+
+    fn encode_def(s: &Schema, i: usize, v: &Kv, w: &mut MessageWriter, depth: usize) -> Result<(), KiwiError> {
+        w.visit()?;
         if depth > MAX_DEPTH {
             return err("encode: nested too deeply");
         }
@@ -548,7 +670,7 @@ pub mod encode {
                     Kv::Uint(u) => u32::try_from(*u).ok(),
                     _ => v.str().and_then(|name| d.fields.iter().find(|f| f.name == name)).map(|f| f.value),
                 };
-                w.var_uint(value.ok_or_else(|| KiwiError::Invalid(format!("encode: {v:?} is not a value of {}", d.name)))?);
+                w.var_uint(value.ok_or_else(|| KiwiError::Invalid(format!("encode: value is not a member of {}", d.name)))?)?;
             }
             Kind::Struct => {
                 for f in &d.fields {
@@ -564,28 +686,28 @@ pub mod encode {
                         .iter()
                         .find(|f| f.name == *name)
                         .ok_or_else(|| KiwiError::Invalid(format!("encode: {} has no field {name}", d.name)))?;
-                    w.var_uint(f.value);
+                    w.var_uint(f.value)?;
                     encode_field(s, f, fv, w, depth)?;
                 }
-                w.var_uint(0);
+                w.var_uint(0)?;
             }
         }
         Ok(())
     }
 
-    fn encode_field(s: &Schema, f: &Field, v: &Kv, w: &mut Writer, depth: usize) -> Result<(), KiwiError> {
+    fn encode_field(s: &Schema, f: &Field, v: &Kv, w: &mut MessageWriter, depth: usize) -> Result<(), KiwiError> {
         let ty = f.ty.ok_or_else(|| KiwiError::Invalid("encode: untyped field".into()))?;
         if !f.array {
             return encode_value(s, ty, v, w, depth);
         }
         let len = |n: usize| u32::try_from(n).map_err(|_| KiwiError::Invalid(format!("encode: {} is too long", f.name)));
         if let (Type::Byte, Kv::Bytes(b)) = (ty, v) {
-            w.var_uint(len(b.len())?);
-            w.0.extend_from_slice(b);
+            w.var_uint(len(b.len())?)?;
+            w.bytes(b)?;
             return Ok(());
         }
         let Kv::Array(items) = v else { return err(format!("encode: {} needs a list", f.name)) };
-        w.var_uint(len(items.len())?);
+        w.var_uint(len(items.len())?)?;
         for it in items {
             encode_value(s, ty, it, w, depth)?;
         }
@@ -603,22 +725,23 @@ pub mod encode {
         }
     }
 
-    fn encode_value(s: &Schema, ty: Type, v: &Kv, w: &mut Writer, depth: usize) -> Result<(), KiwiError> {
-        let bad = || KiwiError::Invalid(format!("encode: {v:?} is not a {ty:?}"));
+    fn encode_value(s: &Schema, ty: Type, v: &Kv, w: &mut MessageWriter, depth: usize) -> Result<(), KiwiError> {
+        w.visit()?;
+        let bad = || KiwiError::Invalid(format!("encode: value is not a {ty:?}"));
         let ranged = |lo: i128, hi: i128| int(v).filter(|i| (lo..=hi).contains(i)).ok_or_else(bad);
         match ty {
-            Type::Bool => w.byte(u8::from(v.bool().ok_or_else(bad)?)),
-            Type::Byte => w.byte(ranged(0, 255)? as u8),
-            Type::Int => w.var_int(ranged(i32::MIN.into(), i32::MAX.into())? as i32),
-            Type::Uint => w.var_uint(ranged(0, u32::MAX.into())? as u32),
+            Type::Bool => w.byte(u8::from(v.bool().ok_or_else(bad)?))?,
+            Type::Byte => w.byte(ranged(0, 255)? as u8)?,
+            Type::Int => w.var_int(ranged(i32::MIN.into(), i32::MAX.into())? as i32)?,
+            Type::Uint => w.var_uint(ranged(0, u32::MAX.into())? as u32)?,
             // Infinity is a value of its own (an axis with no maximum size); NaN is not.
             Type::Float => w.var_float(match v {
                 Kv::Float(f) if f.is_infinite() => *f,
                 _ => v.f64().map(|x| x as f32).filter(|x| x.is_finite()).ok_or_else(bad)?,
-            }),
-            Type::Str => w.string(v.str().ok_or_else(bad)?),
-            Type::Int64 => w.var_int64(ranged(i64::MIN.into(), i64::MAX.into())? as i64),
-            Type::Uint64 => w.var_uint64(ranged(0, u64::MAX.into())? as u64),
+            })?,
+            Type::Str => w.string(v.str().ok_or_else(bad)?)?,
+            Type::Int64 => w.var_int64(ranged(i64::MIN.into(), i64::MAX.into())? as i64)?,
+            Type::Uint64 => w.var_uint64(ranged(0, u64::MAX.into())? as u64)?,
             Type::Def(i) => encode_def(s, i, v, w, depth + 1)?,
         }
         Ok(())

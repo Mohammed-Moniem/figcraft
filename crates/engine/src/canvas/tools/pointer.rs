@@ -112,6 +112,19 @@ impl Session {
         self.cancel_interaction()
     }
 
+    /// Retire a UI press captured by a document that is no longer presented. Cancel only
+    /// that document's preview, never an interaction in the tab now in front. A closed
+    /// origin has no preview left to restore, but its shared tool state must still end.
+    pub fn drop_gesture_in_document(&mut self, document: u64) -> Result<()> {
+        self.tool.gesture = Gesture::None;
+        self.tool.last_move = None;
+        self.tool.overlay = Overlay { cursor: self.tool.tool.cursor(), ..Overlay::default() };
+        let Ok(forward) = self.bring_forward(&json!(document)) else { return Ok(()) };
+        let result = self.cancel_interaction();
+        self.put_back(forward);
+        result
+    }
+
     /// Feed one pointer event to the current tool.
     pub fn pointer(&mut self, ev: &PointerEvent) -> Result<()> {
         // A held button sends the same move every frame: running the gesture again would only

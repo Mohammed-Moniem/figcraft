@@ -38,8 +38,14 @@ impl<'d> Exporter<'d> {
     /// variants share; written on the set, as the format keeps them.
     pub(super) fn set_props(&mut self, set: &Node, f: &mut Fields) {
         let doc = self.doc;
+        if !self.budget.items(set.children.len(), 16, 1) {
+            return;
+        }
         let variants: Vec<&Node> =
             set.children.iter().filter_map(|c| doc.node(*c)).filter(|c| matches!(c.kind, NodeKind::Component { .. })).collect();
+        if !self.budget.comparisons(&variants, variants.len().saturating_add(1)) {
+            return;
+        }
         let mut order: Vec<(String, Vec<String>)> = Vec::new();
         for v in &variants {
             for (prop, value) in variant_pairs(&v.name) {
@@ -126,6 +132,9 @@ impl<'d> Exporter<'d> {
     /// An instance: its main, the fields it and its layers override, the size, place and outline
     /// its layers get from that (derived data), its property values. `f`: its own fields so far.
     pub(super) fn instance(&mut self, n: &Node, main: NodeId, props: &BTreeMap<String, Value>, f: &mut Fields) {
+        if self.budget.failed() || !self.budget.node_source(n) || !self.budget.source(props) {
+            return;
+        }
         // Which properties control the instance itself (a nested instance in a main component) is
         // its own too, not an override of its main.
         const OWN: [&str; 9] =
@@ -137,6 +146,9 @@ impl<'d> Exporter<'d> {
         // is its own.
         let mut root_theirs = Vec::new();
         self.layer(m, m.parent.and_then(|p| doc.node(p)), &mut root_theirs, true);
+        if self.budget.failed() || !self.budget.items(f.len().saturating_add(root_theirs.len()), 512, 16) {
+            return;
+        }
         root_theirs.retain(|(k, _)| !OWN.contains(k));
         // An instance is named after its component (the set, for a variant) until renamed.
         let set = m.parent.and_then(|p| doc.node(p)).filter(|p| matches!(p.kind, NodeKind::ComponentSet { .. }));
@@ -153,16 +165,28 @@ impl<'d> Exporter<'d> {
             swap: Option<Kv<'static>>,
         }
         let mut rows: Vec<Row> = Vec::new();
+        if !self.budget.items(n.children.len(), 32, 1) {
+            return;
+        }
         let mut stack: Vec<(NodeId, NodeId)> = n.children.iter().rev().map(|c| (*c, n.id)).collect();
         let mut seen = 0usize;
         while let Some((id, parent)) = stack.pop() {
+            if self.budget.failed() || !self.budget.row() {
+                return;
+            }
             let Some(d) = doc.node(id) else { continue };
             seen += 1;
             if seen > MAX_NODES {
                 break;
             }
+            if !self.budget.items(d.children.len(), 32, 1) {
+                return;
+            }
             stack.extend(d.children.iter().rev().map(|c| (*c, id)));
             let path = self.layer_path(d, n.id, main, 0);
+            if path.as_ref().is_some_and(|p| !self.budget.items(p.len(), 128, 4)) {
+                return;
+            }
             let guids: Option<Vec<Kv>> = path.and_then(|p| p.iter().map(|x| self.guid_of(*x)).collect());
             let (Some(guids), Some(src)) = (guids, d.source.and_then(|src| doc.node(src))) else {
                 self.warn("instance layers that don't come from their main component were left out");

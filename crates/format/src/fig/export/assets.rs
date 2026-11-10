@@ -14,19 +14,33 @@ impl<'d> Exporter<'d> {
     pub(super) fn assign_within(&mut self, limit: usize) {
         let doc = self.doc;
         // Use the same order as emission, so a capped export prioritises the active design too.
-        let mut stack: Vec<NodeId> = super::ordered_pages(doc).rev().collect();
-        while let Some(id) = stack.pop() {
+        let mut stack: Vec<(NodeId, usize)> = super::ordered_pages(doc).rev().map(|id| (id, 0)).collect();
+        let mut visited = std::collections::BTreeSet::new();
+        while let Some((id, depth)) = stack.pop() {
+            if self.budget.failed() {
+                break;
+            }
+            if !visited.insert(id) || depth > super::MAX_DEPTH {
+                self.budget.fail("cyclic/duplicate or over-depth source assignment");
+                break;
+            }
             let Some(n) = doc.node(id) else { continue };
             if self.ids.len() >= limit {
                 self.warn("the document has more layers than a .fig file is read with; the rest were left out");
                 break;
             }
-            let local = u32::try_from(self.ids.len() + 1).unwrap_or(u32::MAX);
+            let Ok(local) = u32::try_from(self.ids.len() + 1) else {
+                self.budget.fail("layer GUID identifier overflow before assignment");
+                return;
+            };
             self.ids.insert(id, local);
             // An instance's layers aren't written (its main says them), so nothing may refer to them.
             let mirrored = matches!(&n.kind, NodeKind::Instance { component, .. } if doc.node(*component).is_some_and(|c| matches!(c.kind, NodeKind::Component { .. })));
             if !mirrored {
-                stack.extend(n.children.iter().rev());
+                if !self.budget.items(n.children.len(), 24, 1) {
+                    break;
+                }
+                stack.extend(n.children.iter().rev().map(|id| (*id, depth + 1)));
             }
             match &n.kind {
                 NodeKind::Component { props, .. } => {
@@ -79,20 +93,40 @@ impl<'d> Exporter<'d> {
             }
         }
         // The page that holds styles and variables takes the next id, then their nodes.
-        let mut next = u32::try_from(self.ids.len() + 1).unwrap_or(u32::MAX);
-        let mut node = || {
-            next = next.saturating_add(1);
-            next
+        let Ok(mut next) = u32::try_from(self.ids.len() + 1) else {
+            self.budget.fail("asset canvas identifier overflow");
+            return;
+        };
+        let advance = |next: &mut u32| -> Option<u32> {
+            let id = next.checked_add(1)?;
+            *next = id;
+            Some(id)
         };
         for st in &doc.styles {
-            self.style_ids.entry(st.id.as_str()).or_insert_with(&mut node);
+            if !self.style_ids.contains_key(st.id.as_str()) {
+                let Some(id) = advance(&mut next) else {
+                    self.budget.fail("style GUID identifier overflow");
+                    return;
+                };
+                self.style_ids.insert(st.id.as_str(), id);
+            }
         }
         for c in &doc.variables.collections {
-            self.set_ids.entry(c.id.as_str()).or_insert_with(&mut node);
+            if !self.set_ids.contains_key(c.id.as_str()) {
+                let Some(id) = advance(&mut next) else {
+                    self.budget.fail("collection GUID identifier overflow");
+                    return;
+                };
+                self.set_ids.insert(c.id.as_str(), id);
+            }
         }
         for v in &doc.variables.variables {
-            if self.set_ids.contains_key(v.collection.as_str()) {
-                self.var_ids.entry(v.id.as_str()).or_insert_with(&mut node);
+            if self.set_ids.contains_key(v.collection.as_str()) && !self.var_ids.contains_key(v.id.as_str()) {
+                let Some(id) = advance(&mut next) else {
+                    self.budget.fail("variable GUID identifier overflow");
+                    return;
+                };
+                self.var_ids.insert(v.id.as_str(), id);
             }
         }
         for c in &doc.variables.collections {
@@ -109,10 +143,19 @@ impl<'d> Exporter<'d> {
     /// collections and the variables, each a node of its own.
     pub(super) fn assets(&mut self, pages: usize) {
         let doc = self.doc;
-        if self.style_ids.is_empty() && self.set_ids.is_empty() {
+        if self.budget.failed() || !self.budget.source(&doc.styles) || !self.budget.source(&doc.variables) {
             return;
         }
-        let page = u32::try_from(self.ids.len() + 1).unwrap_or(u32::MAX);
+        if self.style_ids.is_empty() && self.set_ids.is_empty() && self.motion.resource_count() == 0 {
+            return;
+        }
+        if !self.budget.row() {
+            return;
+        }
+        let Ok(page) = u32::try_from(self.ids.len() + 1) else {
+            self.budget.fail("asset canvas GUID identifier overflow");
+            return;
+        };
         let mut f: Fields = vec![
             ("guid", guid(LAYERS, page)),
             ("phase", e("CREATED")),
@@ -136,6 +179,9 @@ impl<'d> Exporter<'d> {
             ]
         };
         for st in &doc.styles {
+            if !self.budget.row() {
+                return;
+            }
             let Some(&local) = self.style_ids.get(st.id.as_str()) else { continue };
             // A sample layer that shows the style: a square for paints and effects, a frame for
             // grids, two letters for text.
@@ -194,6 +240,9 @@ impl<'d> Exporter<'d> {
             self.nodes.push(o(f));
         }
         for c in &doc.variables.collections {
+            if !self.budget.row() {
+                return;
+            }
             let Some(&local) = self.set_ids.get(c.id.as_str()) else { continue };
             let mut f = head(local, "VARIABLE_SET", &c.name);
             let modes = c.modes.iter().enumerate().filter_map(|(i, m)| {
@@ -207,6 +256,9 @@ impl<'d> Exporter<'d> {
             }
         }
         for v in &doc.variables.variables {
+            if !self.budget.row() {
+                return;
+            }
             let ids = (self.var_ids.get(v.id.as_str()), self.set_ids.get(v.collection.as_str()));
             let (Some(&local), Some(&set), Some(c)) = (ids.0, ids.1, doc.variables.collections.iter().find(|c| c.id == v.collection)) else {
                 self.warn("variables whose collection isn't in the document were left out");
@@ -265,6 +317,7 @@ impl<'d> Exporter<'d> {
             }
             self.nodes.push(o(f));
         }
+        self.motion.emit(page, index + 1, &mut self.nodes);
     }
 
     /// A reference to variable `var` (a stored id: no name stands in for it, #1613) as variable data.

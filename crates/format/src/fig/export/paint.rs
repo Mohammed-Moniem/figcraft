@@ -7,10 +7,16 @@ use super::{
 impl<'d> Exporter<'d> {
     /// A paint list: a layer's fills (`fills`) or strokes with the variables `bound` to them.
     pub(super) fn paints(&mut self, list: &[Paint], fills: bool, bound: &Bound) -> Kv<'static> {
+        if !self.budget.source(list) || !self.budget.items(list.len(), 512, 16) {
+            return arr(Vec::new());
+        }
         arr(list.iter().enumerate().filter_map(|(i, p)| self.paint(p, (fills, i), bound)).collect())
     }
 
     fn paint(&mut self, p: &Paint, at: (bool, usize), bound: &Bound) -> Option<Kv<'static>> {
+        if self.budget.failed() {
+            return None;
+        }
         let mut f: Fields = vec![("visible", b(p.visible)), ("blendMode", e(blend_name(p.blend)))];
         let mut opacity = f64::from(p.opacity);
         match &p.kind {
@@ -20,6 +26,9 @@ impl<'d> Exporter<'d> {
                 f.extend(bound.paints.get(&at).map(|a| ("colorVar", a.clone())));
             }
             PaintKind::Gradient(g) => {
+                if !self.budget.items(g.stops.len(), 768, 32) {
+                    return None;
+                }
                 let ty = match g.kind {
                     GradientKind::Linear => "GRADIENT_LINEAR",
                     GradientKind::Radial => "GRADIENT_RADIAL",
@@ -96,6 +105,14 @@ impl<'d> Exporter<'d> {
             None => {
                 let h = match self.doc.images.get(key) {
                     Some(img) if img.bytes.len() as u64 <= MAX_IMAGE => {
+                        if !self.budget.reserve(256, img.bytes.len().div_ceil(64).saturating_add(1)) || !self.budget.items(self.files.len(), 0, 2) {
+                            return Vec::new();
+                        }
+                        let total = self.files.iter().try_fold(img.bytes.len() as u64, |sum, (_, bytes)| sum.checked_add(bytes.len() as u64));
+                        if total.is_none_or(|total| total > super::MAX_FILE) {
+                            self.budget.fail("image/archive byte budget exceeded before hashing");
+                            return Vec::new();
+                        }
                         let h = sha1_hex(&img.bytes);
                         if !self.files.iter().any(|(x, _)| *x == h) {
                             self.files.push((h.clone(), img.bytes.clone()));
