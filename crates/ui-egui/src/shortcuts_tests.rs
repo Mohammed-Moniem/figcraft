@@ -124,7 +124,8 @@ fn custom_shortcuts_do_not_steal_text_editing_and_recording_does_not_insert_text
     let t = id(s.execute("text.create", &json!({"text": "Hello", "x": 0, "y": 0})).unwrap());
     s.execute("select.set", &json!({"ids": [t]})).unwrap();
     s.execute("text.edit.begin", &json!({"id": t})).unwrap();
-    s.execute("pref.shortcut", &json!({"id": "view.zoomIn", "keys": ["Alt+F8"]})).unwrap();
+    s.execute("pref.shortcut", &json!({"id": "view.zoomIn", "platform": "mac", "keys": ["Alt+F8"]})).unwrap();
+    assert_eq!(s.prefs.shortcuts.primary("view.zoomIn", figcraft_engine::keymap::Platform::Mac), Some("Alt+F8"));
     let mut u = Ui::new(s);
     u.ctx.set_os(egui::os::OperatingSystem::Mac);
     let before = zoom(&u);
@@ -231,19 +232,24 @@ fn custom_shortcut_capture_drains_gesture_keys_held_before_recording() {
 
 #[test]
 fn custom_shortcut_dispatch_replaces_default_and_can_be_disabled() {
+    check_zoom_shortcut(egui::os::OperatingSystem::Nix, "other");
+    check_zoom_shortcut(egui::os::OperatingSystem::Mac, "mac");
+}
+
+fn check_zoom_shortcut(os: egui::os::OperatingSystem, platform: &str) {
     let (mut u, _, _) = setup();
-    u.ctx.set_os(egui::os::OperatingSystem::Mac);
-    assert!(u.app.run("pref.shortcut", json!({"id": "view.zoomIn", "keys": ["Alt+F8"]})).is_some());
+    u.ctx.set_os(os);
+    assert!(u.app.run("pref.shortcut", json!({"id": "view.zoomIn", "platform": platform, "keys": ["Alt+F8"]})).is_some());
     let before = zoom(&u);
     press(&mut u, Key::F8, Modifiers::ALT);
     assert!(zoom(&u) > before, "custom chord dispatches the command");
     let before = zoom(&u);
     press(&mut u, Key::Plus, Modifiers::SHIFT);
     assert_eq!(zoom(&u), before, "default was replaced");
-    u.app.run("pref.shortcut", json!({"id": "view.zoomIn", "keys": []}));
+    u.app.run("pref.shortcut", json!({"id": "view.zoomIn", "platform": platform, "keys": []}));
     press(&mut u, Key::F8, Modifiers::ALT);
     assert_eq!(zoom(&u), before, "empty keys unbinds");
-    u.app.run("pref.resetShortcut", json!({"id": "view.zoomIn"}));
+    u.app.run("pref.resetShortcut", json!({"id": "view.zoomIn", "platform": platform}));
     press(&mut u, Key::Plus, Modifiers::SHIFT);
     assert!(zoom(&u) > before, "row reset restores the default");
 }
