@@ -23,6 +23,37 @@ fn id_of(v: &Value) -> NodeId {
 }
 
 #[test]
+fn a_separate_operator_key_manages_only_the_running_share() {
+    let dir = TempDir::new("operator-key-share");
+    let server = crate::start(&config(dir.path())).unwrap();
+    let endpoint = format!("ws://{}/", server.addr());
+    let operator_key = key(dir.path());
+    let mut publisher = session("Publisher");
+    publisher.execute("pref.publishServer", &json!({"url":endpoint})).unwrap();
+    publisher.execute("collab.share", &json!({"key":operator_key})).unwrap();
+    pump(&mut [&mut publisher], "initial share", |s| live(s[0]) && s[0].live().share.as_ref().is_some_and(|v| v.links.is_some()));
+    let initial = publisher.live_summary();
+    let file = initial["published"]["file"].clone();
+    let mut guest = join(initial["share"]["viewLink"].as_str().unwrap(), "Viewer");
+    pump(&mut [&mut publisher, &mut guest], "viewer joined", |s| live(s[1]) && s[0].live().peers.len() == 1);
+    assert_eq!(publisher.execute("collab.stop", &json!({})).unwrap()["shared"], false);
+    pump(&mut [&mut publisher, &mut guest], "viewer disconnected", |s| !s[1].live().syncing() && s[0].live().peers.is_empty());
+
+    let next = publisher.execute("collab.share", &json!({})).unwrap();
+    assert_eq!(next["published"]["file"], file);
+    assert_eq!(next["share"]["shared"], true);
+    assert_ne!(next["share"]["viewLink"], initial["share"]["viewLink"]);
+    assert!(!initial.to_string().contains(&operator_key) && !next.to_string().contains(&operator_key));
+    assert!(!serde_json::to_string(&publisher.prefs).unwrap().contains(&operator_key));
+    assert!(!serde_json::to_string(&publisher.journal).unwrap().contains(&operator_key));
+    let bytes = figcraft_format::save_bytes(publisher.doc().unwrap(), None).unwrap();
+    let (saved, _) = figcraft_format::load_bytes(&bytes).unwrap();
+    assert!(!serde_json::to_string(&saved).unwrap().contains(&operator_key));
+    publisher.execute("collab.leave", &json!({})).unwrap();
+    assert!(publisher.live().share.is_none());
+}
+
+#[test]
 fn publish_then_edit_and_view_together() {
     let dir = TempDir::new("share");
     let mut server = crate::start(&config(dir.path())).unwrap();

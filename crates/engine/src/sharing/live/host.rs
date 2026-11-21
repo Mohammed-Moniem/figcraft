@@ -4,6 +4,7 @@ use super::{
     req_string, string,
 };
 use figcraft_doc::Document;
+use std::fmt::Write;
 use std::sync::Arc;
 
 /// What a server says about its hosting, made safe to show: no control characters, short, and a
@@ -121,6 +122,22 @@ fn access_param(cmd: &str, p: &Value) -> Result<Option<Access>> {
     string(p, "access").map(|a| Access::parse(&a).ok_or_else(|| bad(cmd, "`access` must be \"edit\", \"comment\" or \"view\""))).transpose()
 }
 
+/// A running share uses this private management address to start or stop sharing. The explicit
+/// publication key takes precedence over a query key, just as it does during the initial upload.
+fn share_management_server(server: String, key: Option<String>) -> String {
+    let Some(key) = key.filter(|k| !k.trim().is_empty()) else { return server };
+    let mut management = crate::online::plain_server(&server);
+    management.push_str("?key=");
+    for b in key.trim().bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            management.push(char::from(b));
+        } else {
+            let _ = write!(management, "%{b:02X}");
+        }
+    }
+    management
+}
+
 pub(super) fn share(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "collab.share";
     let via = match string(p, "via").as_deref().map(str::trim) {
@@ -164,7 +181,9 @@ pub(super) fn share(s: &mut Session, p: &Value) -> Result<Value> {
             if server.is_empty() {
                 return Err(EngineError::Disabled(CMD.into(), ONLINE_OFF.into()));
             }
-            start_publish(s, CMD, &server, p, true)?
+            let id = start_publish(s, CMD, &server, p, true)?;
+            server = share_management_server(server, string(p, "key"));
+            id
         }
     };
     if let Some(live) = s.live.sessions.get_mut(&id) {
