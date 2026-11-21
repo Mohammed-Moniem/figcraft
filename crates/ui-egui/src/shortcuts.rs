@@ -433,6 +433,11 @@ pub fn run_binding(app: &mut FigApp, id: &str) {
     match id {
         // A bound command is the real Cut even when rebound to a chord without Cmd/Ctrl.
         "edit.cut" => cut(app, Modifiers { command: true, ..Modifiers::NONE }),
+        "edit.copyLink" if app.session.selection().is_empty() => {
+            if let Ok(page) = app.session.page() {
+                crate::menus::copy_node_link(app, page);
+            }
+        }
         "select.none" => {
             if let Some(ctx) = &app.ui_context
                 && crate::proto_panel::close_editor(ctx)

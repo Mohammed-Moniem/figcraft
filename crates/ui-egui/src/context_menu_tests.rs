@@ -127,3 +127,20 @@ fn copying_a_link_from_a_frames_name_label_links_that_frame() {
     crate::menus::invoke(&mut u.app, "edit.copyLink");
     assert_eq!(copied.lock().unwrap().last().cloned(), Some(format!("figcraft://node/{}", a.0)));
 }
+#[test]
+fn link_shortcut_copies_the_selection_or_its_page() {
+    let mut s = Session::new();
+    let page = s.page().unwrap();
+    let frame = id(&s.execute("frame.create", &json!({"name": "Specs"})).unwrap());
+    let copied = Arc::new(Mutex::new(Vec::new()));
+    let mut u = Ui::new(s);
+    u.app.services = Box::new(Copied(copied.clone()));
+    u.frame(vec![]);
+    let held = egui::Modifiers { command: true, mac_cmd: cfg!(target_os = "macos"), ctrl: !cfg!(target_os = "macos"), ..Default::default() };
+    let key = |pressed| egui::Event::Key { key: egui::Key::L, physical_key: Some(egui::Key::L), pressed, repeat: false, modifiers: held };
+    for (selection, expected) in [(vec![frame], frame), (vec![], page)] {
+        u.app.session.set_selection(selection);
+        u.frame_with(vec![key(true), key(false)], held);
+        assert_eq!(copied.lock().unwrap().last().cloned(), Some(format!("figcraft://node/{}", expected.0)));
+    }
+}
