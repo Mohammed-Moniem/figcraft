@@ -54,7 +54,8 @@ fn focus(ui: &mut Ui, focused: bool) {
     ui.time += 1.0 / 60.0;
     let raw = egui::RawInput { screen_rect: Some(ui.ctx.content_rect()), time: Some(ui.time), focused, ..Default::default() };
     let app = &mut ui.app;
-    let _ = ui.ctx.run_ui(raw, |screen| app.ui(screen));
+    let mut output = ui.ctx.run_ui(raw, |screen| app.ui(screen));
+    output.textures_delta.clear();
 }
 
 fn minimum(ui: &Ui, node: NodeId, phase: &str) -> egui::Id {
