@@ -38,7 +38,7 @@ fn union_of_bars(n: usize) -> (Document, NodeId, NodeId) {
 fn painted(d: &Document, page: NodeId, scale: f64) -> bool {
     let view = View { origin: (0.0, 0.0), scale, width: 100, height: 100 };
     let pix = render_view(d, page, &view, &Options::default()).unwrap();
-    pix.data().chunks_exact(4).any(|px| px[3] > 0 && px[0] < 40)
+    pix.data().as_chunks::<4>().0.iter().any(|px| px[3] > 0 && px[0] < 40)
 }
 
 #[test]

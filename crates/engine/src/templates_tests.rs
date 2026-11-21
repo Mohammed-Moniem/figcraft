@@ -221,7 +221,7 @@ fn starter_icons_render_distinct_outlines_and_the_complete_library() {
         let icon = doc.node(id).unwrap();
         let pix = figcraft_render::render_node(&doc, id, 4.0).unwrap();
         let rgba = figcraft_render::to_rgba8(&pix);
-        let painted = rgba.chunks_exact(4).filter(|p| p[3] > 0).count();
+        let painted = rgba.as_chunks::<4>().0.iter().filter(|p| p[3] > 0).count();
         assert!(painted > 16 && painted < rgba.len() / 4, "{}: a visible outline with transparent space", icon.name);
         assert!(images.insert((pix.width(), pix.height(), rgba)), "{}: a repeated raster", icon.name);
     }

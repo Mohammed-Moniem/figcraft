@@ -7,7 +7,7 @@ use crate::{Options, Pixmap, Retained, View, encode_png, render_view};
 
 fn checkerboard_doc() -> (Document, NodeId) {
     let mut img = Pixmap::new(4, 4).unwrap();
-    for (i, c) in img.data_mut().chunks_exact_mut(4).enumerate() {
+    for (i, c) in img.data_mut().as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let black = (i % 4 + i / 4) % 2 == 0;
         c.copy_from_slice(if black { &[0, 0, 0, 255] } else { &[255, 255, 255, 255] });
     }
@@ -30,7 +30,7 @@ fn canvas() -> Options {
 
 fn in_between_greys(p: &Pixmap, side: u32) -> usize {
     let row = p.width() as usize * 4;
-    p.data().chunks_exact(row).take(side as usize).flat_map(|r| r[..side as usize * 4].chunks_exact(4)).filter(|c| c[0] > 8 && c[0] < 247).count()
+    p.data().chunks_exact(row).take(side as usize).flat_map(|r| r[..side as usize * 4].as_chunks::<4>().0).filter(|c| c[0] > 8 && c[0] < 247).count()
 }
 
 #[test]

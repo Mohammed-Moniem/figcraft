@@ -87,11 +87,13 @@ fn row_within_limits(a: &Pixmap, b: &Pixmap, config: (f64, u32), y: usize, (mean
         return false;
     }
     let row = y * a.width() as usize * 4;
-    a.data()[row..row + a.width() as usize * 4].chunks_exact(4).zip(b.data()[row..row + b.width() as usize * 4].chunks_exact(4)).enumerate().all(
-        |(x, (p, q))| {
-            if (97..=122).contains(&x) { p[3] == q[3] && p.iter().zip(q).all(|(c, d)| c.abs_diff(*d) <= 35) } else { p == q }
-        },
-    )
+    a.data()[row..row + a.width() as usize * 4]
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(b.data()[row..row + b.width() as usize * 4].as_chunks::<4>().0)
+        .enumerate()
+        .all(|(x, (p, q))| if (97..=122).contains(&x) { p[3] == q[3] && p.iter().zip(q).all(|(c, d)| c.abs_diff(*d) <= 35) } else { p == q })
 }
 
 #[test]

@@ -417,7 +417,7 @@ fn gradients_stretch_with_the_layer() {
 /// A 20 × 10 image, red on the left half and blue on the right, as `name` in a fresh document.
 fn image_doc(name: &str) -> (Document, NodeId) {
     let mut img = Pixmap::new(20, 10).unwrap();
-    for (i, c) in img.data_mut().chunks_exact_mut(4).enumerate() {
+    for (i, c) in img.data_mut().as_chunks_mut::<4>().0.iter_mut().enumerate() {
         c.copy_from_slice(if i % 20 < 10 { &[255, 0, 0, 255] } else { &[0, 0, 255, 255] });
     }
     let (mut d, p) = page();

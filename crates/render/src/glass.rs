@@ -89,7 +89,7 @@ fn edt_1d(f: &[f64], d: &mut [f64], v: &mut [usize], z: &mut [f64], mut src: Opt
 pub fn inside_distance(cov: &Pixmap) -> Vec<f32> {
     let (w, h) = (cov.width() as usize, cov.height() as usize);
     const FAR: f64 = 1e20;
-    let mut g: Vec<f64> = cov.data().chunks_exact(4).map(|p| if p.get(3).copied().unwrap_or(0) >= 128 { FAR } else { 0.0 }).collect();
+    let mut g: Vec<f64> = cov.data().as_chunks::<4>().0.iter().map(|p| if p.get(3).copied().unwrap_or(0) >= 128 { FAR } else { 0.0 }).collect();
     let n = w.max(h);
     let (mut f, mut d, mut v, mut z) = (vec![0f64; n], vec![0f64; n], vec![0usize; n], vec![0f64; n + 1]);
     for x in 0..w {
@@ -488,7 +488,7 @@ impl EdgeFields {
         let dist = inside_distance(cov);
         let (w, h) = (cov.width() as usize, cov.height() as usize);
         let normals = smooth_normals(&dist, w, h, r);
-        let cov = cov.data().chunks_exact(4).map(|p| p.get(3).copied().unwrap_or(0)).collect();
+        let cov = cov.data().as_chunks::<4>().0.iter().map(|p| p.get(3).copied().unwrap_or(0)).collect();
         EdgeFields { x0, y0, w, h, cov, dist, normals, r, bends: Mutex::new(Vec::new()) }
     }
 
@@ -1229,7 +1229,7 @@ mod tests {
     fn dispersion_splits_the_channels_along_the_bend() {
         // A 40 × 1 ramp: red, green and blue all rise with x.
         let mut p = Pixmap::new(40, 1).unwrap();
-        for (i, px) in p.data_mut().chunks_exact_mut(4).enumerate() {
+        for (i, px) in p.data_mut().as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let v = (i * 6) as u8;
             px.copy_from_slice(&[v, v, v, 255]);
         }

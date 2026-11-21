@@ -622,7 +622,7 @@ fn rect_clip_frame_matches_same_rect_fill_on_fractional_edges() {
 fn jpeg_quality_pixmap() -> Pixmap {
     let mut pix = Pixmap::new(128, 96).unwrap();
     let mut state = 7_u32;
-    for pixel in pix.data_mut().chunks_exact_mut(4) {
+    for pixel in pix.data_mut().as_chunks_mut::<4>().0 {
         for channel in pixel.iter_mut().take(3) {
             state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
             *channel = (state >> 24) as u8;
@@ -647,7 +647,7 @@ fn jpeg_export_quality_changes_decoded_detail_and_keeps_the_exact_icc_profile() 
             assert_eq!(decoded.dimensions(), (pix.width(), pix.height()));
             decoded
                 .pixels()
-                .zip(pix.data().chunks_exact(4))
+                .zip(pix.data().as_chunks::<4>().0)
                 .map(|(actual, source)| actual.0.iter().zip(source.iter().take(3)).map(|(a, b)| u64::from(a.abs_diff(*b))).sum::<u64>())
                 .sum()
         };

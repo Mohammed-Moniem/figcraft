@@ -135,7 +135,7 @@ fn lines(
             continue;
         }
         let Some(line) = data.get_mut(start..start + w as usize * 4) else { continue };
-        for (px, &cc) in line.chunks_exact_mut(4).zip(&cols) {
+        for (px, &cc) in line.as_chunks_mut::<4>().0.iter_mut().zip(&cols) {
             blend_px(px, colors[usize::from(rc.max(cc).saturating_sub(1).min(1))]);
         }
     }
@@ -151,7 +151,7 @@ fn blend_square(data: &mut [u8], row: usize, (xa, xb): (i64, i64), (ya, yb): (i6
     for y in ya..yb {
         let start = y as usize * row;
         let Some(line) = data.get_mut(start + xa as usize * 4..start + xb as usize * 4) else { continue };
-        for px in line.chunks_exact_mut(4) {
+        for px in line.as_chunks_mut::<4>().0 {
             blend_with(px, rgba, keep);
         }
     }

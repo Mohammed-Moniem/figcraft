@@ -60,7 +60,7 @@ pub(crate) fn area_averaged(src: &Pixmap, m: Transform, area: IntRect, clip: Rec
         }
         let to = |v: f32| v.round().clamp(0.0, 255.0) as u8;
         let line = out.data_mut().get_mut(y * dw * 4..(y + 1) * dw * 4)?;
-        for (dst, a) in line.chunks_exact_mut(4).zip(&acc) {
+        for (dst, a) in line.as_chunks_mut::<4>().0.iter_mut().zip(&acc) {
             let alpha = to(a[3]);
             // Premultiplied: no channel above the alpha, whatever rounding did.
             dst.copy_from_slice(&[to(a[0]).min(alpha), to(a[1]).min(alpha), to(a[2]).min(alpha), alpha]);

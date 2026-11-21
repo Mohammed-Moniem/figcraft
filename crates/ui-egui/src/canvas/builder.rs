@@ -110,10 +110,8 @@ fn hatch(polys: &[Vec<Pos2>], gap: f32) -> Vec<[Pos2; 2]> {
             .map(|(a, b)| a.x + (y - a.y) * (b.x - a.x) / (b.y - a.y))
             .collect();
         xs.sort_by(f32::total_cmp);
-        for pair in xs.chunks_exact(2) {
-            if let [a, b] = pair {
-                out.push([back(*a, y), back(*b, y)]);
-            }
+        for [a, b] in xs.as_chunks::<2>().0 {
+            out.push([back(*a, y), back(*b, y)]);
         }
         y += gap;
     }

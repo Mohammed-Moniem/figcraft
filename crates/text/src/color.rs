@@ -210,7 +210,7 @@ fn decode(glyph: &BitmapGlyph<'_>) -> Option<(Vec<u8>, u32, u32)> {
         BitmapData::Bgra(bgra) => {
             let (width, height) = (glyph.width, glyph.height);
             let mut rgba = bgra.get(..width as usize * height as usize * 4)?.to_vec();
-            for px in rgba.chunks_exact_mut(4) {
+            for px in rgba.as_chunks_mut::<4>().0 {
                 px.swap(0, 2);
             }
             Some((rgba, width, height))
@@ -255,7 +255,7 @@ fn decode_png(png: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
 
 /// Straight RGBA → premultiplied RGBA (in place).
 fn premultiplied(mut rgba: Vec<u8>) -> Vec<u8> {
-    for px in rgba.chunks_exact_mut(4) {
+    for px in rgba.as_chunks_mut::<4>().0 {
         let a = u32::from(px[3]);
         for c in &mut px[..3] {
             *c = ((u32::from(*c) * a + 127) / 255) as u8;

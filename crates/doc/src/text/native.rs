@@ -150,7 +150,7 @@ impl NativeTextLayout {
                 _ => return false,
             };
             let Some((coords, tail)) = rest.split_at_checked(points * 8) else { return false };
-            if coords.chunks_exact(4).any(|x| !coordinate(f32::from_le_bytes([x[0], x[1], x[2], x[3]]))) {
+            if coords.as_chunks::<4>().0.iter().any(|bytes| !coordinate(f32::from_le_bytes(*bytes))) {
                 return false;
             }
             bytes = tail;

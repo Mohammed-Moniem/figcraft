@@ -10,7 +10,7 @@ pub fn encode_raster(mut pix: figcraft_render::Pixmap, setting: &ExportSetting, 
     let conversion = source.conversion_to(profile);
     // JPEG composites over white in the source profile before conversion.
     if setting.format == ExportFormat::Jpg && !conversion.is_identity() {
-        for pixel in pix.data_mut().chunks_exact_mut(4) {
+        for pixel in pix.data_mut().as_chunks_mut::<4>().0 {
             let under = 255 - pixel[3];
             for channel in &mut pixel[..3] {
                 *channel = channel.saturating_add(under);

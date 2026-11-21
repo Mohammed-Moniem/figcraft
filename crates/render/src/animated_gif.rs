@@ -175,16 +175,14 @@ fn export_with_limit(doc: &Document, frame: NodeId, options: Options, limit: usi
             let mut pix = crate::area_at(evaluated, &[frame], area, options.scale, time_ms / 1000.0).ok_or("could not render GIF frame")?;
             crate::to_srgb(&mut pix, doc.color_profile);
             let mut rgba = crate::to_rgba8(&pix);
-            for pixel in rgba.chunks_exact_mut(4) {
-                if let [r, g, b, a] = pixel {
-                    if *a < 128 {
-                        *r = 0;
-                        *g = 0;
-                        *b = 0;
-                        *a = 0;
-                    } else {
-                        *a = 255;
-                    }
+            for [r, g, b, a] in rgba.as_chunks_mut::<4>().0 {
+                if *a < 128 {
+                    *r = 0;
+                    *g = 0;
+                    *b = 0;
+                    *a = 0;
+                } else {
+                    *a = 255;
                 }
             }
             let image = RgbaImage::from_raw(width, height, rgba).ok_or("could not allocate GIF frame")?;

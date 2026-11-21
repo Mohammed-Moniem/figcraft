@@ -70,7 +70,7 @@ pub fn gray_of(r: u8, g: u8, b: u8) -> u8 {
 
 /// Turn RGBA pixels (4 bytes each; alpha is kept) gray in place with [`gray_of`].
 pub fn gray_rgba_in_place(pixels: &mut [u8]) {
-    for px in pixels.chunks_exact_mut(4) {
+    for px in pixels.as_chunks_mut::<4>().0 {
         let y = gray_of(px[0], px[1], px[2]);
         px[..3].fill(y);
     }
@@ -132,7 +132,7 @@ impl CmykImage {
         }
         let mut color = Vec::with_capacity(n * 4);
         let mut alpha = Vec::with_capacity(n);
-        for px in rgba.chunks_exact(4) {
+        for px in rgba.as_chunks::<4>().0 {
             let f = |i: usize| f32::from(px.get(i).copied().unwrap_or(0)) / 255.0;
             color.extend(cmyk_of(f(0), f(1), f(2)).map(byte));
             alpha.push(px.get(3).copied().unwrap_or(255));

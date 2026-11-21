@@ -359,7 +359,7 @@ pub fn splat(pix: &mut Pixmap, r: Rect, color: [f32; 4]) {
     for py in py0..py1 {
         let cy = (y1.min(py as f64 + 1.0) - y0.max(py as f64)) as f32 * a;
         let Some(row) = data.get_mut(py * stride + px0 * 4..py * stride + px1 * 4) else { continue };
-        let mut pixels = row.chunks_exact_mut(4);
+        let mut pixels = row.as_chunks_mut::<4>().0.iter_mut();
         if let Some(d) = pixels.next() {
             mix(d, first * cy);
         }

@@ -48,7 +48,7 @@ fn a_layer_that_draws_nothing_stays_out_of_the_export() {
 /// `(x, 0)` in a white 120 × 100 frame; returns the frame.
 fn line_at(x: f64) -> (Document, figcraft_doc::NodeId) {
     let mut img = Pixmap::new(400, 400).unwrap();
-    for (i, c) in img.data_mut().chunks_exact_mut(4).enumerate() {
+    for (i, c) in img.data_mut().as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let v = if i % 400 == 201 { 0 } else { 255 };
         c.copy_from_slice(&[v, v, v, 255]);
     }

@@ -448,7 +448,7 @@ fn begin_fields(app: &FigApp, ctx: &egui::Context, target: &PickerTarget, openin
     if !opening && let Some(previous) = previous.filter(|p| p.document == document && same_field_target(&p.target, target)) {
         return Some(previous.epoch);
     }
-    let epoch = NEXT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1)).ok()?;
+    let epoch = NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1)).ok()?;
     ctx.data_mut(|d| {
         d.insert_temp(key, FieldOwner { document, target: target.clone(), epoch });
         d.insert_temp(key.with("epoch"), epoch);

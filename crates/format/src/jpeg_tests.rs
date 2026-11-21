@@ -76,13 +76,13 @@ fn progressive_cmyk_with_finer_black_has_thumbnail_and_archive_preview() {
     ] {
         let picture = decode_thumbnail(bytes, 512).expect("valid progressive CMYK thumbnail");
         assert_eq!((picture.width, picture.height), (width, height));
-        assert!(picture.rgba.chunks_exact(4).all(|pixel| pixel[3] == 255));
+        assert!(picture.rgba.as_chunks::<4>().0.iter().all(|pixel| pixel[3] == 255));
         let expected = if width == 8 { [102, 104, 101] } else { [64, 64, 64] };
         for (&got, expected) in picture.rgba[..3].iter().zip(expected) {
             assert!(got.abs_diff(expected) <= 3, "independent libjpeg reference: {got} vs {expected}");
         }
         if width != 8 {
-            assert!(picture.rgba.chunks_exact(4).all(|p| p[..3].iter().all(|v| v.abs_diff(64) <= 3)));
+            assert!(picture.rgba.as_chunks::<4>().0.iter().all(|p| p[..3].iter().all(|v| v.abs_diff(64) <= 3)));
         }
         let mut archive = Cursor::new(Vec::new());
         let mut writer = zip::ZipWriter::new(&mut archive);

@@ -324,7 +324,7 @@ pub fn invert_alpha(p: &mut Pixmap) {
 
 /// Multiply every pixel of `p` by the alpha of `m` (same size); `invert` uses 1-alpha.
 pub fn mask_by(p: &mut Pixmap, m: &Pixmap, invert: bool) {
-    for (px, mp) in p.data_mut().as_chunks_mut::<4>().0.iter_mut().zip(m.data().chunks_exact(4)) {
+    for (px, mp) in p.data_mut().as_chunks_mut::<4>().0.iter_mut().zip(m.data().as_chunks::<4>().0) {
         let ma = u32::from(mp.get(3).copied().unwrap_or(0));
         let ma = if invert { 255 - ma } else { ma };
         for c in px.iter_mut() {
@@ -378,7 +378,7 @@ pub fn plus_lighter(dst: &mut Pixmap, at: (i32, i32), src: &Pixmap, opacity: f32
 fn plus(dst: &mut Pixmap, at: (i32, i32), src: &Pixmap, opacity: f32, lighter: bool) {
     let o = if opacity.is_finite() { opacity.clamp(0.0, 1.0) } else { 0.0 };
     overlap_rows(dst, at, src, |dp, sp, _, _| {
-        for (d, s) in dp.chunks_exact_mut(4).zip(sp.chunks_exact(4)) {
+        for (d, s) in dp.as_chunks_mut::<4>().0.iter_mut().zip(sp.as_chunks::<4>().0) {
             let f = |v: u8| f32::from(v) / 255.0;
             let sa = f(s[3]) * o;
             if sa <= 0.0 {

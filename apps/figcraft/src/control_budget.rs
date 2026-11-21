@@ -118,7 +118,7 @@ impl Reservation {
         if self
             .budget
             .used
-            .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |used| used.checked_add(bytes).filter(|next| *next <= self.budget.limit))
+            .try_update(Ordering::AcqRel, Ordering::Relaxed, |used| used.checked_add(bytes).filter(|next| *next <= self.budget.limit))
             .is_err()
         {
             return false;

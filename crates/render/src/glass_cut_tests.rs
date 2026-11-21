@@ -244,5 +244,5 @@ fn a_pane_too_big_to_keep_still_renders() {
     let (d, p, _) = pane(Glass { frost: 0.0, ..Glass::default() }, 0.0, 0.0, 400.0, 300.0);
     let shown = render(&d, p, (10.0, 10.0), 8.0);
     assert_eq!(computed(|| drop(render(&d, p, (10.0, 10.0), 8.0))), 1);
-    assert!(shown.data().chunks_exact(4).any(|px| px[2] > 200), "the stripes show through");
+    assert!(shown.data().as_chunks::<4>().0.iter().any(|px| px[2] > 200), "the stripes show through");
 }

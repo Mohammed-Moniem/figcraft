@@ -165,5 +165,5 @@ fn hidden_empty_and_junk_effects_on_groups_draw_nothing_odd() {
     let (mut d, p) = page();
     let g = group(&mut d, p);
     d.get_mut(g).unwrap().effects = vec![inner((6.0, 6.0), 4.0, 0.0), fx(EffectKind::BackgroundBlur(Blur::uniform(8.0)))];
-    assert!(render(&d).data().chunks_exact(4).all(|c| c[..3] == [255, 255, 255]));
+    assert!(render(&d).data().as_chunks::<4>().0.iter().all(|c| c[..3] == [255, 255, 255]));
 }

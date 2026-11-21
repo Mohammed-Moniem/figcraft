@@ -565,7 +565,7 @@ fn blurred_frame(radius: f64) -> Pixmap {
 fn layer_blur_radii_up_to_the_documented_limit_all_draw() {
     // The documented blur range runs to 10,000: a larger radius in it blurs further, it doesn't
     // stop at some smaller one.
-    let differ = |a: &Pixmap, b: &Pixmap| a.data().chunks_exact(4).zip(b.data().chunks_exact(4)).filter(|(a, b)| a != b).count();
+    let differ = |a: &Pixmap, b: &Pixmap| a.data().as_chunks::<4>().0.iter().zip(b.data().as_chunks::<4>().0).filter(|(a, b)| a != b).count();
     let sharp = blurred_frame(0.0);
     let small = blurred_frame(100.0);
     let medium = blurred_frame(1_000.0);

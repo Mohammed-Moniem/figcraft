@@ -133,7 +133,7 @@ fn progressive_cmyk_is_placed_cached_and_exported_with_visible_pixels() {
         let saved = s.execute("file.saveAs", &json!({"data":true})).unwrap();
         let archive = base64::engine::general_purpose::STANDARD.decode(saved["data"].as_str().unwrap()).unwrap();
         let preview = figcraft_format::thumbnail::archive_preview(Cursor::new(archive), 512).picture.expect("saved file has its rendered thumbnail");
-        assert!(preview.rgba.chunks_exact(4).any(|p| p[3] == 255 && p[..3].iter().any(|v| *v < 240)), "saved thumbnail contains the image");
+        assert!(preview.rgba.as_chunks::<4>().0.iter().any(|p| p[3] == 255 && p[..3].iter().any(|v| *v < 240)), "saved thumbnail contains the image");
         let again = place(&mut s, bytes, json!({"x":400,"y":0})).unwrap();
         assert_eq!(again["image"], placed["image"]);
         assert_eq!(s.doc().unwrap().images.len(), 1);

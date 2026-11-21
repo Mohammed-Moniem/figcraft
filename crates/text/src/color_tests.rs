@@ -135,7 +135,7 @@ fn scaling_keeps_the_pixels_premultiplied() {
     for (dw, dh) in [(2, 2), (3, 4), (9, 7), (16, 16)] {
         let out = scaled(&src, 4, 4, dw, dh).unwrap();
         assert_eq!(out.len(), (dw * dh * 4) as usize);
-        for px in out.chunks_exact(4) {
+        for px in out.as_chunks::<4>().0 {
             assert!(px[0] <= px[3] && px[1] <= px[3] && px[2] <= px[3], "{dw}×{dh}: {px:?}");
         }
     }
@@ -170,7 +170,7 @@ fn colour_emoji_carry_their_own_pixels() {
     assert!(bitmap.height >= 8 && bitmap.height <= 128, "{} px tall", bitmap.height);
     assert_eq!(bitmap.rgba.len(), bitmap.width as usize * bitmap.height as usize * 4);
     let mut opaque = 0;
-    for px in bitmap.rgba.chunks_exact(4) {
+    for px in bitmap.rgba.as_chunks::<4>().0 {
         assert!(px[0] <= px[3] && px[1] <= px[3] && px[2] <= px[3], "premultiplied: {px:?}");
         opaque += usize::from(px[3] == 255);
     }

@@ -11,7 +11,7 @@ use super::{SvgOptions, export_svg};
 /// (`circle`) or red all over, with `effect`.
 fn scene(circle: bool, effect: EffectKind) -> (Document, NodeId) {
     let mut pm = figcraft_render::Pixmap::new(100, 100).unwrap();
-    for (i, px) in pm.data_mut().chunks_exact_mut(4).enumerate() {
+    for (i, px) in pm.data_mut().as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let (x, y) = ((i % 100) as f64 + 0.5 - 50.0, (i / 100) as f64 + 0.5 - 50.0);
         if !circle || x.hypot(y) <= 25.0 {
             px.copy_from_slice(&[255, 0, 0, 255]);

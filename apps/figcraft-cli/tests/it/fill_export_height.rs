@@ -64,7 +64,7 @@ fn red_extent(path: &Path) -> (u32, u32) {
     let image = Pixmap::decode_png(&std::fs::read(path).unwrap()).unwrap();
     let mut first = image.height();
     let mut last = 0;
-    for (i, rgba) in image.data().chunks_exact(4).enumerate() {
+    for (i, rgba) in image.data().as_chunks::<4>().0.iter().enumerate() {
         if rgba[0] > 250 && rgba[1] < 5 && rgba[2] < 5 && rgba[3] > 250 {
             let y = i as u32 / image.width();
             first = first.min(y);

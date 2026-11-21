@@ -308,7 +308,7 @@ fn glass_over_nothing_still_catches_the_light() {
     // The top-left corner faces the light (from the top left): white, as opaque as it is bright.
     let corner = px(&out, 40, 30);
     assert!(corner[3] > 100 && corner.iter().all(|v| v.abs_diff(corner[3]) <= 2), "{corner:?}");
-    assert!(out.data().chunks_exact(4).all(|q| q[0] <= q[3] && q[1] <= q[3] && q[2] <= q[3]), "premultiplied");
+    assert!(out.data().as_chunks::<4>().0.iter().all(|q| q[0] <= q[3] && q[1] <= q[3] && q[2] <= q[3]), "premultiplied");
     assert_eq!(px(&out, 100, 70), [0; 4]);
     assert_eq!(px(&out, 10, 10), [0; 4]);
 }

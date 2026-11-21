@@ -207,7 +207,7 @@ fn premultiplied(rgba: &image::RgbaImage) -> Option<Pixmap> {
         return None;
     }
     let mut p = Pixmap::new(w, h)?;
-    for (dst, src) in p.data_mut().as_chunks_mut::<4>().0.iter_mut().zip(rgba.as_raw().chunks_exact(4)) {
+    for (dst, src) in p.data_mut().as_chunks_mut::<4>().0.iter_mut().zip(rgba.as_raw().as_chunks::<4>().0) {
         let a = u32::from(src.get(3).copied().unwrap_or(255));
         let pm = |c: u8| ((u32::from(c) * a + 127) / 255) as u8;
         dst.copy_from_slice(&[
