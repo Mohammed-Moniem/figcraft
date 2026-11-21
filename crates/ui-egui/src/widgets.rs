@@ -386,6 +386,23 @@ fn wheel_field_edit(ui: &Ui, field: WheelField<'_>, typed: impl Fn(&str) -> Opti
     Some(edit)
 }
 
+fn paint_number_lead(ui: &Ui, lead: Lead<'_>, rect: Rect, response: &egui::Response, t: &Tokens) {
+    match lead {
+        Lead::Text(s) => {
+            let galley = crate::bidi::name_galley(ui.painter(), s, regular(11.0), t.text_secondary, rect.width() - 12.0);
+            if galley.elided {
+                response.clone().on_hover_text(s);
+            }
+            ui.painter().galley(pos2(rect.min.x + 8.0, rect.center().y - galley.size().y / 2.0), galley, t.text_secondary);
+        }
+        Lead::Icon(i, _) => icons::paint(ui.painter(), Rect::from_center_size(rect.center() + vec2(1.0, 0.0), vec2(14.0, 14.0)), i, t.icon_secondary),
+        Lead::None | Lead::Named(_) => {}
+    }
+    if response.hovered() || response.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
+}
+
 fn number_field_impl(
     ui: &mut Ui,
     id: Id,
@@ -439,23 +456,7 @@ fn number_field_impl(
     } else if hovered {
         ui.painter().rect_stroke(rect, CornerRadius::same(5), Stroke::new(1.0, t.field_hover_border), StrokeKind::Inside);
     }
-    match lead {
-        Lead::Text(s) => {
-            let galley = crate::bidi::name_galley(ui.painter(), s, regular(11.0), t.text_secondary, lead_w - 12.0);
-            // A label cut short shows whole on hover.
-            if galley.elided {
-                lead_resp.clone().on_hover_text(s);
-            }
-            ui.painter().galley(pos2(lead_rect.min.x + 8.0, rect.center().y - galley.size().y / 2.0), galley, t.text_secondary);
-        }
-        Lead::Icon(i, _) => {
-            icons::paint(ui.painter(), Rect::from_center_size(lead_rect.center() + vec2(1.0, 0.0), vec2(14.0, 14.0)), i, t.icon_secondary)
-        }
-        Lead::None | Lead::Named(_) => {}
-    }
-    if lead_resp.hovered() || lead_resp.dragged() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-    }
+    paint_number_lead(ui, lead, lead_rect, &lead_resp, &t);
     if let Some(edit) = scrub(ui, id, &lead_resp, value, step) {
         out = Some(Edit::All(edit));
     }
