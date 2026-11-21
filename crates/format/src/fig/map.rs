@@ -55,7 +55,7 @@ const MAX_ASSET_PART: usize = 256;
 /// vector networks its layers name by `vectorNetworkRef` (for [`crate::rest::import_with_networks`]).
 #[cfg(test)]
 pub(super) fn to_rest(msg: &Kv, name: &str, max_nodes: usize) -> (Value, Vec<String>, Vec<Option<VectorNetwork>>) {
-    let (json, warnings, networks, _) = to_rest_with_layouts(msg, name, max_nodes);
+    let (json, warnings, networks, _) = to_rest_with_layouts(msg, name, max_nodes, None);
     (json, warnings, networks)
 }
 
@@ -63,8 +63,12 @@ pub(super) fn to_rest_with_layouts(
     msg: &Kv,
     name: &str,
     max_nodes: usize,
+    schema: Option<&super::kiwi::Schema>,
 ) -> (Value, Vec<String>, Vec<Option<VectorNetwork>>, super::native_text::TextResources) {
     let mut m = Mapper::new(msg, max_nodes);
+    if let Some(fields) = schema.and_then(node_fields) {
+        m.independent_trailing_padding = ["stackPaddingRight", "stackPaddingBottom"].map(|name| fields.iter().any(|f| f.name == name));
+    }
     let doc = m.document();
     // Large values are moved in, never passed through `json!`, which serialises its arguments:
     // a deep copy of the whole tree, briefly holding it twice.
@@ -98,6 +102,14 @@ pub(super) fn to_rest_with_layouts(
         out["styleDefinitions"] = Value::Array(styles);
     }
     (out, m.warnings.finish(), m.networks, super::native_text::TextResources { layouts: m.native_text.layouts, faces: m.native_text.faces })
+}
+
+/// Follow the file's array element type rather than relying on a particular node type name.
+fn node_fields(schema: &super::kiwi::Schema) -> Option<&[super::kiwi::Field]> {
+    let message = schema.defs.get(schema.find("Message")?)?;
+    let nodes = message.fields.iter().find(|field| field.name == "nodeChanges" && field.array)?;
+    let super::kiwi::Type::Def(index) = nodes.ty? else { return None };
+    Some(&schema.defs.get(index)?.fields)
 }
 
 #[cfg(test)]
@@ -363,6 +375,8 @@ struct Mapper<'a> {
     region_paint_elements: usize,
     /// Optional descriptive import metadata only; never a scaling authority.
     scale_provenance_bytes: usize,
+    /// Whether the embedded node schema can encode right and bottom padding separately.
+    independent_trailing_padding: [bool; 2],
     native_text: super::native_text::Reader,
 }
 
@@ -446,6 +460,7 @@ impl<'a> Mapper<'a> {
             network_ids: HashMap::new(),
             region_paint_elements: 0,
             scale_provenance_bytes: 0,
+            independent_trailing_padding: [false; 2],
             native_text: Default::default(),
         }
     }

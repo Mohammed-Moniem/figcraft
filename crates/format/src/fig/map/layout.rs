@@ -16,8 +16,11 @@ impl<'a> Mapper<'a> {
         let (h, vert) = (v.len("stackHorizontalPadding").unwrap_or(0.0), v.len("stackVerticalPadding").unwrap_or(0.0));
         o.insert("paddingLeft".into(), json!(h));
         o.insert("paddingTop".into(), json!(vert));
-        o.insert("paddingRight".into(), json!(v.len("stackPaddingRight").unwrap_or(h)));
-        o.insert("paddingBottom".into(), json!(v.len("stackPaddingBottom").unwrap_or(vert)));
+        // Older schemas shared each axis's leading inset. With independent sides, Figma
+        // omits a zero trailing inset even when the opposite inset is nonzero.
+        let [right, bottom] = self.independent_trailing_padding;
+        o.insert("paddingRight".into(), json!(v.len("stackPaddingRight").unwrap_or(if right { 0.0 } else { h })));
+        o.insert("paddingBottom".into(), json!(v.len("stackPaddingBottom").unwrap_or(if bottom { 0.0 } else { vert })));
         let main = match v.str("stackPrimaryAlignItems").or_else(|| v.str("stackJustify")) {
             Some("CENTER") => "CENTER",
             Some("MAX") => "MAX",

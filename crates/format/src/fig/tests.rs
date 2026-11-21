@@ -80,6 +80,71 @@ message Blob byte[] bytes
 message Message NodeChange[] nodeChanges, Blob[] blobs
 ";
 
+/// Newer files can express the trailing sides independently. This also covers the older
+/// shared-axis schema and a schema that has introduced only one of the independent fields.
+#[test]
+fn native_padding_defaults_follow_the_fields_declared_by_the_file() {
+    for (extra, expected) in [
+        ("", [8.0, 24.0, 8.0, 24.0]),
+        (", float stackPaddingRight", [8.0, 0.0, 8.0, 24.0]),
+        (", float stackPaddingRight, float stackPaddingBottom", [8.0, 0.0, 0.0, 24.0]),
+    ] {
+        let schema = Schema::parse(
+            &SCHEMA.replace("NodeChange", "LayerRecord").replace("float stackVerticalPadding,", &format!("float stackVerticalPadding{extra},")),
+        )
+        .unwrap();
+        let mut layers = vec![
+            node(0, None, "DOCUMENT", "Document", vec![]),
+            node(1, Some((0, "!")), "CANVAS", "Page", vec![]),
+            node(
+                2,
+                Some((1, "!")),
+                "SYMBOL",
+                "Padded component",
+                vec![
+                    ("size", xy(100.0, 40.0)),
+                    ("stackMode", e("HORIZONTAL")),
+                    ("stackHorizontalPadding", f(24.0)),
+                    ("stackVerticalPadding", f(8.0)),
+                ],
+            ),
+            node(5, Some((2, "!")), "RECTANGLE", "Block", vec![("size", xy(56.0, 15.0)), ("transform", at(24.0, 8.0))]),
+            node(3, Some((1, "#")), "INSTANCE", "Padded instance", vec![("size", xy(100.0, 40.0)), ("symbolData", o(vec![("symbolID", g(2))]))]),
+        ];
+        if extra.contains("stackPaddingBottom") {
+            layers.push(node(
+                4,
+                Some((1, "$")),
+                "FRAME",
+                "Explicit sides",
+                vec![
+                    ("size", xy(100.0, 40.0)),
+                    ("stackMode", e("HORIZONTAL")),
+                    ("stackHorizontalPadding", f(24.0)),
+                    ("stackVerticalPadding", f(8.0)),
+                    ("stackPaddingRight", f(3.0)),
+                    ("stackPaddingBottom", f(5.0)),
+                ],
+            ));
+        }
+        let (doc, _) = super::import(&canvas(&schema, &o(vec![("nodeChanges", arr(layers))])), "Padding").unwrap();
+        let (saved, _) = super::export(&doc, None).unwrap();
+        let (reopened, _) = super::import(&saved, "Padding").unwrap();
+        for document in [&doc, &reopened] {
+            let padding = |name| document.nodes().find(|node| node.name == name).unwrap().layout.as_ref().unwrap().padding;
+            assert_eq!(padding("Padded component"), expected);
+            assert_eq!(padding("Padded instance"), expected);
+            let frame = document.nodes().find(|node| node.name == "Padded component").unwrap().id;
+            let mut edited = document.clone();
+            figcraft_layout::layout_frame(&mut edited, frame, &figcraft_layout::NoMeasure);
+            assert_eq!(edited.node(frame).unwrap().width, 80.0 + expected[1]);
+            if extra.contains("stackPaddingBottom") {
+                assert_eq!(padding("Explicit sides"), [8.0, 3.0, 5.0, 24.0]);
+            }
+        }
+    }
+}
+
 pub(super) fn schema() -> Schema {
     Schema::parse(SCHEMA).unwrap()
 }

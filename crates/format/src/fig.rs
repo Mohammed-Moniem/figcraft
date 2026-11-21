@@ -167,7 +167,7 @@ fn import_with_image_limit(bytes: &[u8], name: &str, image_limit: u64) -> Result
     drop(message);
     let motion = motion::NativeMotion::read(&msg, max_nodes);
     let file_name = archive.file_name.as_deref().filter(|n| !n.trim().is_empty()).unwrap_or(name);
-    let (json, mut warnings, networks, layouts) = map::to_rest_with_layouts(&msg, file_name, max_nodes);
+    let (json, mut warnings, networks, layouts) = map::to_rest_with_layouts(&msg, file_name, max_nodes, Some(&schema));
     // The message goes before the layers are built, so the images it carries are copied out first.
     let embedded = embedded_copies(&msg);
     drop(msg);

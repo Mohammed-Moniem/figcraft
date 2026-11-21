@@ -168,7 +168,7 @@ fn native_layout_import_shares_paths_and_skips_stale_instance_overrides() {
     ];
     let valid_path = vec![1, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     let msg = object(vec![("nodeChanges", Kv::Array(nodes)), ("blobs", Kv::Array(vec![object(vec![("bytes", Kv::Bytes(valid_path))])]))]);
-    let (json, warnings, networks, layouts) = super::map::to_rest_with_layouts(&msg, "Text layouts", crate::rest::MAX_NODES);
+    let (json, warnings, networks, layouts) = super::map::to_rest_with_layouts(&msg, "Text layouts", crate::rest::MAX_NODES, None);
     assert!(warnings.is_empty(), "{warnings:?}");
     let (back, _) = crate::rest::import_with_native_motion(&json, &|_| None, networks, crate::rest::MAX_NODES, Default::default(), layouts).unwrap();
     let mut shared = Vec::new();
@@ -246,7 +246,7 @@ fn native_font_import_keeps_original_postscript_and_digest_without_guessing_miss
         label(4, "Missing", None, None),
     ];
     let msg = object(vec![("nodeChanges", Kv::Array(nodes))]);
-    let (json, _, networks, resources) = super::map::to_rest_with_layouts(&msg, "Native fonts", crate::rest::MAX_NODES);
+    let (json, _, networks, resources) = super::map::to_rest_with_layouts(&msg, "Native fonts", crate::rest::MAX_NODES, None);
     let (doc, _) = crate::rest::import_with_native_motion(&json, &|_| None, networks, crate::rest::MAX_NODES, Default::default(), resources).unwrap();
     let saved = doc.nodes().find(|n| n.name == "Saved").unwrap();
     let t = saved.kind.text().unwrap();
