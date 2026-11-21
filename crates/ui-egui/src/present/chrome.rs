@@ -42,6 +42,7 @@ pub fn show(app: &mut FigApp, ui: &mut Ui) {
     let ctx = ui.ctx().clone();
     let now = ctx.input(|i| i.time);
     let Some(mut pres) = app.ui.present.take() else { return };
+    let close_tab = ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::W));
     // A tab can play a file that is closed or not in front. Then it must not read or change
     // the file in front.
     let live = crate::tabs::present_owner_active(app);
@@ -115,7 +116,7 @@ pub fn show(app: &mut FigApp, ui: &mut Ui) {
         choose_device(app, &mut pres, &device);
     }
     app.ui.present = Some(pres);
-    if action == Some(BarAction::Close) || (!in_widget_text && ctx.input(|i| i.key_pressed(egui::Key::Escape))) {
+    if close_tab || action == Some(BarAction::Close) || (!in_widget_text && ctx.input(|i| i.key_pressed(egui::Key::Escape))) {
         if let Some(id) = app.ui.present_active {
             crate::tabs::close_present(app, id);
         } else {

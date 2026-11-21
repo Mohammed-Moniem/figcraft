@@ -191,3 +191,16 @@ fn renaming_the_file_or_the_page_renames_the_tab() {
     u.frame(vec![]);
     assert_eq!(tabs(&u)[0]["name"], "Playground - Calendar", "the names stay when the file closes");
 }
+#[test]
+fn close_shortcut_closes_the_presented_tab_and_keeps_its_design_open() {
+    let (mut u, frame, ..) = setup();
+    let owner = u.app.session.ds().unwrap().uid;
+    u.run("proto.present", json!({"start": frame}));
+    assert!(presenting(&u));
+    let modifiers = egui::Modifiers { command: true, mac_cmd: cfg!(target_os = "macos"), ctrl: !cfg!(target_os = "macos"), ..Default::default() };
+    let key = |pressed| egui::Event::Key { key: Key::W, physical_key: Some(Key::W), pressed, repeat: false, modifiers };
+    u.frame(vec![key(true), key(false)]);
+    assert_eq!(tabs(&u), json!([]));
+    assert!(!presenting(&u));
+    assert_eq!(u.app.session.ds().unwrap().uid, owner);
+}
