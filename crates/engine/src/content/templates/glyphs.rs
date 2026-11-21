@@ -85,6 +85,7 @@ glyphs! {
 #[cfg(test)]
 mod tests {
     use super::ALL;
+    use figcraft_geom::Rect;
     use std::collections::BTreeSet;
 
     #[test]
@@ -170,6 +171,27 @@ mod tests {
         assert!(ALL.iter().all(|glyph| !glyph.path.trim().is_empty()));
     }
 
+    // Centreline bounds of 3 to 21 leave a 2 px margin after the 2 px stroke. SVG arc extrema
+    // at 3 or 21 can round one representable value outwards when computing the bounds.
+    fn inside_stroke_margin(bounds: Rect) -> bool {
+        let (low, high) = (3.0_f64.next_down(), 21.0_f64.next_up());
+        bounds.x0 >= low && bounds.y0 >= low && bounds.x1 <= high && bounds.y1 <= high
+    }
+
+    #[test]
+    fn stroke_margin_allows_only_one_rounding_step_at_each_edge() {
+        let (low, high) = (3.0_f64.next_down(), 21.0_f64.next_up());
+        assert!(inside_stroke_margin(Rect::new(low, low, high, high)));
+        for bounds in [
+            Rect::new(low.next_down(), 3.0, 21.0, 21.0),
+            Rect::new(3.0, low.next_down(), 21.0, 21.0),
+            Rect::new(3.0, 3.0, high.next_up(), 21.0),
+            Rect::new(3.0, 3.0, 21.0, high.next_up()),
+        ] {
+            assert!(!inside_stroke_margin(bounds), "{bounds:?}");
+        }
+    }
+
     #[test]
     fn starter_icons_have_distinct_finite_geometry_inside_the_stroke_margin() {
         use figcraft_geom::{BezPath, Shape};
@@ -181,9 +203,7 @@ mod tests {
             assert!([bounds.x0, bounds.y0, bounds.x1, bounds.y1].iter().all(|v| v.is_finite()), "{}", glyph.name);
             assert!(bounds.width() > 0.0 && bounds.height() > 0.0, "{}: real two-dimensional geometry", glyph.name);
             assert!(path.segments().count() > 0, "{}: drawable segments", glyph.name);
-            // The 2 px round stroke extends one unit beyond its centreline, leaving a 2 px
-            // margin in the 24 px component. Curve control points may sit outside this box.
-            assert!(bounds.x0 >= 3.0 && bounds.y0 >= 3.0 && bounds.x1 <= 21.0 && bounds.y1 <= 21.0, "{}: {bounds:?}", glyph.name);
+            assert!(inside_stroke_margin(bounds), "{}: {bounds:?}", glyph.name);
             assert!(paths.insert(path.to_svg()), "{}: duplicate geometry", glyph.name);
         }
     }
