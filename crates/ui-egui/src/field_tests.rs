@@ -1199,3 +1199,115 @@ fn sidebar_field_text_stays_in_place_on_focus() {
         assert!((before.center().y - after.center().y).abs() <= 0.5, "numeric={numeric}: before={before:?}, after={after:?}");
     }
 }
+
+#[test]
+fn a_draft_is_dropped_when_the_selection_changes() {
+    let (mut u, _a, b) = setup();
+    let (h_pos, _) = field(&mut u, "Height");
+    click(&mut u, h_pos);
+    u.frame(vec![Event::Text("23".into())]);
+
+    // Deselect (clear selection) while field is in editing state
+    u.app.run("select.none", json!({}));
+    u.frame(vec![]);
+
+    // Now select b (which has height 20)
+    u.app.run("select.set", json!({"ids": [b]}));
+    u.frame(vec![]);
+
+    // Verify height field does NOT stay stuck in editing state
+    let h_editing = u.ctx.data(|d| d.get_temp::<String>(Id::unique("lay_h").with("editing")));
+    assert_eq!(h_editing, None, "Height field must not be stuck in editing state after deselect and reselect");
+    assert_eq!(field(&mut u, "Height").1, "20", "Height field must show layer b's height");
+}
+
+#[test]
+fn clicking_canvas_while_editing_number_field_commits_value() {
+    let (mut u, a, _) = setup();
+    let (h_pos, _) = field(&mut u, "Height");
+    click(&mut u, h_pos);
+    u.frame(vec![Event::Text("50".into())]);
+
+    // Click on empty canvas (outside the layers and panels)
+    let canvas_click = pos2(500.0, 500.0);
+    click(&mut u, canvas_click);
+
+    let doc = u.app.session.doc().unwrap();
+    assert_eq!(doc.node(a).unwrap().height, 50.0, "Clicking canvas must commit the edited field value");
+}
+
+#[test]
+fn field_draft_is_retained_when_window_loses_focus() {
+    let (mut u, _a, _) = setup();
+    let (h_pos, _) = field(&mut u, "Height");
+    click(&mut u, h_pos);
+    u.frame(vec![Event::Text("55".into())]);
+
+    // Simulate window deactivation (e.g. user switching windows/applications)
+    u.frame_raw(egui::RawInput { focused: false, ..Default::default() });
+
+    // Verify draft is still present
+    let h_editing = u.ctx.data(|d| d.get_temp::<String>(Id::unique("lay_h").with("editing")));
+    assert_eq!(h_editing.as_deref(), Some("55"), "field draft must be retained when window loses focus");
+}
+
+#[test]
+fn selecting_different_layer_in_layers_panel_drops_draft() {
+    let (mut u, _a, b) = setup();
+    let (h_pos, _) = field(&mut u, "Height");
+    click(&mut u, h_pos);
+    u.frame(vec![Event::Text("99".into())]);
+
+    // A single batch changes selection before the right panel draws the reused Height widget.
+    let b_row = u.row_at(b);
+    u.frame(vec![
+        Event::PointerMoved(b_row),
+        Event::PointerButton { pos: b_row, button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE },
+        Event::PointerButton { pos: b_row, button: egui::PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE },
+    ]);
+    assert_eq!(u.app.session.selection(), [b]);
+    assert_eq!(u.app.session.doc().unwrap().node(b).unwrap().height, 20.0);
+
+    // Verify draft was dropped and b's height is shown, not 99
+    let h_editing = u.ctx.data(|d| d.get_temp::<String>(Id::unique("lay_h").with("editing")));
+    assert_eq!(h_editing, None, "stale draft must not leak into newly selected layer");
+    assert_eq!(field(&mut u, "Height").1, "20", "Height field must show layer b's height");
+}
+
+#[test]
+fn batched_canvas_click_commits_radius_to_the_original_layer_and_shows_the_new_one() {
+    let (mut u, a, b) = setup();
+    u.app.run("node.set", json!({"id": b, "props": {"cornerRadius": 3}}));
+    let (radius, _) = field(&mut u, "Corner radius");
+    click(&mut u, radius);
+    u.frame(vec![Event::Text("12".into())]);
+    let target = u.app.to_screen(110.0, 60.0);
+    u.frame(vec![
+        Event::PointerMoved(target),
+        Event::PointerButton { pos: target, button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE },
+        Event::PointerButton { pos: target, button: egui::PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE },
+    ]);
+    assert_eq!(u.app.session.selection(), [b]);
+    let doc = u.app.session.doc().unwrap();
+    assert_eq!(doc.node(a).unwrap().corners.radii, [12.0; 4]);
+    assert_eq!(doc.node(b).unwrap().corners.radii, [3.0; 4]);
+    assert_eq!(field(&mut u, "Corner radius").1, "3");
+}
+
+#[test]
+fn a_resize_replaces_a_height_draft_on_the_same_or_reselected_layer() {
+    for deselect in [false, true] {
+        let (mut u, a, _) = setup();
+        let (field_pos, _) = field(&mut u, "Height");
+        click(&mut u, field_pos);
+        u.frame(vec![Event::Text("23".into())]);
+        if deselect {
+            u.app.run("select.none", json!({}));
+            u.frame(vec![]);
+        }
+        u.app.run("node.set", json!({"id": a, "props": {"height": 60}}));
+        u.app.run("select.set", json!({"ids": [a]}));
+        assert_eq!(field(&mut u, "Height").1, "60");
+        assert_eq!(u.ctx.data(|d| d.get_temp::<String>(Id::unique("lay_h").with("editing"))), None);
+    }
+}

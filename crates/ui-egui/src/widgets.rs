@@ -336,6 +336,18 @@ fn keep_exact_arrow_focus(ui: &Ui, exact: bool) {
     }
 }
 
+/// The properties panel draws before the canvas. Commit on the press while this editor still
+/// describes its original layer, including a quick press and release batched into one frame.
+fn pressed_outside(ui: &Ui, rect: Rect) -> bool {
+    ui.input(|i| {
+        i.events.iter().any(|event| {
+            matches!(event, egui::Event::PointerButton {
+        pos, button: egui::PointerButton::Primary, pressed: true, ..
+    } if !rect.contains(*pos))
+        })
+    })
+}
+
 fn queue_exact_arrow_refresh(ui: &Ui, id: Id, exact: bool) {
     if exact {
         // A caller can clamp a setting; reread its accepted value before the next edit.
@@ -405,6 +417,16 @@ fn number_field_impl(
     let editing_id = id.with("editing");
     let mut editing: Option<String> = ui.data(|d| d.get_temp(editing_id));
     refresh_wheel_editor(ui, id, &mut editing, value, format_value);
+    let kept_id = id.with("kept");
+    if editing.is_some()
+        && let Some(kept) = ui.data(|d| d.get_temp::<String>(kept_id))
+        && kept != value.map(format_value).unwrap_or_default()
+    {
+        // A resize or command changed this property while its old value was being edited.
+        editing = None;
+        ui.data_mut(|d| d.remove::<String>(editing_id));
+        ui.memory_mut(|m| m.surrender_focus(id.with("te")));
+    }
     let field_resp = ui.interact(edit_rect, id.with("field"), Sense::click());
     a11y::number(&field_resp, lead.name(), value, suffix, empty.text());
     a11y::ring_around(ui, rect, &field_resp);
@@ -497,8 +519,8 @@ fn number_field_impl(
     let started = editing.is_none() && (field_resp.clicked() || typed_now);
     // The text the field would commit to no effect: what it showed when the edit began, or the
     // value the arrows last stepped it to.
-    let kept_id = id.with("kept");
     if started {
+        crate::number_wheel::begin_editor(ui, id);
         editing = Some(if typed_now { String::new() } else { value.map(format_value).unwrap_or_default() });
         ui.data_mut(|d| {
             d.insert_temp(editing_id, editing.clone().unwrap_or_default());
@@ -560,7 +582,7 @@ fn number_field_impl(
                 // Back to what it was: nothing is committed.
                 ui.data_mut(|d| d.remove::<String>(editing_id));
                 ui.memory_mut(|m| m.surrender_focus(id.with("te")));
-            } else if r.lost_focus() || enter {
+            } else if r.lost_focus() || enter || (!started && pressed_outside(ui, rect)) {
                 // Enter, Tab or a click elsewhere commits what was typed (a field left as it was
                 // commits nothing: no undo step, and a rounded display isn't written back).
                 let kept: String = ui.data(|d| d.get_temp(kept_id)).unwrap_or_default();
@@ -569,6 +591,9 @@ fn number_field_impl(
                 {
                     out = Some(e);
                 }
+                ui.data_mut(|d| d.remove::<String>(editing_id));
+                r.surrender_focus();
+            } else if !ui.memory(|m| m.has_focus(r.id)) && !started {
                 ui.data_mut(|d| d.remove::<String>(editing_id));
             } else {
                 ui.data_mut(|d| d.insert_temp(editing_id, text));
@@ -768,6 +793,7 @@ fn text_field_in(ui: &mut Ui, id: Id, value: &str, rect: Rect, placeholder: &str
     }
     let started = editing.is_none() && resp.clicked();
     if started {
+        crate::number_wheel::begin_editor(ui, id);
         editing = Some(value.to_string());
         ui.memory_mut(|m| m.request_focus(id.with("te")));
         select_all_next(ui, id.with("te"), value);
@@ -783,8 +809,12 @@ fn text_field_in(ui: &mut Ui, id: Id, value: &str, rect: Rect, placeholder: &str
             let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
             if esc {
                 ui.data_mut(|d| d.remove::<String>(editing_id));
-            } else if r.lost_focus() || enter {
+                r.surrender_focus();
+            } else if r.lost_focus() || enter || (!started && pressed_outside(ui, rect)) {
                 out = Some(text);
+                ui.data_mut(|d| d.remove::<String>(editing_id));
+                r.surrender_focus();
+            } else if !ui.memory(|m| m.has_focus(r.id)) && !started {
                 ui.data_mut(|d| d.remove::<String>(editing_id));
             } else {
                 ui.data_mut(|d| d.insert_temp(editing_id, text));

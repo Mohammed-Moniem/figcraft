@@ -1,5 +1,5 @@
-//! Optional focused numeric wheel edits. Widgets keep the normal Set/relative edit paths;
-//! this module owns only wheel consumption and the lifetime of their undo interaction.
+//! Focused field ownership and optional numeric wheel edits. The wheel uses the widgets' ordinary
+//! Set/relative edit paths and groups its steps into one undo interaction.
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -82,11 +82,47 @@ fn clear_editor(ctx: &Context, field: Id) {
     ctx.data_mut(|d| {
         d.remove::<String>(field.with("editing"));
         d.remove::<String>(field.with("kept"));
+        d.remove::<bool>(field.with("selectall"));
         d.remove::<bool>(field.with("wheel_refresh"));
     });
     ctx.memory_mut(|m| {
         m.surrender_focus(field.with("te"));
         m.surrender_focus(field.with("field"));
+    });
+}
+
+/// Refresh the owner before fields draw. The layers panel can select a new layer in this pass.
+pub(crate) fn sync_editor(app: &FigApp, ctx: &Context) {
+    let settings = Settings { enabled: app.session.prefs.number_wheel, target: target(app) };
+    set_editor_target(ctx, &settings);
+}
+
+fn set_editor_target(ctx: &Context, settings: &Settings) {
+    let editor_key = key(ctx, "field-editor-owner");
+    if let Some(editor) = ctx.data(|d| d.get_temp::<EditorOwner>(editor_key))
+        && editor.target != settings.target
+    {
+        clear_editor(ctx, editor.field);
+        ctx.data_mut(|d| d.remove::<EditorOwner>(editor_key));
+    }
+    let settings_key = key(ctx, "number-wheel-settings");
+    ctx.data_mut(|d| d.insert_temp(settings_key, settings.clone()));
+}
+
+/// Shared sidebar field IDs follow the selected layers. Popups and windows own their editors'
+/// lifetimes independently, such as the JPEG quality editor bound to an export row.
+pub(crate) fn begin_editor(ui: &Ui, field: Id) {
+    let container = ui.stack().iter().filter_map(|entry| entry.kind()).find(|kind| kind.is_panel() || kind.is_area());
+    if !matches!(container, Some(egui::UiKind::LeftPanel | egui::UiKind::RightPanel)) {
+        return;
+    }
+    let ctx = ui.ctx();
+    let settings_key = key(ctx, "number-wheel-settings");
+    let editor_key = key(ctx, "field-editor-owner");
+    ctx.data_mut(|d| {
+        if let Some(settings) = d.get_temp::<Settings>(settings_key) {
+            d.insert_temp(editor_key, EditorOwner { field, target: settings.target });
+        }
     });
 }
 
@@ -96,6 +132,7 @@ pub(crate) fn sync(app: &mut FigApp, ctx: &Context) {
     let id = key(ctx, "number-wheel-gesture");
     let state = ctx.data(|d| d.get_temp::<Gesture>(id));
     let settings = Settings { enabled: app.session.prefs.number_wheel, target: target(app) };
+    set_editor_target(ctx, &settings);
     // Agent inspection must not split a human wheel gesture; commands/input still close it.
     let control_edit = app.control_queue.iter().any(|r| {
         !matches!(
@@ -103,15 +140,6 @@ pub(crate) fn sync(app: &mut FigApp, ctx: &Context) {
             "events.poll" | "engine.commands" | "document.inspect" | "node.get" | "window.list" | "ui.inspect" | "ui.render" | "ui.screenshot"
         )
     });
-    // The command queue can finish A then route to B in this same pass. Keep the editor
-    // owner after the interaction ends, so the second sync still discards A's cached text.
-    let editor_key = key(ctx, "number-wheel-editor");
-    if let Some(editor) = ctx.data(|d| d.get_temp::<EditorOwner>(editor_key))
-        && editor.target != settings.target
-    {
-        clear_editor(ctx, editor.field);
-        ctx.data_mut(|d| d.remove::<EditorOwner>(editor_key));
-    }
     if let Some(state) = state {
         let (now, modifiers, position, boundary, window_focused) = ctx.input(|i| {
             let boundary = i
@@ -168,8 +196,6 @@ pub(crate) fn sync(app: &mut FigApp, ctx: &Context) {
             });
         }
     }
-    let settings_key = key(ctx, "number-wheel-settings");
-    ctx.data_mut(|d| d.insert_temp(settings_key, settings));
 }
 
 pub(crate) fn end_frame(ctx: &Context) {
@@ -295,7 +321,7 @@ pub(crate) fn steps(ui: &Ui, field: Id, rect: Rect, focused: bool) -> Option<(f6
     state.stepped |= whole != 0.0;
     state.applied = false;
     state.applying = (whole != 0.0).then_some(frame);
-    let editor_key = key(ctx, "number-wheel-editor");
+    let editor_key = key(ctx, "field-editor-owner");
     let tail_key = key(ctx, "number-wheel-tail");
     ctx.data_mut(|d| {
         d.insert_temp(editor_key, EditorOwner { field, target: state.target.clone() });

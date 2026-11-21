@@ -439,6 +439,7 @@ impl FigApp {
         }
         self.ui.right_panel_rect = None;
         if right_open {
+            crate::number_wheel::sync_editor(self, &ctx);
             if !narrow {
                 let (x, grows) = edge(ui, false, right_w);
                 edges.push(("right", x, right_w, grows));
