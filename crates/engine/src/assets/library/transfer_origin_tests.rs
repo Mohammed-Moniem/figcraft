@@ -113,27 +113,26 @@ impl Drop for Fixture {
     }
 }
 
-fn instance(s: &Session) -> NodeId {
-    s.doc()
-        .unwrap()
-        .pages
+fn instance_and_main(s: &Session) -> (NodeId, NodeId) {
+    let doc = s.doc().unwrap();
+    doc.pages
         .iter()
-        .flat_map(|page| s.doc().unwrap().node(*page).unwrap().children.iter().copied())
-        .find(|node| matches!(s.doc().unwrap().node(*node).unwrap().kind, NodeKind::Instance { .. }))
-        .unwrap()
+        .flat_map(|page| doc.node(*page).unwrap().children.iter().copied())
+        .find_map(|id| match doc.node(id).unwrap().kind {
+            NodeKind::Instance { component, .. } => Some((id, component)),
+            _ => None,
+        })
+        .expect("the transfer fixture must contain an instance")
 }
 
 fn copy_instance(s: &mut Session) {
-    let selected = instance(s);
+    let (selected, _) = instance_and_main(s);
     run(s, "select.set", json!({"ids":[selected]}));
     run(s, "edit.copy", json!({}));
 }
 
 fn assert_remote_read_only(s: &mut Session) {
-    let main = match s.doc().unwrap().node(instance(s)).unwrap().kind {
-        NodeKind::Instance { component, .. } => component,
-        _ => unreachable!(),
-    };
+    let (_, main) = instance_and_main(s);
     assert!(s.doc().unwrap().is_remote(main));
     let before = s.doc().unwrap().clone();
     let history = s.undo_depth();

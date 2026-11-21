@@ -179,7 +179,7 @@ fn override_groups(doc: &Document, before: &Document, id: NodeId, n: &Node, b: &
         // Binding another variable (or none) where the main binds one is an override.
         let edited_bindings = if n.bound == b.bound { BTreeSet::new() } else { compare_bindings(n, b).1 };
         for &g in edited_bindings.intersection(&rebound) {
-            if !groups.contains(&g) && !(top_root && matches!(g, "resizing" | "modes")) {
+            if !(groups.contains(&g) || top_root && matches!(g, "resizing" | "modes")) {
                 groups.push(g);
             }
         }
