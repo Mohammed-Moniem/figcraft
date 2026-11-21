@@ -1,5 +1,7 @@
 # File format parity
 
+Figma REST JSON pattern paints keep their tile layer, spacing, scale, alignment and grid or hexagonal layout. The importer resolves layer IDs after reading the document, including tiles that occur later than the painted layer. Fills, strokes and styled text use the same lookup. An absent tile drops only the affected paint and produces an import warning. [Upstream PR #2422](https://github.com/storytold/figcraft/pull/2422)
+
 Local native Motion import subset, 2026-11-08: `.fig` import retains editable visible linear XY
 Position keys for direct rectangles in one unambiguous top-level frame per page, with identity
 linear transforms, no auto layout, explicit linear easing and zero spatial path handles. The
@@ -79,6 +81,14 @@ and prototype interactions are still unchecked there.
 
 ## Import (place / paste / drop)
 
+When a Figma instance binds a variant property to a collection variable, the native and REST
+importers retain the binding and open the variant selected by the instance's mode. The native
+reader includes the other variants in the file's component set so switching mode can change
+the instance later. Both paths retain OpenType feature toggles. When the installed font exposes
+a named style and an optical-size axis, imported text follows its font size unless the design
+already specifies an optical size. [FigCraft PR #2533](https://github.com/storytold/figcraft/pull/2533)
+and [native reader PR #2714](https://github.com/storytold/craft-libs/pull/2714).
+
 | Format | Figma | FigCraft | Notes | Hours |
 |---|---|---|---|---|
 | SVG | editable vectors | **yes**, editable | corpus of 21 synthetic files with hand-computed expected pixels, structure and round-trip checks; gradients, `color()` (sRGB, Display P3) and `color-mix()` (sRGB, OKLab, OKLCH) colours, patterns as image fills, clip paths, masks, shadow/blur filters, blend modes, text as text layers; other filters dropped with a warning; text on one path as text on a path (on several paths as outlines); a pattern's tile is drawn once per scale however many layers use it, and its layers count in the import's 100,000-layer budget; fuzzed | 2–4 (filters) |
@@ -157,11 +167,11 @@ and does not establish a new external-Figma or Windows acceptance result. See
   "Semi Bold" in Inter; size; line height, a share of
   the font size as a raw multiplier; letter spacing, case, decoration, links), alignment, auto resize,
   truncation, paragraph spacing and indent, list types and styled runs with their fills (indexed
-  by UTF-16 unit); components (description, boolean, text and instance swap properties and the
+  by UTF-16 unit); components (description, boolean, text, instance swap and slot properties and the
   layers bound to them, with their values also as variable data), component sets (the set holds
   the definitions, variant properties included with their values in order; each variant has its
   own copy of each definition and its variant values, and its layers and instances name that
-  copy), instances (their main, property values, what the instance
+  copy), instances (their main, property values, default and independently edited slot content, what the instance
   itself changes from its main, such as its size, name and paints, as an override addressed by the
   main's id, the fields its layers change, by id path, through nested instances and swaps, and what
   follows from those as derived data: each layer's size, place and outline and the colours its
@@ -178,19 +188,22 @@ and does not establish a new external-Figma or Windows acceptance result. See
   with the area it paints); prototype
   interactions (clicks, hovers, presses, drags, mouse triggers, delays, keys with modifiers and
   controller buttons; navigate, overlays with their position, outside-click setting and
-  background, swap, change to, scroll to, back, close, open link; transitions and easing, custom
+  background, swap, change to, scroll to, back, close, open link, set variable, set variable mode
+  and ordered conditional branches; transitions and easing, custom
   curves included), scrolling and fixed layers, flow starting points.
 - **Left out, with a warning each:** colour calculations that resolve to nothing (an operand
   missing, or more than 32 variables to read), variable bindings the format has no field for (component
-  properties, arc fields, font weight: written as the values they give), text styles on part of a
+  properties other than variable-driven variant selection, arc fields, font weight: written as the values they give), text styles on part of a
   text (written as values), variables' publishing, code syntax and inheritance settings, extended
   collections (written as collections of their own), comments, Dev Mode annotations, statuses,
   resources, measurements and code links, plugin data, ruler
-  guides, prototype device settings, slot properties and slot content, brush
+  guides, prototype device settings, preferred components of slot properties, brush
   strokes (written plain), strokes wider on one side of their path (written as filled outlines, or
   with the width on both sides when the shape has a fill too), pattern fills, WebP export settings (written as PNG),
   image adjustments, glass settings other than frost, springs other than Gentle (written as ease
-  out), set-variable, set-variable-mode and conditional actions, scroll-to offsets, text decoration
+  out), prototype actions with missing references, unsupported values (including expressions that
+  read the current collection mode), or branches and expressions beyond the file's nesting and
+  argument limits, scroll-to offsets, text decoration
   looks, variable font axes, text on a path, nested list levels, list spacing, hanging punctuation,
   leading trim, OpenType features, per-layer operations inside boolean groups, different stroke ends
   on lines, the Dash cap (no public name for it). Not written at all: stroke outlines of dashed and per-side strokes and of inside or

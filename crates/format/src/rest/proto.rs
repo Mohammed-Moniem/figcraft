@@ -18,8 +18,8 @@ const MAX_OFFSET: f64 = 100_000.0;
 /// Longest transition or delay kept (ms).
 const MAX_MS: f64 = 60_000.0;
 /// Most blocks of one conditional and arguments of one expression function read.
-const MAX_BLOCKS: usize = 64;
-const MAX_ARGS: usize = 64;
+pub(crate) const MAX_BLOCKS: usize = 64;
+pub(crate) const MAX_ARGS: usize = 64;
 /// Longest URL kept (characters).
 const MAX_URL: usize = 4096;
 /// Default transition length when the file names none (ms).

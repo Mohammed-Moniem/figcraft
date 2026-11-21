@@ -14,7 +14,8 @@ impl<'d> Exporter<'d> {
     pub(super) fn assign_within(&mut self, limit: usize) {
         let doc = self.doc;
         // Use the same order as emission, so a capped export prioritises the active design too.
-        let mut stack: Vec<(NodeId, usize)> = super::ordered_pages(doc).rev().map(|id| (id, 0)).collect();
+        let mut stack: Vec<(NodeId, usize)> = self.library.roots.iter().rev().map(|id| (*id, 1)).collect();
+        stack.extend(super::ordered_pages(doc).rev().map(|id| (id, 0)));
         let mut visited = std::collections::BTreeSet::new();
         while let Some((id, depth)) = stack.pop() {
             if self.budget.failed() {
@@ -35,12 +36,13 @@ impl<'d> Exporter<'d> {
             };
             self.ids.insert(id, local);
             // An instance's layers aren't written (its main says them), so nothing may refer to them.
-            let mirrored = matches!(&n.kind, NodeKind::Instance { component, .. } if doc.node(*component).is_some_and(|c| matches!(c.kind, NodeKind::Component { .. })));
+            let mirrored = matches!(&n.kind, NodeKind::Instance { component, .. } if self.library.mains.contains(component));
             if !mirrored {
                 if !self.budget.items(n.children.len(), 24, 1) {
                     break;
                 }
-                stack.extend(n.children.iter().rev().map(|id| (*id, depth + 1)));
+                let hidden = self.library.nodes.contains(&id);
+                stack.extend(n.children.iter().rev().filter(|c| !hidden || self.library.nodes.contains(c)).map(|id| (*id, depth + 1)));
             }
             match &n.kind {
                 NodeKind::Component { props, .. } => {
@@ -92,8 +94,12 @@ impl<'d> Exporter<'d> {
                 }
             }
         }
-        // The page that holds styles and variables takes the next id, then their nodes.
-        let Ok(mut next) = u32::try_from(self.ids.len() + 1) else {
+        self.assign_slots(limit);
+        if self.budget.failed() {
+            return;
+        }
+        // The private slot wrappers, asset page and asset nodes follow the real layer ids.
+        let Some(mut next) = self.asset_canvas() else {
             self.budget.fail("asset canvas identifier overflow");
             return;
         };
@@ -146,13 +152,18 @@ impl<'d> Exporter<'d> {
         if self.budget.failed() || !self.budget.source(&doc.styles) || !self.budget.source(&doc.variables) {
             return;
         }
-        if self.style_ids.is_empty() && self.set_ids.is_empty() && self.motion.resource_count() == 0 {
+        if self.style_ids.is_empty()
+            && self.set_ids.is_empty()
+            && self.motion.resource_count() == 0
+            && self.library.roots.is_empty()
+            && self.slots.frames.is_empty()
+        {
             return;
         }
         if !self.budget.row() {
             return;
         }
-        let Ok(page) = u32::try_from(self.ids.len() + 1) else {
+        let Some(page) = self.asset_canvas() else {
             self.budget.fail("asset canvas GUID identifier overflow");
             return;
         };
@@ -165,8 +176,15 @@ impl<'d> Exporter<'d> {
         ];
         f.extend(root_fields().into_iter().map(|(k, v)| if k == "visible" { (k, b(false)) } else { (k, v) }));
         f.push(("internalOnly", b(true)));
+        if !self.library.roots.is_empty() {
+            f.push(("pluginData", arr(vec![o(vec![("pluginID", s("figcraft")), ("key", s(super::LIBRARY_STORE_KEY)), ("value", s("1"))])])));
+        }
         self.nodes.push(o(f));
-        let mut index = 0usize;
+        for i in 0..self.library.roots.len() {
+            let root = self.library.roots[i];
+            self.emit(root, guid(LAYERS, page), i, None, 1);
+        }
+        let mut index = self.library.roots.len();
         let mut head = |local: u32, ty: &'static str, name: &str| -> Fields {
             index += 1;
             vec![
@@ -317,6 +335,21 @@ impl<'d> Exporter<'d> {
             }
             self.nodes.push(o(f));
         }
+        for i in 0..self.slots.frames.len() {
+            if !self.budget.row() {
+                return;
+            }
+            let frame = &self.slots.frames[i];
+            let Some(parent) = doc.node(frame.slot) else { continue };
+            let guid = frame.guid;
+            let mut f = head(guid, "FRAME", "Slot content");
+            f.extend(root_fields());
+            f.push(("isSlotContent", b(true)));
+            self.nodes.push(o(f));
+            for (index, &child) in parent.children.iter().enumerate() {
+                self.emit(child, super::guid(LAYERS, guid), index, Some(parent), 1);
+            }
+        }
         self.motion.emit(page, index + 1, &mut self.nodes);
     }
 
@@ -339,7 +372,11 @@ impl<'d> Exporter<'d> {
     pub(super) fn bound(&mut self, n: &Node) -> Bound {
         const BAKED: &str = "variables bound to properties the format has no field for were written as their values";
         let mut out = Bound::default();
+        out.entries.extend(self.variant_binding(n));
         for (key, var) in &n.bound {
+            if key.starts_with(crate::rest::PROP_BINDING) {
+                continue;
+            }
             let parts: Vec<&str> = key.split('/').collect();
             let index = |i: &str| i.parse::<usize>().ok().filter(|_| i.bytes().all(|c| c.is_ascii_digit()));
             let fields: &[&'static str] = match (parts.as_slice(), key.as_str()) {

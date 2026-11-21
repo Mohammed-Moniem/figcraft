@@ -523,10 +523,13 @@ fn native_position_export_instance_inline_generation_charges_shared_budget_acros
         }
         instances.push(inst);
     }
-    let (failed, data, _) = super::export::generation_with_test_budget(&doc, instances[0], "instance", 2 * 1024 * 1024, 4_000_000);
+    // This cap fits the temporary comparison buffers for one instance. Once the prior
+    // emitted rows remain in memory, the same cap must reject the complete subtree.
+    let shared_bytes = 1024 * 1024;
+    let (failed, data, _) = super::export::generation_with_test_budget(&doc, instances[0], "instance", shared_bytes, 4_000_000);
     assert!(!failed, "a single known-positive instance fits");
     assert!(data.get("symbolData").is_some());
-    let (failed, _, _) = super::export::generation_with_test_budget(&doc, page, "subtree", 2 * 1024 * 1024, 4_000_000);
+    let (failed, _, _) = super::export::generation_with_test_budget(&doc, page, "subtree", shared_bytes, 4_000_000);
     assert!(failed, "per-instance resets must not permit repeated inline amplification");
     let (failed, data, _) = super::export::generation_with_test_budget(&doc, page, "subtree", 64 * 1024 * 1024, 4_000_000);
     assert!(!failed);

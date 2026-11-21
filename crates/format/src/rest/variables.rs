@@ -317,7 +317,9 @@ impl Ctx<'_> {
         let mut skipped: BTreeSet<&str> = BTreeSet::new();
         if let Some(b) = j.get("boundVariables").and_then(Value::as_object) {
             for (k, v) in b {
-                if !node_binding(k, v, n, &mut found) {
+                // Instance mains are linked after the whole tree is read. At this point the
+                // temporary NodeKind is still Frame, so use the serialized kind for this field.
+                if (k == "componentProperties" && text(j, "type") != Some("INSTANCE")) || !node_binding(k, v, n, &mut found) {
                     skipped.insert(k.as_str());
                 }
             }
@@ -398,8 +400,17 @@ impl Ctx<'_> {
                 self.warn("variable bindings to properties the layer doesn't have were skipped");
                 continue;
             }
+            // A component property takes a string variable (variant and text) or a boolean one;
+            // the engine checks which when it applies the binding.
+            let fits = |kind| {
+                if field.starts_with(PROP_BINDING) {
+                    matches!(kind, VariableType::String | VariableType::Boolean)
+                } else {
+                    kind == field_type(&field)
+                }
+            };
             match self.var_kinds.get(var) {
-                Some(kind) if *kind == field_type(&field) => {
+                Some(kind) if fits(*kind) => {
                     n.bound.insert(field, var.to_string());
                 }
                 Some(_) => self.warn("variable bindings whose variable type doesn't fit the property were skipped"),
@@ -412,6 +423,9 @@ impl Ctx<'_> {
         n.var_modes.extend(self.modes(j));
     }
 }
+
+/// The binding key prefix of an instance's component property (the engine's `PROP_BINDING`).
+pub(crate) const PROP_BINDING: &str = "componentProperties/";
 
 /// Map one `boundVariables` entry onto our field names; false when the property isn't bindable.
 fn node_binding<'v>(k: &str, v: &'v Value, n: &Node, out: &mut Vec<(String, &'v str)>) -> bool {
@@ -426,6 +440,15 @@ fn node_binding<'v>(k: &str, v: &'v Value, n: &Node, out: &mut Vec<(String, &'v 
             push("height", v.get("y").and_then(alias));
         }
         "itemSpacing" => push("gap", alias(v)),
+        // An instance's component properties, variant ones included (`Mode` bound to a string
+        // variable picks the variant it names): `componentProperties/<name>`, the engine's
+        // `PROP_BINDING` key that `variable.bind` writes.
+        "componentProperties" => {
+            let Some(props) = v.as_object() else { return false };
+            for (name, a) in props.iter().take(256) {
+                push(&format!("{PROP_BINDING}{name}"), alias(a));
+            }
+        }
         "counterAxisSpacing" => push("crossGap", alias(v)),
         "characters" | "visible" | "opacity" | "strokeWeight" | "strokeTopWeight" | "strokeRightWeight" | "strokeBottomWeight"
         | "strokeLeftWeight" | "paddingLeft" | "paddingRight" | "paddingTop" | "paddingBottom" | "topLeftRadius" | "topRightRadius"

@@ -1,4 +1,4 @@
-use super::diff::{diff_groups, variable_groups};
+use super::diff::{compare_bindings, diff_groups};
 use super::instances::{field_group, path_map};
 use super::{BTreeMap, BTreeSet, Document, MAX_DEPTH, Node, NodeId, NodeKind, default_instance_name, holds_content};
 
@@ -196,8 +196,10 @@ pub fn rebase_instance(doc: &mut Document, inst: NodeId) {
         let mut overrides: BTreeSet<String> = n.overrides.iter().filter(|g| !matches!(g.as_str(), "component" | "props")).cloned().collect();
         if let Some(m) = source.and_then(|source| doc.node(source)) {
             let mut bound: Vec<&str> = m.prop_refs.keys().map(|f| field_group(f)).collect();
-            bound.extend(variable_groups(n, m));
+            let (shared_bindings, changed_bindings) = compare_bindings(n, m);
+            bound.extend(shared_bindings);
             overrides.extend(value_groups(m, n).into_iter().filter(|g| !bound.contains(&g.as_str())));
+            overrides.extend(changed_bindings.into_iter().map(str::to_owned));
             if matches!((&m.kind, &n.kind), (NodeKind::Instance { component: a, .. }, NodeKind::Instance { component: b, .. }) if a != b) {
                 overrides.insert("component".into());
             }
@@ -211,10 +213,11 @@ pub fn rebase_instance(doc: &mut Document, inst: NodeId) {
     });
     let root_groups = match (root_base.and_then(|source| doc.node(source)), doc.node(inst)) {
         (Some(m), Some(n)) => {
-            let from_variables = variable_groups(n, m);
+            let (from_variables, changed_bindings) = compare_bindings(n, m);
             let mut groups: Vec<String> = value_groups(m, n)
                 .into_iter()
                 .filter(|g| !matches!(g.as_str(), "name" | "exports" | "interactions") && !from_variables.contains(&g.as_str()))
+                .chain(changed_bindings.into_iter().map(str::to_owned))
                 .filter(|g| placed_source.is_some() || !matches!(g.as_str(), "resizing" | "modes"))
                 .collect();
             let named = if placed_source.is_some() { n.name != m.name } else { n.name != default_instance_name(doc, component) };

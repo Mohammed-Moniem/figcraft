@@ -1,17 +1,29 @@
 use super::instances::PROP_BINDING;
-use super::{Document, Node, NodeId, NodeKind, PropDef, Sizing, TextAutoResize, TextData, inside_instance, owning_component, variant_set};
+use super::{BTreeSet, Document, Node, NodeId, NodeKind, PropDef, Sizing, TextAutoResize, TextData, inside_instance, owning_component, variant_set};
 
-/// The property groups whose value layer `n` takes from the same variables as its main layer
-/// `src` (they differ only where the two resolve in different variable modes).
+/// The property groups for which the layer and main share a variable binding, in layer field order.
 pub fn variable_groups(n: &Node, src: &Node) -> Vec<&'static str> {
-    let mut out = Vec::new();
-    for (k, v) in &n.bound {
-        let Some(g) = binding_group(k) else { continue };
-        if src.bound.get(k) == Some(v) && !out.contains(&g) {
-            out.push(g);
-        }
+    let (mut shared, _) = compare_bindings(n, src);
+    n.bound.keys().filter_map(|k| binding_group(k)).filter(|g| shared.remove(g)).collect()
+}
+
+/// Compare bindings by their target field. Legacy paint keys and indexed keys can name the
+/// same field. Shared bindings can resolve differently in different modes. Added, removed or
+/// replaced bindings make an override, even when both paints currently show the same value.
+pub(super) fn compare_bindings(n: &Node, src: &Node) -> (BTreeSet<&'static str>, BTreeSet<&'static str>) {
+    fn canonical(n: &Node) -> BTreeSet<(&'static str, Option<usize>, &str, &str)> {
+        n.bound
+            .iter()
+            .filter_map(|(key, variable)| {
+                let group = binding_group(key)?;
+                let (index, field) = crate::cmd::lists::list_binding(key).map_or((None, key.as_str()), |(_, i, f)| (Some(i), f));
+                Some((group, index, field, variable.as_str()))
+            })
+            .collect()
     }
-    out
+    let mine = canonical(n);
+    let theirs = canonical(src);
+    (mine.intersection(&theirs).map(|b| b.0).collect(), mine.symmetric_difference(&theirs).map(|b| b.0).collect())
 }
 
 /// The override group a variable binding key feeds (`None` for component property and layout
@@ -28,11 +40,6 @@ pub(crate) fn binding_group(key: &str) -> Option<&'static str> {
         Some(BoundList::Grids) => None,
         None => Some(crate::cmd::props::override_group(key)).filter(|g| *g != "other"),
     }
-}
-
-/// The variable bindings of `n` that feed group `g`.
-pub(super) fn bindings_of<'a>(n: &'a Node, g: &'a str) -> impl Iterator<Item = (&'a String, &'a String)> + 'a {
-    n.bound.iter().filter(move |(k, _)| binding_group(k) == Some(g))
 }
 
 /// Property groups that differ between two versions of a node.
@@ -225,4 +232,40 @@ pub(super) fn follow_boolean_defaults(doc: &mut Document, before: &Document, cha
         out.extend(set_boolean_default(doc, &property_owners(doc, c), &name, visible));
     }
     out
+}
+
+/// Before instance `inst` switches from main `old` to another variant: the overrides its layers
+/// inherit from the mains around it (a destructive button's main binding its background
+/// instance's tint to red) become the layers' own, so the rebuild carries them onto the new
+/// variant by name, as the reference tool applies an enclosing main's overrides over whichever
+/// variant a nested instance shows. The layers already hold those values.
+pub(crate) fn keep_inherited_overrides(doc: &mut Document, inst: NodeId, old: NodeId) {
+    const MAX_HOPS: usize = 64;
+    let mut found: Vec<(NodeId, Vec<String>)> = Vec::new();
+    for d in doc.subtree(inst).into_iter().skip(1) {
+        let Some(n) = doc.node(d) else { continue };
+        let mut inherited: Vec<String> = Vec::new();
+        let mut src = n.source;
+        for _ in 0..MAX_HOPS {
+            let Some(s) = src.and_then(|s| doc.node(s)) else { break };
+            // The main being left: its own values are what the new variant replaces.
+            if s.id == old || doc.ancestors(s.id).contains(&old) {
+                break;
+            }
+            for g in &s.overrides {
+                if !n.overrides.contains(g) && !inherited.contains(g) {
+                    inherited.push(g.clone());
+                }
+            }
+            src = s.source;
+        }
+        if !inherited.is_empty() {
+            found.push((d, inherited));
+        }
+    }
+    for (d, groups) in found {
+        if let Some(n) = doc.node_mut(d) {
+            n.overrides.extend(groups);
+        }
+    }
 }

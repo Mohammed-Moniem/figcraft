@@ -11,6 +11,10 @@ use super::{FormatError, MAX_DEPTH, MAX_NETWORK, MAX_NODES};
 
 pub(super) const MAX_BYTES: usize = 256 * 1024 * 1024;
 pub(super) const MAX_WORK: usize = 4_000_000;
+const MAX_DOCUMENT_WORK: usize = 128_000_000;
+// Serde traverses extra containers for enum payloads, blocks and argument arrays.
+// The Kiwi encoder independently limits the resulting native message to its wire depth.
+const MAX_SOURCE_DEPTH: usize = 128;
 pub(super) const MAX_AUX: usize = 200_000;
 
 /// Every compression/archive write checks its final position before growing the buffer.
@@ -88,6 +92,8 @@ pub(super) struct Budget {
     pub limits: Limits,
     bytes: usize,
     work: usize,
+    retained: usize,
+    layer_work_end: Option<usize>,
     rows: usize,
     failure: Option<&'static str>,
 }
@@ -100,13 +106,32 @@ impl Default for Budget {
 
 impl Budget {
     pub fn new(limits: Limits) -> Self {
-        Self { limits, bytes: 0, work: 0, rows: 0, failure: None }
+        Self { limits, bytes: 0, work: 0, retained: 0, layer_work_end: None, rows: 0, failure: None }
     }
     pub fn failed(&self) -> bool {
         self.failure.is_some()
     }
     pub fn remaining_work(&self) -> usize {
-        self.limits.work.saturating_sub(self.work)
+        self.layer_work_end.unwrap_or(self.limits.work).saturating_sub(self.work)
+    }
+    pub fn layer_start(&mut self) -> (usize, usize) {
+        self.layer_work_end = Some(self.limits.work.min(self.work.saturating_add(MAX_WORK)));
+        (self.bytes, self.retained)
+    }
+    /// Blobs and image lookup entries remain live after the current row is complete.
+    pub fn keep(&mut self, bytes: usize) -> bool {
+        if !self.reserve(bytes, 0) {
+            return false;
+        }
+        self.retained += bytes;
+        true
+    }
+    pub fn finish_layer(&mut self, (start, retained): (usize, usize), row: &super::Kv<'_>) -> bool {
+        // Paths, comparison rows and source estimates are temporary. The owned Kiwi row
+        // and any new shared cache entries survive until the final message is encoded.
+        self.bytes = start + (self.retained - retained);
+        self.layer_work_end = None;
+        self.reserve(row_heap_bytes(row).saturating_add(2 * size_of::<super::Kv>()), 0)
     }
     pub fn fail(&mut self, reason: &'static str) {
         if self.failure.is_none() {
@@ -127,7 +152,7 @@ impl Budget {
             self.fail("generation byte budget exceeded before allocation");
             return false;
         };
-        let Some(work) = self.work.checked_add(work).filter(|n| *n <= self.limits.work) else {
+        let Some(work) = self.work.checked_add(work).filter(|n| *n <= self.layer_work_end.unwrap_or(self.limits.work)) else {
             self.fail("generation work budget exceeded before allocation");
             return false;
         };
@@ -146,16 +171,19 @@ impl Budget {
         }
     }
     pub fn source<T: Serialize + ?Sized>(&mut self, value: &T) -> bool {
+        self.source_copies(value, 8)
+    }
+    fn source_copies<T: Serialize + ?Sized>(&mut self, value: &T, copies: usize) -> bool {
         if self.failed() {
             return false;
         }
         let mut census =
-            Census { bytes: 0, work: 0, byte_limit: self.limits.bytes.saturating_sub(self.bytes) / 8, work_limit: self.remaining_work() };
+            Census { bytes: 0, work: 0, byte_limit: self.limits.bytes.saturating_sub(self.bytes) / copies, work_limit: self.remaining_work() };
         if value.serialize(Counter { census: &mut census, depth: 0 }).is_err() {
             self.fail("source value/byte/depth budget exceeded before generation");
             return false;
         }
-        self.items(census.bytes, 8, 0) && self.reserve(0, census.work)
+        self.items(census.bytes, copies, 0) && self.reserve(0, census.work)
     }
     /// Equality/search work can revisit an entire source value for each candidate. Measure
     /// the same source without copying it, and pay that repeated work before the search.
@@ -188,13 +216,18 @@ impl Budget {
         }
         true
     }
-    pub fn tree(&mut self, doc: &Document) -> Result<(), FormatError> {
+    pub fn tree(&mut self, doc: &Document, library: &super::library::Library) -> Result<(), FormatError> {
+        // This pass inspects the borrowed source without creating copies. Charge that
+        // traversal once, independently from the later allocations it guards.
+        let mut source = Budget::new(self.limits);
+        let scale_work = self.limits.work == MAX_WORK;
         let mut visited = BTreeSet::new();
         let mut work = Vec::new();
         if !self.items(doc.pages.len(), 24, 1) {
             return self.check();
         }
         work.extend(doc.pages.iter().rev().map(|id| (*id, None, 0usize)));
+        work.extend(library.roots.iter().map(|id| (*id, doc.library_store(), 1)));
         let mut aux = doc.variables.collections.iter().map(|c| c.modes.len()).try_fold(0usize, |sum, n| sum.checked_add(n));
         if aux.is_none_or(|n| n > MAX_AUX) {
             self.fail("auxiliary identifier budget exceeded before source assignment");
@@ -213,6 +246,11 @@ impl Budget {
                 self.fail("source graph node budget exceeded");
                 break;
             }
+            if scale_work {
+                // Large canvases repeat bounded work per layer. Only validated tree entries
+                // contribute to the document allowance; one generated row keeps its own cap.
+                source.limits.work = visited.len().saturating_mul(8192).clamp(MAX_WORK, MAX_DOCUMENT_WORK);
+            }
             let Some(node) = doc.node(id) else {
                 self.fail("dangling source child reference");
                 break;
@@ -221,8 +259,8 @@ impl Budget {
                 self.fail("inconsistent source parent reference");
                 break;
             }
-            if !self.node_source(node) {
-                break;
+            if !source.node_source_copies(node, 1) {
+                return source.check();
             }
             let defs = match &node.kind {
                 NodeKind::Component { props, .. } => props.len().checked_mul(2).and_then(|n| n.checked_add(node.name.split(',').count())),
@@ -237,8 +275,10 @@ impl Budget {
             if !self.items(node.children.len(), 24, 1) {
                 break;
             }
-            work.extend(node.children.iter().rev().map(|child| (*child, Some(id), depth + 1)));
+            let hidden = library.nodes.contains(&id);
+            work.extend(node.children.iter().rev().filter(|c| !hidden || library.nodes.contains(c)).map(|child| (*child, Some(id), depth + 1)));
         }
+        self.limits.work = source.limits.work;
         if !self.source(&doc.styles) || !self.source(&doc.variables) || !self.assets_unique(doc) {
             return self.check();
         }
@@ -248,7 +288,7 @@ impl Budget {
         let set_ids: BTreeSet<_> = doc.variables.collections.iter().map(|c| c.id.as_str()).collect();
         let variables = doc.variables.variables.iter().filter(|v| set_ids.contains(v.collection.as_str())).count();
         let assets = doc.styles.len().saturating_add(doc.variables.collections.len()).saturating_add(variables);
-        self.nodes(1usize.saturating_add(visited.len()).saturating_add(assets).saturating_add(usize::from(assets > 0)));
+        self.nodes(1usize.saturating_add(visited.len()).saturating_add(assets).saturating_add(usize::from(assets > 0 || !library.roots.is_empty())));
         self.check()
     }
 
@@ -359,6 +399,9 @@ impl Budget {
         Some(path)
     }
     pub fn node_source(&mut self, node: &Node) -> bool {
+        self.node_source_copies(node, 8)
+    }
+    fn node_source_copies(&mut self, node: &Node, copies: usize) -> bool {
         let geometry = match &node.kind {
             NodeKind::Polygon { count } => *count as usize,
             NodeKind::Star { count, .. } => (*count as usize).saturating_mul(2),
@@ -373,9 +416,18 @@ impl Budget {
             self.fail("source geometry complexity budget exceeded before construction");
             return false;
         }
-        self.source(node)
+        self.source_copies(node, copies)
     }
     pub fn path_source(&mut self, node: &Node) -> bool {
+        // The unsmoothed, square-corner box has exactly five path elements at any size.
+        if (node.kind.is_frame_like() || matches!(node.kind, NodeKind::Rectangle | NodeKind::Section { .. } | NodeKind::Text(_)))
+            && node.corners.radii.iter().all(|r| *r <= 0.0)
+        {
+            return self.items(5, 128, 8);
+        }
+        if matches!(node.kind, NodeKind::Line) {
+            return self.items(2, 128, 8);
+        }
         let input = match &node.kind {
             NodeKind::Polygon { count } => *count as usize,
             NodeKind::Star { count, .. } => (*count as usize).saturating_mul(2),
@@ -387,6 +439,17 @@ impl Budget {
             _ => 16,
         };
         self.items(input.saturating_mul(16).saturating_add(128), 128, 8)
+    }
+}
+
+fn row_heap_bytes(row: &super::Kv<'_>) -> usize {
+    use super::Kv;
+    match row {
+        Kv::Str(s) => s.capacity(),
+        Kv::Bytes(b) => b.capacity(),
+        Kv::Array(a) => a.iter().fold(a.capacity().saturating_mul(size_of::<Kv>()), |n, x| n.saturating_add(row_heap_bytes(x))),
+        Kv::Object(o) => o.iter().fold(o.capacity().saturating_mul(size_of::<(&str, Kv)>()), |n, (_, x)| n.saturating_add(row_heap_bytes(x))),
+        _ => 0,
     }
 }
 
@@ -427,13 +490,13 @@ struct Compound<'a> {
 }
 impl<'a> Counter<'a> {
     fn atom(self, bytes: usize) -> Result<(), CountError> {
-        if self.depth > 64 {
+        if self.depth > MAX_SOURCE_DEPTH {
             return Err(CountError);
         }
         self.census.add(bytes, 1)
     }
     fn compound(self, len: Option<usize>) -> Result<Compound<'a>, CountError> {
-        if self.depth > 64 || len.is_some_and(|n| n > self.census.work_limit.saturating_sub(self.census.work)) {
+        if self.depth > MAX_SOURCE_DEPTH || len.is_some_and(|n| n > self.census.work_limit.saturating_sub(self.census.work)) {
             return Err(CountError);
         }
         self.census.add(8, 1)?;
@@ -473,7 +536,7 @@ impl<'a> ser::Serializer for Counter<'a> {
         serialize_char(char)
     );
     fn serialize_str(self, value: &str) -> Result<(), CountError> {
-        if self.depth > 64 {
+        if self.depth > MAX_SOURCE_DEPTH {
             return Err(CountError);
         }
         self.census.add(value.len().checked_mul(6).and_then(|n| n.checked_add(8)).ok_or(CountError)?, value.len().div_ceil(64).saturating_add(1))
@@ -488,7 +551,7 @@ impl<'a> ser::Serializer for Counter<'a> {
                 self.0.add(value.len().saturating_mul(6), value.len().div_ceil(64).saturating_add(1)).map_err(|_| fmt::Error)
             }
         }
-        if self.depth > 64 {
+        if self.depth > MAX_SOURCE_DEPTH {
             return Err(CountError);
         }
         fmt::write(&mut Sink(self.census), format_args!("{value}")).map_err(|_| CountError)

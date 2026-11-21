@@ -1,8 +1,8 @@
 use super::common::{export_setting, layout_grid, outlined, prop_type, variant_pairs};
 use super::{
     AUX, AutoLayout, BoolOp, Bound, ContentAlign, CrossAlign, Exporter, Fields, HConstraint, Kv, LAYERS, LayoutMode, MAX_DEPTH, MainAlign, MaskType,
-    Node, NodeId, NodeKind, PropDef, STASH, Sizing, TextData, TextStyle, VConstraint, WindingRule, arr, b, blend_name, color, e, fl, grid_sizing,
-    guid, int, matrix, o, position, root_fields, s, u, xy,
+    Node, NodeId, NodeKind, STASH, Sizing, TextData, TextStyle, VConstraint, WindingRule, arr, b, blend_name, color, e, fl, grid_sizing, guid, int,
+    matrix, o, position, root_fields, s, u, xy,
 };
 
 impl<'d> Exporter<'d> {
@@ -13,6 +13,7 @@ impl<'d> Exporter<'d> {
         }
         let doc = self.doc;
         let (Some(&local), Some(n)) = (self.ids.get(&id), doc.node(id)) else { return };
+        let working_set = self.budget.layer_start();
         if depth > MAX_DEPTH {
             self.warn("layers nested deeper than 256 levels were left out");
             return;
@@ -40,7 +41,11 @@ impl<'d> Exporter<'d> {
         } else {
             self.layer(n, parent, &mut f, false)
         };
-        self.nodes.push(o(f));
+        let row = o(f);
+        if !self.budget.finish_layer(working_set, &row) {
+            return;
+        }
+        self.nodes.push(row);
         if children {
             for (i, c) in n.children.iter().enumerate() {
                 self.emit(*c, guid(LAYERS, local), i, Some(n), depth + 1);
@@ -70,7 +75,7 @@ impl<'d> Exporter<'d> {
         }
         let main = match &n.kind {
             NodeKind::Instance { component, .. } => {
-                let found = self.ids.contains_key(component) && doc.node(*component).is_some_and(|c| matches!(c.kind, NodeKind::Component { .. }));
+                let found = self.library.mains.contains(component) && self.ids.contains_key(component);
                 if !found && !nested {
                     self.warn("instances of components that aren't in the file were written as frames");
                 }
@@ -159,9 +164,6 @@ impl<'d> Exporter<'d> {
                     if !defs.is_empty() {
                         f.push(("componentPropDefs", arr(defs)));
                     }
-                }
-                if props.values().any(|d| matches!(d, PropDef::Slot { .. })) {
-                    self.warn("slot properties were left out");
                 }
                 if !description.is_empty() {
                     f.push(("symbolDescription", s(description)));
@@ -277,7 +279,25 @@ impl<'d> Exporter<'d> {
         if let Some(duration) = self.motion.duration(n.id) {
             f.push(("timelineDuration", Kv::Uint(duration)));
         }
-        let (mut entries, refs): (Vec<Kv>, Vec<Kv>) = n.prop_refs.iter().filter_map(|(field, prop)| self.prop_ref(n, field, prop)).unzip();
+        // Expanded layers inherit the main's property references. Putting them in the diff
+        // alongside any Motion binding avoids emitting a clearing override for the main's map.
+        let mut source = n.source.filter(|_| !self.ids.contains_key(&n.id)).and_then(|id| self.doc.node(id));
+        for _ in 0..MAX_DEPTH {
+            let Some(s) = source else { break };
+            if !s.prop_refs.is_empty() || self.ids.contains_key(&s.id) {
+                break;
+            }
+            if !self.budget.reserve(16, 1) {
+                return;
+            }
+            source = s.source.and_then(|id| self.doc.node(id));
+        }
+        if source.is_some_and(|s| !self.budget.source(&s.prop_refs)) {
+            return;
+        }
+        let inherited = source.into_iter().flat_map(|s| s.prop_refs.iter()).filter(|(field, _)| !n.prop_refs.contains_key(*field));
+        let (mut entries, refs): (Vec<Kv>, Vec<Kv>) =
+            n.prop_refs.iter().chain(inherited).filter_map(|(field, prop)| self.prop_ref(n, field, prop)).unzip();
         entries.extend(self.motion.binding(n.id));
         if !entries.is_empty() {
             f.push(("parameterConsumptionMap", o(vec![("entries", arr(entries))])));

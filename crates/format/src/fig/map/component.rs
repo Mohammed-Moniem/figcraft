@@ -170,7 +170,7 @@ impl<'a> Mapper<'a> {
     }
 
     /// The definition `def` names: its own, or the set's for a variant's copy of it.
-    fn prop_def(&self, def: &str) -> Option<&(String, &'a str)> {
+    pub(super) fn prop_def(&self, def: &str) -> Option<&(String, &'a str)> {
         let mut def = def;
         for _ in 0..=MAX_DEPTH {
             if let Some(found) = self.prop_defs.get(def) {

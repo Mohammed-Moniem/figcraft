@@ -284,6 +284,30 @@ fn named_node(doc: &Document, name: &str) -> NodeId {
     doc.nodes().find(|node| node.name == name).unwrap().id
 }
 
+#[test]
+fn native_export_includes_only_used_cached_components_even_when_they_share_a_parent() {
+    let (mut doc, _) = import(&cached_component_fixture(), "Cache").unwrap();
+    let main = named_node(&doc, "Cached remote icon");
+    let parent = doc.node(main).unwrap().parent.unwrap();
+    doc.create(
+        parent,
+        NodeKind::Component { description: String::new(), props: Default::default(), prop_order: Vec::new() },
+        "Unused cached component",
+        0.0,
+        0.0,
+        12.0,
+        12.0,
+    )
+    .unwrap();
+    let (bytes, _) = export(&doc, None).unwrap();
+    let archive = Archive::open(&bytes).unwrap();
+    let (schema, body) = decode_canvas(&archive.canvas).unwrap();
+    let message = schema.decode_message(schema.find("Message").unwrap(), &body).unwrap();
+    let names: Vec<_> = message.get("nodeChanges").unwrap().list().iter().filter_map(|row| row.get("name").and_then(Kv::str)).collect();
+    assert!(names.contains(&"Cached remote icon"));
+    assert!(!names.contains(&"Unused cached component"));
+}
+
 fn assert_dark_remote_mode(doc: &Document, node: NodeId) {
     let collection = doc.variables.collections.iter().find(|collection| collection.name == "Remote theme").unwrap();
     let dark = collection.modes.iter().find(|mode| mode.name == "Dark").unwrap();
@@ -342,6 +366,16 @@ fn hidden_cached_component_is_retained_and_linked() {
     let (saved, warnings) = crate::load_bytes(&crate::save_bytes(&doc, None).unwrap()).unwrap();
     assert!(warnings.is_empty(), "{warnings:?}");
     check(&saved);
+    let mut round_trip = saved;
+    for _ in 0..2 {
+        let public_layers = round_trip.pages.len();
+        let total = round_trip.nodes().count();
+        let (bytes, _) = super::export(&round_trip, None).unwrap();
+        round_trip = import(&bytes, "Cache round trip.fig").unwrap().0;
+        assert_eq!(round_trip.nodes().count(), total, "repeated saves must preserve the cached tree without adding a wrapper");
+        assert_eq!(round_trip.pages.len(), public_layers);
+        check(&round_trip);
+    }
 }
 
 #[test]

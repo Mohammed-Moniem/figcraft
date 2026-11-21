@@ -399,6 +399,9 @@ impl<'d> Exporter<'d> {
             return None;
         }
         let i = u32::try_from(self.blobs.len()).ok()?;
+        if !self.budget.keep(bytes.capacity().saturating_add(128)) {
+            return None;
+        }
         self.blobs.insert(bytes, i);
         Some(i)
     }

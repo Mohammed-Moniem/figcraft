@@ -27,6 +27,8 @@ mod proto;
 mod scale_provenance;
 mod text;
 mod variables;
+#[cfg(test)]
+mod variant_binding_tests;
 
 use component::OverrideScope;
 #[cfg(test)]

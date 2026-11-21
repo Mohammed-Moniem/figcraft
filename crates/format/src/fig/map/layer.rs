@@ -330,7 +330,8 @@ impl<'a> Mapper<'a> {
                 content_inst.slot_content = true;
             }
             for c in self.children(&content) {
-                kids.extend(self.layer_filtered(&c, content_inst.as_ref(), child_space, Some(view), None, depth + 1, included));
+                // A private frame can sit outside the cached definition being expanded.
+                kids.extend(self.layer_filtered(&c, content_inst.as_ref(), child_space, Some(view), None, depth + 1, None));
             }
         } else {
             // Inside an instance a layer's children are its main's: they follow it from the main's

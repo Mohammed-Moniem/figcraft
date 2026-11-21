@@ -52,6 +52,7 @@ pub use cycles::{
     break_component_cycles, check_component_cycles, component_cycle, contains_itself_error, cycle_text, new_cycle, would_contain_itself,
 };
 pub(crate) use diff::binding_group;
+pub(crate) use diff::keep_inherited_overrides;
 pub use diff::{diff_groups, property_owners, set_boolean_default, variable_groups};
 pub use guard::{check_override_edit, check_structure_edit, refused_override, unlink_layers};
 pub(crate) use instances::copy_group;
@@ -316,6 +317,8 @@ pub fn prop_default_value(d: &PropDef) -> Value {
     }
 }
 
+#[cfg(test)]
+mod nested_binding_tests;
 #[cfg(test)]
 mod rebase_source_tests;
 

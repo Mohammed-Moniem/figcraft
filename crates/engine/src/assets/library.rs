@@ -324,7 +324,7 @@ pub fn default_selection(doc: &Document, prev: Option<&LibraryManifest>) -> Sele
 }
 
 /// `seeds` (variable ids) and every variable they alias or calculate from, transitively, by id.
-fn alias_closure(vars: &Variables, seeds: impl IntoIterator<Item = VariableId>) -> BTreeSet<VariableId> {
+pub(crate) fn alias_closure(vars: &Variables, seeds: impl IntoIterator<Item = VariableId>) -> BTreeSet<VariableId> {
     let mut out = BTreeSet::new();
     let mut stack: Vec<VariableId> = seeds.into_iter().collect();
     if stack.is_empty() {

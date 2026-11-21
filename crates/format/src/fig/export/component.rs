@@ -1,9 +1,60 @@
 use super::common::{
     bool_data, changed, prop_type, resolved_alike, scaled, sort_position, symbol_data, text_data, text_value, var_data, variant_pairs,
 };
-use super::{AUX, BTreeMap, Exporter, Fields, Kv, MAX_NODES, Node, NodeId, NodeKind, PropDef, Value, arr, b, e, fl, guid, o, s};
+use super::{
+    AUX, BTreeMap, Exporter, Fields, Kv, LAYERS, MAX_NODES, Node, NodeId, NodeKind, PropDef, Value, VariableType, arr, b, e, fl, guid, o, s,
+};
 
 impl<'d> Exporter<'d> {
+    /// A variable-driven variant selector. Keep the main variant's unbound coordinates as literals
+    /// so changing one bound dimension preserves the values of all the others.
+    pub(super) fn variant_binding(&mut self, n: &Node) -> Option<Kv<'static>> {
+        use crate::rest::PROP_BINDING;
+        let requested = n.bound.keys().filter(|key| key.starts_with(PROP_BINDING)).count();
+        if requested == 0 {
+            return None;
+        }
+        const OMITTED: &str =
+            "component property bindings without an exported string variable and matching variant dimension were written as their values";
+        let main = match n.kind {
+            NodeKind::Instance { component, .. } if self.set_of(component).is_some() && self.ids.contains_key(&component) => self.doc.node(component),
+            _ => None,
+        };
+        let Some(main) = main else {
+            self.warn(OMITTED);
+            return None;
+        };
+        if !self.budget.source(&main.name) {
+            return None;
+        }
+        if main.name.split(',').count() > 256 || main.name.contains('\0') {
+            self.warn(OMITTED);
+            return None;
+        }
+        let mut values = Vec::new();
+        let mut written = 0;
+        for (dimension, selected) in variant_pairs(&main.name) {
+            let binding = n.bound.get(&format!("{PROP_BINDING}{dimension}"));
+            let data = match binding.and_then(|variable| self.exported_variable(variable)).filter(|(_, var)| var.kind == VariableType::String) {
+                Some((id, _)) => {
+                    written += 1;
+                    var_data(("alias", o(vec![("guid", guid(LAYERS, id))])), "ALIAS", "STRING")
+                }
+                None => var_data(("textValue", s(&selected)), "STRING", "STRING"),
+            };
+            values.push(o(vec![("key", s(&dimension)), ("value", data)]));
+        }
+        if written != requested {
+            self.warn(OMITTED);
+        }
+        if written == 0 {
+            return None;
+        }
+        let args = vec![var_data(("mapValue", o(vec![("values", arr(values))])), "MAP", "MAP")];
+        let expr = o(vec![("expressionFunction", e("RESOLVE_VARIANT")), ("expressionArguments", arr(args))]);
+        Some(o(vec![("variableField", e("VARIANT_PROPERTIES")), ("variableData", var_data(("expressionValue", expr), "EXPRESSION", "SYMBOL_ID"))]))
+    }
+
     /// A component property definition of `owner` (a component, or a set), `index`-th in its list.
     /// The default value is written twice: as `initialValue` and as `varValue`, which is what
     /// readers that know variables take.
@@ -20,7 +71,13 @@ impl<'d> Exporter<'d> {
                 let main = self.guid_of(*default)?;
                 (o(vec![("guidValue", main.clone())]), symbol_data(main))
             }
-            PropDef::Variant { .. } | PropDef::Slot { .. } => return None,
+            PropDef::Slot { preferred } => {
+                if !preferred.is_empty() {
+                    self.warn("preferred components of slot properties were left out");
+                }
+                (o(Vec::new()), o(Vec::new()))
+            }
+            PropDef::Variant { .. } => return None,
         };
         Some(o(vec![
             ("id", guid(AUX, id)),
@@ -41,8 +98,13 @@ impl<'d> Exporter<'d> {
         if !self.budget.items(set.children.len(), 16, 1) {
             return;
         }
-        let variants: Vec<&Node> =
-            set.children.iter().filter_map(|c| doc.node(*c)).filter(|c| matches!(c.kind, NodeKind::Component { .. })).collect();
+        let variants: Vec<&Node> = set
+            .children
+            .iter()
+            .filter(|id| self.ids.contains_key(id))
+            .filter_map(|c| doc.node(*c))
+            .filter(|c| matches!(c.kind, NodeKind::Component { .. }))
+            .collect();
         if !self.budget.comparisons(&variants, variants.len().saturating_add(1)) {
             return;
         }
@@ -113,8 +175,9 @@ impl<'d> Exporter<'d> {
             "visible" => ("VISIBLE", "BOOL", "BOOLEAN"),
             "characters" => ("TEXT_DATA", "TEXT", "TEXT_DATA"),
             "mainComponent" => ("OVERRIDDEN_SYMBOL_ID", "INSTANCE_SWAP", "SYMBOL_ID"),
+            "slot" => ("SLOT_CONTENT_ID", "SLOT", "SLOT_CONTENT_ID"),
             _ => {
-                self.warn("slot layers were written as plain layers");
+                self.warn("unrecognised component property references were left out");
                 return None;
             }
         };
@@ -171,6 +234,9 @@ impl<'d> Exporter<'d> {
         let mut stack: Vec<(NodeId, NodeId)> = n.children.iter().rev().map(|c| (*c, n.id)).collect();
         let mut seen = 0usize;
         while let Some((id, parent)) = stack.pop() {
+            if self.slots.private_layers.contains(&id) {
+                continue;
+            }
             if self.budget.failed() || !self.budget.row() {
                 return;
             }
@@ -202,7 +268,14 @@ impl<'d> Exporter<'d> {
                 _ => None,
             };
             let sized = matches!(d.kind, NodeKind::Instance { .. }) || d.overrides.contains("size");
-            rows.push(Row { path: o(vec![("guids", arr(guids))]), changed: changed(mine, &theirs), theirs, sized, swap });
+            let mut changed = changed(mine, &theirs);
+            self.bound_override_interactions(d, &mut changed);
+            if let NodeKind::Instance { component, props } = &d.kind
+                && self.slots.by_instance.contains_key(&d.id)
+            {
+                self.instance_assignments(d.id, *component, props, &mut changed);
+            }
+            rows.push(Row { path: o(vec![("guids", arr(guids))]), changed, theirs, sized, swap });
         }
         // An instance scaled as a whole (the Scale tool) is `factor` times its main in every length:
         // sizes, places and stroke weights, its own and its layers'. A resized one keeps its weights.
@@ -229,7 +302,9 @@ impl<'d> Exporter<'d> {
         let mut overrides = Vec::new();
         let mut derived = Vec::new();
         let mut of: Fields = vec![("guidPath", o(vec![("guids", arr(vec![symbol.clone()]))]))];
-        of.extend(changed(root_mine, &root_theirs).into_iter().filter(|(k, v)| *k == "size" || !follows(k, v, &root_theirs)));
+        let mut root_changed = changed(root_mine, &root_theirs);
+        self.bound_override_interactions(n, &mut root_changed);
+        of.extend(root_changed.into_iter().filter(|(k, v)| *k == "size" || !follows(k, v, &root_theirs)));
         if of.len() > 1 {
             overrides.push(o(of));
         }
@@ -255,6 +330,13 @@ impl<'d> Exporter<'d> {
         if !derived.is_empty() {
             f.push(("derivedSymbolData", arr(derived)));
         }
+        self.instance_assignments(n.id, main, props, f);
+        if n.children.iter().filter_map(|c| doc.node(*c)).any(|c| c.source.is_none() && !self.slots.private_layers.contains(&c.id)) {
+            self.warn("instance layers that don't come from their main component were left out");
+        }
+    }
+
+    fn instance_assignments(&mut self, instance: NodeId, main: NodeId, props: &BTreeMap<String, Value>, f: &mut Fields) {
         let mut assignments = Vec::new();
         for (name, v) in props {
             let (ty, value, var) = match v {
@@ -272,11 +354,18 @@ impl<'d> Exporter<'d> {
                 assignments.push(o(vec![("defID", guid(AUX, id)), ("value", value), ("varValue", var)]));
             }
         }
+        if let Some(slots) = self.slots.by_instance.get(&instance) {
+            if !self.budget.items(slots.len(), 512, 12) {
+                return;
+            }
+            for &index in slots {
+                let slot = &self.slots.frames[index];
+                let data = var_data(("slotContentIdValue", o(vec![("guid", guid(LAYERS, slot.guid))])), "SLOT_CONTENT_ID", "SLOT_CONTENT_ID");
+                assignments.push(o(vec![("defID", guid(AUX, slot.def)), ("value", o(Vec::new())), ("varValue", data)]));
+            }
+        }
         if !assignments.is_empty() {
             f.push(("componentPropAssignments", arr(assignments)));
-        }
-        if n.children.iter().filter_map(|c| doc.node(*c)).any(|c| c.source.is_none()) {
-            self.warn("instance layers that don't come from their main component were left out");
         }
     }
 

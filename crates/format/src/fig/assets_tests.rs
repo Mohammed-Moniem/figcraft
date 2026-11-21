@@ -641,6 +641,36 @@ fn instances_keep_their_own_size_and_lay_their_layers_out_for_it() {
 }
 
 #[test]
+fn variant_selector_writes_bound_and_literal_dimensions_together() {
+    let (mut doc, insts) = sized();
+    let page = doc.first_page().unwrap();
+    let main = doc.nodes().find(|n| n.name == "Card").unwrap().id;
+    let set = doc.create(page, NodeKind::ComponentSet { description: String::new() }, "Chip", 0.0, 200.0, 300.0, 100.0).unwrap();
+    doc.reparent(main, set, None).unwrap();
+    doc.get_mut(main).unwrap().name = "Mode=Light, Size=Small".into();
+    doc.variables.collections.push(Collection {
+        id: "theme".into(),
+        name: "Theme".into(),
+        modes: vec![Mode { id: "day".into(), name: "Day".into() }],
+        extends: None,
+    });
+    doc.variables.variables.push(var("mode", "Scheme", "theme", VariableType::String, &[("day", VariableValue::String("Light".into()))]));
+    doc.get_mut(insts[0]).unwrap().bound.insert("componentProperties/Mode".into(), "mode".into());
+    let nodes = written(&doc);
+    let instance = named(&nodes, "Same");
+    let entry =
+        instance["variableConsumptionMap"]["entries"].as_array().unwrap().iter().find(|e| e["variableField"] == "VARIANT_PROPERTIES").unwrap();
+    let expr = &entry["variableData"]["value"]["expressionValue"];
+    assert_eq!(expr["expressionFunction"], "RESOLVE_VARIANT");
+    let dims = expr["expressionArguments"][0]["value"]["mapValue"]["values"].as_array().unwrap();
+    assert_eq!(dims.len(), 2);
+    let binding = dims.iter().find(|d| d["key"] == "Mode").unwrap();
+    assert_eq!(binding["value"]["value"]["alias"]["guid"], named(&nodes, "Scheme")["guid"]);
+    let literal = dims.iter().find(|d| d["key"] == "Size").unwrap();
+    assert_eq!(literal["value"]["value"]["textValue"], "Small");
+}
+
+#[test]
 fn an_instance_named_after_its_set_has_no_name_of_its_own() {
     let (mut doc, insts) = sized();
     let page = doc.first_page().unwrap();
@@ -1054,4 +1084,285 @@ fn a_scaled_instance_keeps_its_radius_through_a_round_trip() {
     // scaling of values with no row stays covered by `scale_factor_tests`.
     assert_eq!((b.width, b.height), (60.0, 60.0));
     assert_eq!(b.corners.radii, [15.0; 4]);
+}
+
+/// The checkbox toggles the imported variable before choosing its status branch.
+#[test]
+fn checkbox_variable_and_conditional_actions_round_trip() {
+    use figcraft_doc::proto::{ConditionalBlock, Expr, ExprOp};
+
+    let mut doc = Document::new("Checkbox");
+    let page = doc.first_page().unwrap();
+    doc.variables.collections.push(Collection {
+        id: "demo".into(),
+        name: "Demo".into(),
+        modes: vec![Mode { id: "default".into(), name: "Default".into() }],
+        extends: None,
+    });
+    doc.variables.variables = vec![
+        var("checked", "checked", "demo", VariableType::Boolean, &[("default", VariableValue::Boolean(false))]),
+        var("status", "status", "demo", VariableType::String, &[("default", VariableValue::String("Unchecked".into()))]),
+    ];
+    let frame = doc.create(page, NodeKind::Frame, "Checkbox demo", 0.0, 0.0, 320.0, 180.0).unwrap();
+    let toggle = doc.create(frame, NodeKind::Frame, "Toggle checkbox", 24.0, 24.0, 44.0, 44.0).unwrap();
+    let mark = doc.create(toggle, NodeKind::Rectangle, "Checked indicator", 12.0, 12.0, 20.0, 20.0).unwrap();
+    let label = doc.create(frame, NodeKind::Text(TextData::new("Unchecked")), "Status", 84.0, 36.0, 120.0, 20.0).unwrap();
+    doc.node_mut(mark).unwrap().bound.insert("visible".into(), "checked".into());
+    doc.node_mut(label).unwrap().bound.insert("characters".into(), "status".into());
+    let set_status = |value| Action::SetVariable { variable: "status".into(), value: json!(value), expr: None };
+    doc.node_mut(toggle).unwrap().interactions.push(Interaction {
+        trigger: Trigger::OnClick,
+        actions: vec![
+            Action::SetVariable { variable: "checked".into(), value: Value::Null, expr: Some(Expr::op(ExprOp::Not, vec![Expr::var("checked")])) },
+            Action::Conditional {
+                blocks: vec![
+                    ConditionalBlock { condition: Some(Expr::var("checked")), actions: vec![set_status("Checked")] },
+                    ConditionalBlock { condition: None, actions: vec![set_status("Unchecked")] },
+                ],
+            },
+        ],
+        transition: Transition::Instant,
+        duration_ms: 300,
+        easing: Easing::EaseOut,
+        delay_ms: 0,
+    });
+
+    let (bytes, warnings) = export(&doc, None).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let (mut back, warnings) = import(&bytes, "Checkbox").unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let toggle = back.nodes().find(|n| n.name == "Toggle checkbox").unwrap();
+    let [interaction] = toggle.interactions.as_slice() else { panic!("missing checkbox interaction") };
+    assert_eq!(interaction.trigger, Trigger::OnClick);
+    let [Action::SetVariable { variable, expr: Some(expr), .. }, Action::Conditional { blocks }] = interaction.actions.as_slice() else {
+        panic!("wrong action order: {:?}", interaction.actions);
+    };
+    let checked = back.nodes().find(|n| n.name == "Checked indicator").unwrap().bound["visible"].clone();
+    let status = back.nodes().find(|n| n.name == "Status").unwrap().bound["characters"].clone();
+    assert_eq!(variable, &checked);
+    assert_eq!(expr, &Expr::op(ExprOp::Not, vec![Expr::var(&checked)]));
+    assert_eq!(blocks.len(), 2);
+    assert_eq!(blocks[0].condition, Some(Expr::var(&checked)));
+    assert_eq!(blocks[1].condition, None);
+    let (expr, blocks) = (expr.clone(), blocks.clone());
+    let modes = BTreeMap::new();
+    for (is_checked, expected) in [(true, "Checked"), (false, "Unchecked")] {
+        let value = expr.eval(&back.variables, &modes).unwrap();
+        assert_eq!(value, VariableValue::Boolean(is_checked));
+        let checked = back.variables.variables.iter_mut().find(|v| v.id == checked).unwrap();
+        *checked.values.values_mut().next().unwrap() = value;
+        let branch = ConditionalBlock::choose(&blocks, &back.variables, &modes).unwrap();
+        assert_eq!(branch, &[Action::SetVariable { variable: status.clone(), value: json!(expected), expr: None }]);
+    }
+}
+
+#[test]
+fn variable_mode_and_lookup_round_trip_with_their_original_collection() {
+    use figcraft_doc::proto::{Expr, ExprOp};
+
+    let mut doc = Document::new("Modes");
+    for id in ["theme", "density"] {
+        doc.variables.collections.push(Collection {
+            id: id.into(),
+            name: id.into(),
+            modes: vec![Mode { id: "default".into(), name: "Default".into() }, Mode { id: "alt".into(), name: "Alternate".into() }],
+            extends: None,
+        });
+    }
+    doc.variables.variables = vec![
+        var("pad", "Padding", "density", VariableType::Number, &[("default", VariableValue::Number(4.0)), ("alt", VariableValue::Number(8.0))]),
+        var("result", "Result", "theme", VariableType::Number, &[("default", VariableValue::Number(0.0))]),
+    ];
+    let calc = |id: &str, mode: &str| {
+        Expr::op(ExprOp::Multiply, vec![Expr::InMode { variable: id.into(), mode: mode.into() }, Expr::Value(VariableValue::Number(2.0))])
+    };
+    let actions = |set: &str, mode: &str, result: &str, pad: &str| {
+        vec![
+            Action::SetVariableMode { collection: set.into(), mode: mode.into() },
+            Action::SetVariable { variable: result.into(), value: Value::Null, expr: Some(calc(pad, mode)) },
+        ]
+    };
+    let frame = doc.create(doc.first_page().unwrap(), NodeKind::Frame, "Trigger", 0.0, 0.0, 100.0, 100.0).unwrap();
+    doc.node_mut(frame).unwrap().interactions.push(Interaction {
+        trigger: Trigger::OnClick,
+        actions: actions("density", "alt", "result", "pad"),
+        transition: Transition::Instant,
+        duration_ms: 300,
+        easing: Easing::EaseOut,
+        delay_ms: 0,
+    });
+
+    let (bytes, warnings) = export(&doc, None).unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let (back, warnings) = import(&bytes, "Modes").unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let set = back.variables.collections.iter().find(|c| c.name == "density").unwrap();
+    let mode = &set.modes.iter().find(|m| m.name == "Alternate").unwrap().id;
+    let pad = &back.variables.get("Padding").unwrap().id;
+    let result = &back.variables.get("Result").unwrap().id;
+    let trigger = back.nodes().find(|n| n.name == "Trigger").unwrap();
+    assert_eq!(trigger.interactions[0].actions, actions(&set.id, mode, result, pad));
+    assert_eq!(calc(pad, mode).eval(&back.variables, &BTreeMap::new()), Some(VariableValue::Number(16.0)));
+}
+
+#[test]
+fn unresolved_branch_values_and_modes_leave_adjacent_actions_intact() {
+    use figcraft_doc::proto::{ConditionalBlock, Expr};
+
+    let mut doc = Document::new("Partial prototype");
+    doc.variables.collections.push(Collection {
+        id: "demo".into(),
+        name: "Demo".into(),
+        modes: vec![Mode { id: "default".into(), name: "Default".into() }],
+        extends: None,
+    });
+    doc.variables.variables.push(var("note", "Note", "demo", VariableType::String, &[("default", VariableValue::String("Content".into()))]));
+    let trigger = doc.create(doc.first_page().unwrap(), NodeKind::Frame, "Trigger", 0.0, 0.0, 100.0, 100.0).unwrap();
+    doc.node_mut(trigger).unwrap().interactions.push(Interaction {
+        trigger: Trigger::OnClick,
+        actions: vec![
+            Action::Back,
+            Action::Conditional {
+                blocks: vec![
+                    ConditionalBlock { condition: Some(Expr::var("missing")), actions: vec![Action::Back] },
+                    ConditionalBlock { condition: None, actions: vec![Action::CloseOverlay] },
+                ],
+            },
+            Action::SetVariable { variable: "note".into(), value: json!("A\u{0}B"), expr: None },
+            Action::SetVariableMode { collection: "demo".into(), mode: "missing".into() },
+            Action::CloseOverlay,
+        ],
+        transition: Transition::Instant,
+        duration_ms: 300,
+        easing: Easing::EaseOut,
+        delay_ms: 0,
+    });
+
+    let (bytes, warnings) = export(&doc, None).unwrap();
+    assert!(warnings.iter().any(|w| w.contains("unsupported values")), "{warnings:?}");
+    let (back, warnings) = import(&bytes, "Partial prototype").unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let trigger = back.nodes().find(|n| n.name == "Trigger").unwrap();
+    assert_eq!(trigger.interactions[0].actions, [Action::Back, Action::CloseOverlay]);
+}
+
+/// An unrepresentable condition leaves other actions in the interaction intact.
+#[test]
+fn overdeep_conditional_is_omitted_without_losing_the_export() {
+    use figcraft_doc::proto::{ConditionalBlock, Expr, ExprOp};
+
+    let mut doc = Document::new("Depth");
+    let frame = doc.create(doc.first_page().unwrap(), NodeKind::Frame, "Trigger", 0.0, 0.0, 100.0, 100.0).unwrap();
+    // Twenty operators exceed the Kiwi wire depth while still fitting the source census.
+    let condition = (0..20).fold(Expr::Value(VariableValue::Boolean(true)), |inner, _| Expr::op(ExprOp::Not, vec![inner]));
+    doc.node_mut(frame).unwrap().interactions.push(Interaction {
+        trigger: Trigger::OnClick,
+        actions: vec![
+            Action::Conditional {
+                blocks: vec![
+                    ConditionalBlock { condition: Some(condition), actions: vec![Action::Back] },
+                    ConditionalBlock { condition: None, actions: vec![Action::CloseOverlay] },
+                ],
+            },
+            Action::Back,
+        ],
+        transition: Transition::Instant,
+        duration_ms: 300,
+        easing: Easing::EaseOut,
+        delay_ms: 0,
+    });
+
+    let (bytes, warnings) = export(&doc, None).unwrap();
+    assert!(warnings.iter().any(|w| w.contains("nesting")), "{warnings:?}");
+    let (back, _) = import(&bytes, "Depth").unwrap();
+    let frame = back.nodes().find(|n| n.name == "Trigger").unwrap();
+    assert_eq!(frame.interactions[0].actions, vec![Action::Back]);
+}
+
+/// The longest conditions with a variable-reference leaf survive at each tested nesting level.
+#[test]
+fn conditional_expression_depth_boundary_round_trips() {
+    use figcraft_doc::proto::{ConditionalBlock, Expr, ExprOp};
+
+    let conditional = |condition, action| Action::Conditional { blocks: vec![ConditionalBlock { condition, actions: vec![action] }] };
+    let nested_action = |depth, operators, variable: String| {
+        let flag = Expr::var(variable);
+        let condition = (0..operators).fold(flag.clone(), |inner, _| Expr::op(ExprOp::Not, vec![inner]));
+        (0..depth).fold(conditional(Some(condition), Action::Back), |inner, _| conditional(Some(flag.clone()), inner))
+    };
+
+    // The deepest alias is at Kiwi depth 8 + 2 × conditional depth + 3 × operator count.
+    for (depth, operators) in [(0, 18), (1, 18), (4, 16), (15, 8)] {
+        let mut doc = Document::new("Depth boundary");
+        let page = doc.first_page().unwrap();
+        doc.variables.collections.push(Collection {
+            id: "demo".into(),
+            name: "Demo".into(),
+            modes: vec![Mode { id: "default".into(), name: "Default".into() }],
+            extends: None,
+        });
+        doc.variables.variables.push(var("checked", "checked", "demo", VariableType::Boolean, &[("default", VariableValue::Boolean(true))]));
+        let frame = doc.create(page, NodeKind::Frame, "Trigger", 0.0, 0.0, 100.0, 100.0).unwrap();
+        doc.node_mut(frame).unwrap().interactions.push(Interaction {
+            trigger: Trigger::OnClick,
+            actions: vec![nested_action(depth, operators, "checked".into())],
+            transition: Transition::Instant,
+            duration_ms: 300,
+            easing: Easing::EaseOut,
+            delay_ms: 0,
+        });
+
+        let (bytes, warnings) = export(&doc, None).unwrap();
+        assert!(warnings.is_empty(), "export at conditional depth {depth}: {warnings:?}");
+        let (back, warnings) = import(&bytes, "Depth boundary").unwrap();
+        assert!(warnings.is_empty(), "import at conditional depth {depth}: {warnings:?}");
+        let trigger = back.nodes().find(|node| node.name == "Trigger").unwrap();
+        let checked = back.variables.variables.iter().find(|variable| variable.name == "checked").unwrap();
+        assert_eq!(trigger.interactions[0].actions, [nested_action(depth, operators, checked.id.clone())], "conditional depth {depth}");
+    }
+}
+
+#[test]
+fn instance_override_conditions_respect_the_kiwi_depth_limit() {
+    use figcraft_doc::proto::{ConditionalBlock, Expr, ExprOp};
+
+    let (mut doc, [same, resized, _]) = sized();
+    doc.variables.collections.push(Collection {
+        id: "demo".into(),
+        name: "Demo".into(),
+        modes: vec![Mode { id: "default".into(), name: "Default".into() }],
+        extends: None,
+    });
+    doc.variables.variables.push(var("checked", "checked", "demo", VariableType::Boolean, &[("default", VariableValue::Boolean(true))]));
+    for (instance, operators) in [(same, 17), (resized, 18)] {
+        let child = doc.node(instance).unwrap().children[0];
+        let condition = (0..operators).fold(Expr::var("checked"), |inner, _| Expr::op(ExprOp::Not, vec![inner]));
+        doc.node_mut(child).unwrap().interactions.push(Interaction {
+            trigger: Trigger::OnClick,
+            actions: vec![
+                Action::Conditional {
+                    blocks: vec![ConditionalBlock {
+                        condition: Some(Expr::var("checked")),
+                        actions: vec![Action::Conditional {
+                            blocks: vec![ConditionalBlock { condition: Some(condition), actions: vec![Action::Back] }],
+                        }],
+                    }],
+                },
+                Action::Back,
+            ],
+            transition: Transition::Instant,
+            duration_ms: 300,
+            easing: Easing::EaseOut,
+            delay_ms: 0,
+        });
+    }
+
+    let (_, warnings) = export(&doc, None).unwrap();
+    assert!(warnings.iter().any(|w| w.contains("nesting")), "{warnings:?}");
+    let nodes = written(&doc);
+    for (name, expected) in [("Same", vec!["CONDITIONAL", "BACK"]), ("Resized", vec!["BACK"])] {
+        let rows = named(&nodes, name)["symbolData"]["symbolOverrides"].as_array().unwrap();
+        let actions = rows.iter().find_map(|row| row["prototypeInteractions"][0]["actions"].as_array()).unwrap();
+        assert_eq!(actions.iter().map(|action| action["connectionType"].as_str().unwrap()).collect::<Vec<_>>(), expected);
+    }
 }

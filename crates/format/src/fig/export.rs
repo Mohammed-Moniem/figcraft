@@ -42,10 +42,12 @@ mod budget;
 mod common;
 mod component;
 mod layer;
+mod library;
 mod motion;
 mod paint;
 mod prototype;
 mod shape;
+mod slots;
 
 /// Most layers written, and deepest nesting followed (the import's limits).
 const MAX_NODES: usize = crate::rest::MAX_NODES;
@@ -105,7 +107,7 @@ enum SourceDirectionality AUTO=0 LTR=1 RTL=2
 enum DocumentColorProfile LEGACY=0 SRGB=1 DISPLAY_P3=2
 enum EmojiImageSet APPLE=0 NOTO=1
 enum MaskType ALPHA=0 OUTLINE=1 LUMINANCE=2
-enum VariableResolvedDataType BOOLEAN=0 FLOAT=1 STRING=2 COLOR=4 SYMBOL_ID=6 TEXT_DATA=8 KEYFRAME_TRACK_PARAMETER_DATA=14 VECTOR=17
+enum VariableResolvedDataType BOOLEAN=0 FLOAT=1 STRING=2 COLOR=4 MAP=5 SYMBOL_ID=6 TEXT_DATA=8 KEYFRAME_TRACK_PARAMETER_DATA=14 VECTOR=17 SLOT_CONTENT_ID=12
 enum VectorMirror NONE=0 ANGLE=1 ANGLE_AND_LENGTH=2
 enum BooleanOperation UNION=0 INTERSECT=1 SUBTRACT=2 XOR=3
 enum LayoutGridType MIN=0 CENTER=1 STRETCH=2 MAX=3
@@ -113,14 +115,14 @@ enum LayoutGridPattern STRIPES=0 GRID=1
 enum Axis X=0 Y=1
 enum ImageType PNG=0 JPEG=1 SVG=2 PDF=3
 enum ExportConstraintType CONTENT_SCALE=0 CONTENT_WIDTH=1 CONTENT_HEIGHT=2
-enum ComponentPropType BOOL=0 TEXT=1 INSTANCE_SWAP=3 VARIANT=4
-enum VariableField MISSING=0 CORNER_RADIUS=1 PARAGRAPH_SPACING=2 PARAGRAPH_INDENT=3 STROKE_WEIGHT=4 STACK_SPACING=5 STACK_PADDING_LEFT=6 STACK_PADDING_TOP=7 STACK_PADDING_RIGHT=8 STACK_PADDING_BOTTOM=9 VISIBLE=10 TEXT_DATA=11 WIDTH=12 HEIGHT=13 RECTANGLE_TOP_LEFT_CORNER_RADIUS=14 RECTANGLE_TOP_RIGHT_CORNER_RADIUS=15 RECTANGLE_BOTTOM_LEFT_CORNER_RADIUS=16 RECTANGLE_BOTTOM_RIGHT_CORNER_RADIUS=17 BORDER_TOP_WEIGHT=18 BORDER_BOTTOM_WEIGHT=19 BORDER_LEFT_WEIGHT=20 BORDER_RIGHT_WEIGHT=21 STACK_COUNTER_SPACING=23 MIN_WIDTH=24 MAX_WIDTH=25 MIN_HEIGHT=26 MAX_HEIGHT=27 FONT_FAMILY=28 FONT_STYLE=29 OPACITY=31 FONT_SIZE=32 LETTER_SPACING=34 LINE_HEIGHT=36 OVERRIDDEN_SYMBOL_ID=37 MOTION_TRANSLATION_XY=69 MOTION_SCALE_XY=70
-enum VariableDataType BOOLEAN=0 FLOAT=1 STRING=2 ALIAS=3 COLOR=4 SYMBOL_ID=7 TEXT_DATA=9 PROP_REF=13 EXPRESSION=5 KEYFRAME_TRACK_PARAMETER_DATA=21 VECTOR=24
+enum ComponentPropType BOOL=0 TEXT=1 INSTANCE_SWAP=3 VARIANT=4 SLOT=7
+enum VariableField MISSING=0 CORNER_RADIUS=1 PARAGRAPH_SPACING=2 PARAGRAPH_INDENT=3 STROKE_WEIGHT=4 STACK_SPACING=5 STACK_PADDING_LEFT=6 STACK_PADDING_TOP=7 STACK_PADDING_RIGHT=8 STACK_PADDING_BOTTOM=9 VISIBLE=10 TEXT_DATA=11 WIDTH=12 HEIGHT=13 RECTANGLE_TOP_LEFT_CORNER_RADIUS=14 RECTANGLE_TOP_RIGHT_CORNER_RADIUS=15 RECTANGLE_BOTTOM_LEFT_CORNER_RADIUS=16 RECTANGLE_BOTTOM_RIGHT_CORNER_RADIUS=17 BORDER_TOP_WEIGHT=18 BORDER_BOTTOM_WEIGHT=19 BORDER_LEFT_WEIGHT=20 BORDER_RIGHT_WEIGHT=21 VARIANT_PROPERTIES=22 STACK_COUNTER_SPACING=23 MIN_WIDTH=24 MAX_WIDTH=25 MIN_HEIGHT=26 MAX_HEIGHT=27 FONT_FAMILY=28 FONT_STYLE=29 OPACITY=31 FONT_SIZE=32 LETTER_SPACING=34 LINE_HEIGHT=36 OVERRIDDEN_SYMBOL_ID=37 MOTION_TRANSLATION_XY=69 MOTION_SCALE_XY=70 SLOT_CONTENT_ID=40
+enum VariableDataType BOOLEAN=0 FLOAT=1 STRING=2 ALIAS=3 COLOR=4 MAP=6 SYMBOL_ID=7 TEXT_DATA=9 PROP_REF=13 EXPRESSION=5 KEYFRAME_TRACK_PARAMETER_DATA=21 VECTOR=24 SLOT_CONTENT_ID=18
 enum VariableScope ALL_SCOPES=0 TEXT_CONTENT=1 CORNER_RADIUS=2 WIDTH_HEIGHT=3 GAP=4 ALL_FILLS=5 FRAME_FILL=6 SHAPE_FILL=7 TEXT_FILL=8 STROKE=9 STROKE_FLOAT=10 EFFECT_FLOAT=11 EFFECT_COLOR=12 OPACITY=13 FONT_STYLE=14 FONT_FAMILY=15 FONT_SIZE=16 LINE_HEIGHT=17 LETTER_SPACING=18 PARAGRAPH_SPACING=19 PARAGRAPH_INDENT=20
 enum StyleType NONE=0 FILL=1 STROKE=2 TEXT=3 EFFECT=4 EXPORT=5 GRID=6
 enum InteractionType ON_CLICK=0 DRAG=9 ON_HOVER=4 ON_PRESS=7 MOUSE_IN=2 MOUSE_OUT=3 MOUSE_DOWN=5 MOUSE_UP=6 AFTER_TIMEOUT=1 ON_KEY_DOWN=10
 enum TriggerDevice KEYBOARD=0 UNKNOWN_CONTROLLER=1
-enum ConnectionType NONE=0 INTERNAL_NODE=1 URL=2 BACK=3 CLOSE=4
+enum ConnectionType NONE=0 INTERNAL_NODE=1 URL=2 BACK=3 CLOSE=4 SET_VARIABLE=5 CONDITIONAL=7 SET_VARIABLE_MODE=8
 enum NavigationType NAVIGATE=0 OVERLAY=1 SWAP=2 SWAP_STATE=3 SCROLL_TO=4
 enum TransitionType INSTANT_TRANSITION=0 DISSOLVE=1 SMART_ANIMATE=24 SLIDE_FROM_LEFT=3 SLIDE_FROM_RIGHT=4 SLIDE_FROM_TOP=5 SLIDE_FROM_BOTTOM=6 PUSH_FROM_LEFT=7 PUSH_FROM_RIGHT=8 PUSH_FROM_TOP=9 PUSH_FROM_BOTTOM=10 MOVE_FROM_LEFT=11 MOVE_FROM_RIGHT=12 MOVE_FROM_TOP=13 MOVE_FROM_BOTTOM=14 SLIDE_OUT_TO_LEFT=15 SLIDE_OUT_TO_RIGHT=16 SLIDE_OUT_TO_TOP=17 SLIDE_OUT_TO_BOTTOM=18 MOVE_OUT_TO_LEFT=19 MOVE_OUT_TO_RIGHT=20 MOVE_OUT_TO_TOP=21 MOVE_OUT_TO_BOTTOM=22
 enum EasingType IN_CUBIC=0 OUT_CUBIC=1 INOUT_CUBIC=2 LINEAR=3 IN_BACK_CUBIC=4 OUT_BACK_CUBIC=5 INOUT_BACK_CUBIC=6 CUSTOM_CUBIC=7 GENTLE_SPRING=9
@@ -140,6 +142,8 @@ message VariableWidthPoint float position=1, float ascent=2, float descent=3
 message PluginData string pluginID=1, string value=2, string key=3
 message StyleId GUID guid=1
 message VariableID GUID guid=1
+message VariableMapValue string key=1, VariableData value=2
+message VariableMap VariableMapValue[] values=1
 message VariableSetID GUID guid=1
 message ColorStopVar Color color=1, VariableData colorVar=2, float position=3
 message Paint PaintType type=1, Color color=2, float opacity=3, bool visible=4, BlendMode blendMode=5, ColorStop[] stops=6, Matrix transform=7, Image image=8, ImageScaleMode imageScaleMode=10, float rotation=11, float scale=12, VariableData colorVar=21, ColorStopVar[] stopsVar=23
@@ -162,13 +166,14 @@ message ComponentPropValue bool boolValue=1, TextData textValue=2, GUID guidValu
 message ComponentPropPreferredValues string[] stringValues=1
 message ComponentPropDef GUID id=1, string name=2, ComponentPropValue initialValue=3, string sortPosition=4, GUID parentPropDefId=5, ComponentPropType type=6, ComponentPropPreferredValues preferredValues=8, VariableData varValue=9
 message ComponentPropAssignment GUID defID=1, ComponentPropValue value=2, VariableData varValue=3
-enum ComponentPropNodeField VISIBLE=0 TEXT_DATA=1 OVERRIDDEN_SYMBOL_ID=2
+enum ComponentPropNodeField VISIBLE=0 TEXT_DATA=1 OVERRIDDEN_SYMBOL_ID=2 SLOT_CONTENT_ID=4
 message ComponentPropRef GUID defID=2, ComponentPropNodeField componentPropNodeField=4
 message VariantPropSpec GUID propDefId=1, string value=2
 message StateGroupPropertyValueOrder string property=1, string[] values=2
 message PropRefValue GUID defId=1
 message SymbolId GUID guid=1
-message VariableAnyValue bool boolValue=1, string textValue=2, float floatValue=3, VariableID alias=4, Color colorValue=5, SymbolId symbolIdValue=8, TextData textDataValue=10, PropRefValue propRefValue=13, Expression expressionValue=6, KeyframeTrackParameterValue keyframeTrackParameterValue=20, Vector vectorValue=22
+message VariableAnyValue bool boolValue=1, string textValue=2, float floatValue=3, VariableID alias=4, Color colorValue=5, VariableMap mapValue=7, SymbolId symbolIdValue=8, TextData textDataValue=10, PropRefValue propRefValue=13, Expression expressionValue=6, KeyframeTrackParameterValue keyframeTrackParameterValue=20, Vector vectorValue=22, SlotContentId slotContentIdValue=18
+message SlotContentId GUID guid=1
 message VariableData VariableAnyValue value=1, VariableDataType dataType=2, VariableResolvedDataType resolvedDataType=3
 message VariableDataMapEntry uint nodeField=1, VariableData variableData=2, VariableField variableField=3
 message VariableDataMap VariableDataMapEntry[] entries=1
@@ -179,7 +184,9 @@ message VariableDataValuesEntry GUID modeID=1, VariableData variableData=2
 message VariableDataValues VariableDataValuesEntry[] entries=1
 message KeyTrigger int[] keyCodes=1, TriggerDevice triggerDevice=2
 message PrototypeEvent InteractionType interactionType=1, float transitionTimeout=6, KeyTrigger keyTrigger=4
-message PrototypeAction GUID transitionNodeID=1, TransitionType transitionType=2, float transitionDuration=3, EasingType easingType=4, float[] easingFunction=12, ConnectionType connectionType=7, Vector overlayRelativePosition=9, NavigationType navigationType=10, string connectionURL=8, bool transitionPreserveScroll=11
+message PrototypeVariableTarget VariableID id=1
+message ConditionalActions PrototypeAction[] actions=1, VariableData condition=2
+message PrototypeAction GUID transitionNodeID=1, TransitionType transitionType=2, float transitionDuration=3, EasingType easingType=4, float[] easingFunction=12, ConnectionType connectionType=7, Vector overlayRelativePosition=9, NavigationType navigationType=10, string connectionURL=8, bool transitionPreserveScroll=11, PrototypeVariableTarget targetVariable=19, VariableData targetVariableData=20, ConditionalActions[] conditionalActions=24, VariableSetID targetVariableSetID=27, GUID targetVariableModeID=28
 message PrototypeInteraction PrototypeEvent event=2, PrototypeAction[] actions=3
 message PrototypeStartingPoint string name=1, string position=3
 message OverlayBackgroundAppearance OverlayBackgroundType backgroundType=1, Color backgroundColor=2
@@ -190,8 +197,8 @@ message GridTrackSizingFunction GridTrackSizingType type=1, float value=2
 message GridTrackSize GridTrackSizingFunction minSizing=1, GridTrackSizingFunction maxSizing=2
 message GUIDGridTrackSizeMapEntry GUID id=1, GridTrackSize trackSize=2
 message GUIDGridTrackSizeMap GUIDGridTrackSizeMapEntry[] entries=1
-message NodeChange GUID guid=1, NodePhase phase=2, ParentIndex parentIndex=3, NodeType type=4, string name=5, bool visible=6, bool locked=7, float opacity=8, BlendMode blendMode=9, Vector size=11, Matrix transform=12, bool mask=16, MaskType maskType=317, float backgroundOpacity=19, bool backgroundEnabled=15, bool internalOnly=142, string description=318, StyleType styleType=163, string sortPosition=320, StyleId styleIdForFill=332, StyleId styleIdForStrokeFill=333, StyleId styleIdForText=334, StyleId styleIdForEffect=335, StyleId styleIdForGrid=336, VariableDataMap variableConsumptionMap=307, VariableModeBySetMap variableModeBySetMap=316, VariableSetMode[] variableSetModes=312, VariableSetID variableSetID=313, VariableResolvedDataType variableResolvedType=314, VariableDataValues variableDataValues=315, VariableScope[] variableScopes=353, DocumentColorProfile documentColorProfile=349, Paint[] fillPaints=38, Paint[] strokePaints=39, float strokeWeight=26, StrokeAlign strokeAlign=29, StrokeJoin strokeJoin=31, StrokeCap strokeCap=30, float[] dashPattern=13, float miterLimit=25, bool borderStrokeWeightsIndependent=299, float borderTopWeight=295, float borderRightWeight=298, float borderBottomWeight=296, float borderLeftWeight=297, Effect[] effects=43, float cornerRadius=20, float cornerSmoothing=160, bool rectangleCornerRadiiIndependent=149, float rectangleTopLeftCornerRadius=145, float rectangleTopRightCornerRadius=146, float rectangleBottomRightCornerRadius=148, float rectangleBottomLeftCornerRadius=147, ConstraintType horizontalConstraint=28, ConstraintType verticalConstraint=37, bool frameMaskDisabled=115, bool resizeToFit=117, bool isStateGroup=225, StateGroupPropertyValueOrder[] stateGroupPropertyValueOrders=238, bool sectionContentsHidden=283, Color backgroundColor=50, StackMode stackMode=105, float stackSpacing=107, float stackCounterSpacing=324, StackWrap stackWrap=323, StackCounterAlignContent stackCounterAlignContent=343, float stackHorizontalPadding=209, float stackVerticalPadding=210, float stackPaddingRight=233, float stackPaddingBottom=234, StackJustify stackPrimaryAlignItems=230, StackAlign stackCounterAlignItems=231, StackSize stackPrimarySizing=229, StackSize stackCounterSizing=221, bool bordersTakeSpace=294, bool stackReverseZIndex=271, float gridColumnGap=438, float gridRowGap=437, GUIDPositionMap gridColumns=436, GUIDPositionMap gridRows=435, GUIDGridTrackSizeMap gridColumnsSizing=474, GUIDGridTrackSizeMap gridRowsSizing=475, float stackChildPrimaryGrow=232, StackCounterAlign stackChildAlignSelf=236, StackPositioning stackPositioning=269, OptionalVector minSize=325, OptionalVector maxSize=326, GUID gridColumnAnchor=440, GUID gridRowAnchor=439, uint gridColumnSpan=442, uint gridRowSpan=441, LayoutGrid[] layoutGrids=47, ExportSettings[] exportSettings=45, TextData textData=42, FontName fontName=41, float fontSize=21, Number lineHeight=40, Number letterSpacing=165, TextCase textCase=34, TextDecoration textDecoration=35, TextAlignHorizontal textAlignHorizontal=32, TextAlignVertical textAlignVertical=33, TextAutoResize textAutoResize=46, TextTruncation textTruncation=280, int maxLines=351, float paragraphSpacing=23, float paragraphIndent=22, Hyperlink hyperlink=223, bool autoRename=14, bool fontVariantCommonLigatures=127, bool fontVariantContextualLigatures=128, string fontVersion=202, uint textUserLayoutVersion=203, uint textExplicitLayoutVersion=396, uint textBidiVersion=279, float textTracking=27, bool textDecorationSkipInk=412, EmojiImageSet emojiImageSet=391, uint styleID=49, Path[] fillGeometry=51, Path[] strokeGeometry=52, VectorData vectorData=48, VectorMirror handleMirroring=44, uint count=10, float starInnerScale=24, ArcData arcData=195, BooleanOperation booleanOperation=36, string symbolDescription=144, VariableWidthPoint[] variableWidthPoints=447, PluginData[] pluginData=204, SymbolData symbolData=113, NodeChange[] derivedSymbolData=125, GUID overriddenSymbolID=143, ComponentPropDef[] componentPropDefs=266, ComponentPropRef[] componentPropRefs=267, ComponentPropAssignment[] componentPropAssignments=268, VariantPropSpec[] variantPropSpecs=483, VariableDataMap parameterConsumptionMap=445, GUIDPath guidPath=111, PrototypeInteraction[] prototypeInteractions=226, PrototypeStartingPoint prototypeStartingPoint=249, ScrollDirection scrollDirection=159, ScrollBehavior scrollBehavior=186, OverlayPositionType overlayPositionType=198, OverlayBackgroundInteraction overlayBackgroundInteraction=200, OverlayBackgroundAppearance overlayBackgroundAppearance=201, int64 timelinePosition=506, KeyframeValueData keyframeValue=507, uint64 timelineDuration=512, EasingData easingData=535, BezierHandles motionPathBezierHandles=598
-enum ExpressionFunction KEYFRAME=19
+message NodeChange GUID guid=1, NodePhase phase=2, ParentIndex parentIndex=3, NodeType type=4, string name=5, bool visible=6, bool locked=7, float opacity=8, BlendMode blendMode=9, Vector size=11, Matrix transform=12, bool mask=16, MaskType maskType=317, float backgroundOpacity=19, bool backgroundEnabled=15, bool internalOnly=142, string description=318, StyleType styleType=163, string sortPosition=320, StyleId styleIdForFill=332, StyleId styleIdForStrokeFill=333, StyleId styleIdForText=334, StyleId styleIdForEffect=335, StyleId styleIdForGrid=336, VariableDataMap variableConsumptionMap=307, VariableModeBySetMap variableModeBySetMap=316, VariableSetMode[] variableSetModes=312, VariableSetID variableSetID=313, VariableResolvedDataType variableResolvedType=314, VariableDataValues variableDataValues=315, VariableScope[] variableScopes=353, DocumentColorProfile documentColorProfile=349, Paint[] fillPaints=38, Paint[] strokePaints=39, float strokeWeight=26, StrokeAlign strokeAlign=29, StrokeJoin strokeJoin=31, StrokeCap strokeCap=30, float[] dashPattern=13, float miterLimit=25, bool borderStrokeWeightsIndependent=299, float borderTopWeight=295, float borderRightWeight=298, float borderBottomWeight=296, float borderLeftWeight=297, Effect[] effects=43, float cornerRadius=20, float cornerSmoothing=160, bool rectangleCornerRadiiIndependent=149, float rectangleTopLeftCornerRadius=145, float rectangleTopRightCornerRadius=146, float rectangleBottomRightCornerRadius=148, float rectangleBottomLeftCornerRadius=147, ConstraintType horizontalConstraint=28, ConstraintType verticalConstraint=37, bool frameMaskDisabled=115, bool resizeToFit=117, bool isStateGroup=225, StateGroupPropertyValueOrder[] stateGroupPropertyValueOrders=238, bool sectionContentsHidden=283, Color backgroundColor=50, StackMode stackMode=105, float stackSpacing=107, float stackCounterSpacing=324, StackWrap stackWrap=323, StackCounterAlignContent stackCounterAlignContent=343, float stackHorizontalPadding=209, float stackVerticalPadding=210, float stackPaddingRight=233, float stackPaddingBottom=234, StackJustify stackPrimaryAlignItems=230, StackAlign stackCounterAlignItems=231, StackSize stackPrimarySizing=229, StackSize stackCounterSizing=221, bool bordersTakeSpace=294, bool stackReverseZIndex=271, float gridColumnGap=438, float gridRowGap=437, GUIDPositionMap gridColumns=436, GUIDPositionMap gridRows=435, GUIDGridTrackSizeMap gridColumnsSizing=474, GUIDGridTrackSizeMap gridRowsSizing=475, float stackChildPrimaryGrow=232, StackCounterAlign stackChildAlignSelf=236, StackPositioning stackPositioning=269, OptionalVector minSize=325, OptionalVector maxSize=326, GUID gridColumnAnchor=440, GUID gridRowAnchor=439, uint gridColumnSpan=442, uint gridRowSpan=441, LayoutGrid[] layoutGrids=47, ExportSettings[] exportSettings=45, TextData textData=42, FontName fontName=41, float fontSize=21, Number lineHeight=40, Number letterSpacing=165, TextCase textCase=34, TextDecoration textDecoration=35, TextAlignHorizontal textAlignHorizontal=32, TextAlignVertical textAlignVertical=33, TextAutoResize textAutoResize=46, TextTruncation textTruncation=280, int maxLines=351, float paragraphSpacing=23, float paragraphIndent=22, Hyperlink hyperlink=223, bool autoRename=14, bool fontVariantCommonLigatures=127, bool fontVariantContextualLigatures=128, string fontVersion=202, uint textUserLayoutVersion=203, uint textExplicitLayoutVersion=396, uint textBidiVersion=279, float textTracking=27, bool textDecorationSkipInk=412, EmojiImageSet emojiImageSet=391, uint styleID=49, Path[] fillGeometry=51, Path[] strokeGeometry=52, VectorData vectorData=48, VectorMirror handleMirroring=44, uint count=10, float starInnerScale=24, ArcData arcData=195, BooleanOperation booleanOperation=36, string symbolDescription=144, VariableWidthPoint[] variableWidthPoints=447, PluginData[] pluginData=204, SymbolData symbolData=113, NodeChange[] derivedSymbolData=125, GUID overriddenSymbolID=143, ComponentPropDef[] componentPropDefs=266, ComponentPropRef[] componentPropRefs=267, ComponentPropAssignment[] componentPropAssignments=268, VariantPropSpec[] variantPropSpecs=483, VariableDataMap parameterConsumptionMap=445, GUIDPath guidPath=111, PrototypeInteraction[] prototypeInteractions=226, PrototypeStartingPoint prototypeStartingPoint=249, ScrollDirection scrollDirection=159, ScrollBehavior scrollBehavior=186, OverlayPositionType overlayPositionType=198, OverlayBackgroundInteraction overlayBackgroundInteraction=200, OverlayBackgroundAppearance overlayBackgroundAppearance=201, int64 timelinePosition=506, KeyframeValueData keyframeValue=507, uint64 timelineDuration=512, EasingData easingData=535, BezierHandles motionPathBezierHandles=598, bool isSlotContent=495
+enum ExpressionFunction ADDITION=0 SUBTRACTION=1 RESOLVE_VARIANT=2 MULTIPLY=3 DIVIDE=4 EQUALS=5 NOT_EQUAL=6 LESS_THAN=7 LESS_THAN_OR_EQUAL=8 GREATER_THAN=9 GREATER_THAN_OR_EQUAL=10 AND=11 OR=12 NOT=13 VAR_MODE_LOOKUP=16 NEGATE=17 KEYFRAME=19
 message Expression ExpressionFunction expressionFunction=1, VariableData[] expressionArguments=2
 message KeyframeTrackId GUID guid=1
 message ManualKeyframeTrackParameter KeyframeTrackId keyframeTrackId=1
@@ -221,7 +228,8 @@ fn export_with_limits(doc: &Document, thumbnail: Option<&[u8]>, limits: budget::
     if !x.budget.source(&doc.name) {
         return x.budget.check().and_then(|_| Err(too_large()));
     }
-    x.budget.tree(doc)?;
+    x.library = library::Library::used_by(doc, &mut x.budget);
+    x.budget.tree(doc, &x.library)?;
     let message = x.message();
     x.budget.check()?;
     let fail = |e: super::kiwi::KiwiError| FormatError::Io(format!(".fig export: {e}"));
@@ -257,6 +265,7 @@ pub(super) fn outline_with_test_budget(node: &Node, bytes: usize) -> (bool, usiz
 #[cfg(test)]
 pub(super) fn generation_with_test_budget(doc: &Document, id: NodeId, kind: &str, bytes: usize, work: usize) -> (bool, Kv<'static>, usize) {
     let mut x = Exporter::new(doc);
+    x.library = library::Library::used_by(doc, &mut x.budget);
     x.assign();
     x.budget = budget::Budget::new(budget::Limits { bytes, work, ..Default::default() });
     let mut fields = Vec::new();
@@ -563,9 +572,11 @@ struct Overlay {
 struct Exporter<'d> {
     doc: &'d Document,
     budget: budget::Budget,
+    library: library::Library,
     motion: motion::Plan,
     /// Layer → local id of its GUID (session [`LAYERS`]).
     ids: BTreeMap<NodeId, u32>,
+    slots: slots::Slots,
     nodes: Vec<Kv<'static>>,
     /// Blob bytes → index (identical blobs are written once).
     blobs: BTreeMap<Vec<u8>, u32>,
@@ -615,8 +626,10 @@ impl<'d> Exporter<'d> {
         Self {
             doc,
             budget: budget::Budget::default(),
+            library: library::Library::default(),
             motion: motion::Plan::default(),
             ids: BTreeMap::new(),
+            slots: slots::Slots::default(),
             nodes: Vec::new(),
             blobs: BTreeMap::new(),
             blob_bytes: 0,
@@ -708,7 +721,7 @@ impl<'d> Exporter<'d> {
     fn message(&mut self) -> Kv<'static> {
         let doc = self.doc;
         self.assign();
-        let assets = self.style_ids.len().saturating_add(self.set_ids.len()).saturating_add(self.var_ids.len());
+        let assets = self.style_ids.len().saturating_add(self.set_ids.len()).saturating_add(self.var_ids.len()).saturating_add(self.slots.frames.len());
         self.motion = motion::Plan::prepare(doc, &self.ids, assets, &mut self.budget);
         let resources = self.motion.resource_count();
         if !self.budget.nodes(
@@ -716,7 +729,7 @@ impl<'d> Exporter<'d> {
                 .saturating_add(self.ids.len())
                 .saturating_add(assets)
                 .saturating_add(resources)
-                .saturating_add(usize::from(assets > 0 || resources > 0)),
+                .saturating_add(usize::from(assets > 0 || resources > 0 || !self.library.roots.is_empty())),
         ) {
             return o(Vec::new());
         }
@@ -753,6 +766,7 @@ impl<'d> Exporter<'d> {
 
 /// The plugin id and key under which a layer written as an outline keeps what it was.
 pub(super) const STASH: (&str, &str) = ("figcraft", "stroke");
+pub(super) const LIBRARY_STORE_KEY: &str = "libraryStore";
 
 /// An image's name in the file: the SHA-1 of its bytes (lowercase hex). Paints refer to images by
 /// these 20 bytes, and readers reject other hash lengths (the document's own SHA-256 key is not
@@ -791,5 +805,27 @@ mod opening_page_tests {
         assert!(exporter.ids.contains_key(&content));
         assert!(!exporter.ids.contains_key(&template));
         assert_eq!(exporter.warnings.len(), 1, "omitted layers must still be reported");
+    }
+}
+
+#[cfg(test)]
+mod large_export_tests {
+    use super::*;
+
+    #[test]
+    fn a_large_canvas_keeps_every_layer_across_native_export_and_reopen() {
+        let mut doc = Document::new("Large canvas");
+        let page = doc.pages[0];
+        for i in 0..6_000 {
+            doc.create(page, NodeKind::Rectangle, &format!("Tile {i}"), (i % 100) as f64, (i / 100) as f64, 1.0, 1.0).unwrap();
+        }
+        let (bytes, warnings) = export(&doc, None).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let (opened, _) = crate::fig::import(&bytes, "Large canvas").unwrap();
+        let children = &opened.node(opened.pages[0]).unwrap().children;
+        assert_eq!(children.len(), 6_000);
+        for (i, id) in children.iter().enumerate() {
+            assert_eq!(opened.node(*id).unwrap().name, format!("Tile {i}"));
+        }
     }
 }

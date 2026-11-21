@@ -1,4 +1,4 @@
-use super::diff::{binding_group, bindings_of, diff_groups, follow_boolean_defaults, geometry_derived, variable_groups};
+use super::diff::{compare_bindings, diff_groups, follow_boolean_defaults, geometry_derived};
 use super::guard::{own_slot_content, relink_copy};
 use super::instances::{copy_group, field_group, sync_instance};
 use super::sync::insert_linked;
@@ -174,17 +174,21 @@ fn override_groups(doc: &Document, before: &Document, id: NodeId, n: &Node, b: &
         }
         // A value from the same variable as the main's (resolved in this layer's modes) isn't an
         // override either.
-        let from_variables = variable_groups(n, src);
+        let (from_variables, rebound) = compare_bindings(n, src);
         groups.retain(|g| differs.contains(g) && !from_variables.contains(g));
         // Binding another variable (or none) where the main binds one is an override.
-        for (k, _) in b.bound.iter().chain(n.bound.iter()) {
-            let Some(g) = binding_group(k) else { continue };
-            let rebound = b.bound.get(k) != n.bound.get(k) && !bindings_of(n, g).eq(bindings_of(src, g));
-            if rebound && !groups.contains(&g) {
+        let edited_bindings = if n.bound == b.bound { BTreeSet::new() } else { compare_bindings(n, b).1 };
+        for &g in edited_bindings.intersection(&rebound) {
+            if !groups.contains(&g) && !(top_root && matches!(g, "resizing" | "modes")) {
                 groups.push(g);
             }
         }
-        cleared = raw.iter().filter(|g| !matches!(**g, "size" | "position") && !differs.contains(g) && n.overrides.contains(**g)).copied().collect();
+        cleared = raw
+            .iter()
+            .chain(&edited_bindings)
+            .copied()
+            .filter(|g| !matches!(*g, "size" | "position") && !differs.contains(g) && !rebound.contains(g) && n.overrides.contains(*g))
+            .collect();
         if top_root {
             cleared.retain(|g| !matches!(*g, "component" | "props"));
         }

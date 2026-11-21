@@ -103,6 +103,9 @@ impl<'d> Exporter<'d> {
         let hex = match self.images.get(key) {
             Some(h) => h.clone(),
             None => {
+                if !self.budget.keep(key.len().saturating_add(256)) {
+                    return Vec::new();
+                }
                 let h = match self.doc.images.get(key) {
                     Some(img) if img.bytes.len() as u64 <= MAX_IMAGE => {
                         if !self.budget.reserve(256, img.bytes.len().div_ceil(64).saturating_add(1)) || !self.budget.items(self.files.len(), 0, 2) {
