@@ -29,6 +29,36 @@ fn solid_rect_and_page_background() {
 }
 
 #[test]
+fn native_pattern_import_draws_repeated_internal_tiles_and_empty_spacing() {
+    // Built from the native Kiwi schema in figcraft-format's fig/pattern_tests.rs.
+    let bytes = include_bytes!("../../format/tests/fixtures/native-pattern.fig");
+    let (doc, warnings) = figcraft_format::fig::import(bytes, "native-pattern.fig").unwrap();
+    assert!(!warnings.iter().any(|w| w.contains("pattern")), "{warnings:?}");
+    let page = doc.first_page().unwrap();
+    let pix = render_view(&doc, page, &view(36, 24), &Options { background: Some(Color::WHITE), ..Default::default() }).unwrap();
+    // 8×8 tile: solid red left half, nested blue pattern right half, 4-unit gaps.
+    for (x, y) in [(1, 2), (13, 14), (25, 2)] {
+        assert_eq!(px(&pix, x, y), [255, 0, 0, 255], "red at ({x},{y})");
+        assert_eq!(px(&pix, x + 4, y), [0, 0, 255, 255], "blue at ({},{y})", x + 4);
+        assert_eq!(px(&pix, x + 9, y), [255; 4], "horizontal gap at ({},{y})", x + 9);
+    }
+    assert_eq!(px(&pix, 1, 10), [255; 4], "vertical gap");
+}
+
+#[test]
+fn native_pattern_import_with_missing_sources_draws_the_remaining_fill() {
+    let bytes = include_bytes!("../../format/tests/fixtures/native-pattern-missing.fig");
+    let (doc, warnings) = figcraft_format::fig::import(bytes, "native-pattern-missing.fig").unwrap();
+    assert!(warnings.iter().any(|w| w.contains("without a source layer")), "{warnings:?}");
+    assert!(warnings.iter().any(|w| w.contains("tile a layer that wasn't imported")), "{warnings:?}");
+    let page = doc.first_page().unwrap();
+    let pix = render_view(&doc, page, &view(40, 28), &Options { background: Some(Color::WHITE), ..Default::default() }).unwrap();
+    assert_eq!(px(&pix, 2, 2), [0, 255, 0, 255]);
+    assert_eq!(px(&pix, 34, 22), [0, 255, 0, 255]);
+    assert_eq!(px(&pix, 38, 26), [255; 4]);
+}
+
+#[test]
 fn vector_regions_use_their_own_paints_and_empty_regions_do_not_erase() {
     let mut d = figcraft_doc::Document::new("regions");
     let page = d.first_page().unwrap();

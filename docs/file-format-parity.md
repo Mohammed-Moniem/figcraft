@@ -1,6 +1,8 @@
 # File format parity
 
-Figma REST JSON pattern paints keep their tile layer, spacing, scale, alignment and grid or hexagonal layout. The importer resolves layer IDs after reading the document, including tiles that occur later than the painted layer. Fills, strokes and styled text use the same lookup. An absent tile drops only the affected paint and produces an import warning. [Upstream PR #2422](https://github.com/storytold/figcraft/pull/2422)
+Native saves retain imported text line breaks while the box width and text layout inputs still match. The writer records the line ranges in UTF-16 units, including hard line breaks. Changing the width, text or typography lets the receiving editor lay out the text again.
+
+Figma REST JSON and native `.fig` pattern paints keep their tile layer, spacing, scale, alignment and grid or hexagonal layout. The importer resolves layer IDs after reading the document, including tiles that occur later than the painted layer. Native fills and strokes can reference tile sources stored on an internal canvas. FigCraft imports the source, its descendants and any tiles they use within the existing layer and depth limits. An absent tile drops only the affected paint and produces an import warning. REST fills, strokes and styled text use the same lookup. [FigCraft PR #2422](https://github.com/storytold/figcraft/pull/2422) · [Native reader PR #2002](https://github.com/storytold/craft-libs/pull/2002)
 
 Local native Motion import subset, 2026-11-08: `.fig` import retains editable visible linear XY
 Position keys for direct rectangles in one unambiguous top-level frame per page, with identity

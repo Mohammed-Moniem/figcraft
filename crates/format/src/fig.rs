@@ -47,6 +47,8 @@ mod network;
 #[cfg(test)]
 mod paste_style_tests;
 #[cfg(test)]
+mod pattern_tests;
+#[cfg(test)]
 mod prop_value_tests;
 #[cfg(test)]
 mod scale_factor_tests;

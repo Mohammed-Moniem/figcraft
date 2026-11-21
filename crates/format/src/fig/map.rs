@@ -325,6 +325,8 @@ struct Mapper<'a> {
     override_scope_entries: usize,
     /// Component-bearing branches of the file's internal canvases (cached library definitions).
     library_contexts: Vec<Value>,
+    /// Layer sources named by reachable pattern paints, including sources in internal canvases.
+    pattern_tiles: BTreeSet<String>,
     /// Layers visited while scanning internal canvases, across all of them.
     library_scan_count: usize,
     warnings: crate::rest::Warnings,
@@ -422,6 +424,7 @@ impl<'a> Mapper<'a> {
             library_scan_count: 0,
             warnings: crate::rest::Warnings::default(),
             count: 0,
+            pattern_tiles: BTreeSet::new(),
             referenced_mains: BTreeSet::new(),
             mapped_mains: BTreeSet::new(),
             max_nodes,

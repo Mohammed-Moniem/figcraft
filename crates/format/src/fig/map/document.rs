@@ -3,6 +3,14 @@ use super::paint::color;
 use super::variables::variable_value;
 use super::{Affine, BTreeMap, BTreeSet, Kv, MAX_DEPTH, Mapper, Obj, Value, View, copy_str, guid, json, rows};
 
+fn pattern_tiles<'n>(node: &'n Kv<'_>) -> impl Iterator<Item = String> + 'n {
+    ["fillPaints", "strokePaints"]
+        .into_iter()
+        .flat_map(|field| node.get(field).map(Kv::list).unwrap_or_default())
+        .filter(|paint| paint.get("type").and_then(Kv::str) == Some("PATTERN"))
+        .filter_map(|paint| paint.get("sourceNodeId").and_then(guid))
+}
+
 impl<'a> Mapper<'a> {
     /// The DOCUMENT with its pages.
     pub(super) fn document(&mut self) -> Value {
@@ -48,8 +56,7 @@ impl<'a> Mapper<'a> {
         doc
     }
 
-    /// The ids of the components the visible pages use, directly or through the components they
-    /// use in turn (nested instances, swap targets, overrides naming another main).
+    /// Components and pattern source layers the visible pages use, including their dependencies.
     fn referenced_component_mains(&mut self, visible_pages: &[String]) -> BTreeSet<String> {
         let mut mains = BTreeSet::new();
         let mut visited = BTreeSet::new();
@@ -78,6 +85,18 @@ impl<'a> Mapper<'a> {
             for target in targets {
                 if mains.insert(target.clone()) {
                     pending.push((target, 1));
+                }
+            }
+            for tile in pattern_tiles(node) {
+                if self.nodes.get(&tile).is_none_or(|n| matches!(n.get("type").and_then(Kv::str), Some("CANVAS" | "DOCUMENT") | None)) {
+                    continue;
+                }
+                if self.pattern_tiles.len() >= self.max_nodes && !self.pattern_tiles.contains(&tile) {
+                    // The existing reference scan reports its cap when these queued layers are visited.
+                    break;
+                }
+                if self.pattern_tiles.insert(tile.clone()) && mains.insert(tile.clone()) {
+                    pending.push((tile, 1));
                 }
             }
             pending.extend(self.children(&id).into_iter().map(|child| (child, depth + 1)));
@@ -164,9 +183,8 @@ impl<'a> Mapper<'a> {
         self.children(&parent).into_iter().filter(|c| c != id && symbol(c)).collect()
     }
 
-    /// The branches of the internal canvas `id` that hold the `required_mains` (with the frames
-    /// they sit in), as a frame of its own: the cached definitions of components that come from a
-    /// library. `None` when it holds none.
+    /// The branches of an internal canvas that hold required components and pattern tiles,
+    /// including their parent frames and descendants. `None` if the canvas holds none.
     fn library_context(&mut self, id: &str, canvas: &'a Kv<'a>, required_mains: &BTreeSet<String>) -> Option<Value> {
         let mut included = BTreeSet::new();
         let mut parents: BTreeMap<String, String> = BTreeMap::new();
@@ -190,7 +208,9 @@ impl<'a> Mapper<'a> {
             }
             let Some(node) = self.nodes.get(&node_id) else { continue };
             let kind = node.get("type").and_then(Kv::str);
-            let definition = (kind == Some("SYMBOL") || (kind == Some("FRAME") && node.get("isStateGroup").and_then(Kv::bool) == Some(true)))
+            let definition = (kind == Some("SYMBOL")
+                || (kind == Some("FRAME") && node.get("isStateGroup").and_then(Kv::bool) == Some(true))
+                || self.pattern_tiles.contains(&node_id))
                 && required_mains.contains(&node_id);
             let in_definition = in_definition || definition;
             if in_definition {

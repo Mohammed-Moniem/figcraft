@@ -224,6 +224,23 @@ pub(crate) fn paint(p: &Kv, warn: &mut dyn FnMut(String)) -> Option<Value> {
                 (None, None) => {}
             }
         }
+        "PATTERN" => {
+            if let Some(source) = p.get("sourceNodeId").and_then(guid) {
+                o.insert("sourceNodeId".into(), json!(source));
+            }
+            if let Some(tile) = p.get("patternTileType").and_then(Kv::str) {
+                o.insert("tileType".into(), json!(tile));
+            }
+            if let Some(s) = num(p, "scale") {
+                o.insert("scalingFactor".into(), json!(s));
+            }
+            if let Some(gap) = p.get("patternSpacing") {
+                o.insert("spacing".into(), json!({"x": num(gap, "x").unwrap_or(0.0), "y": num(gap, "y").unwrap_or(0.0)}));
+            }
+            if let Some(align) = p.get("horizontalAlignment").and_then(Kv::str) {
+                o.insert("horizontalAlignment".into(), json!(align));
+            }
+        }
         _ => {}
     }
     Some(Value::Object(o))
