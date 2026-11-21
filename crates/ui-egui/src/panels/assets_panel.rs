@@ -16,7 +16,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use egui::{Align2, Color32, CornerRadius, Id, Pos2, Rect, Sense, Stroke, Ui, pos2, vec2};
-use figcraft_doc::{Document, NodeId, NodeKind, Style, StyleKind};
+use figcraft_doc::{Document, LibraryLink, NodeId, NodeKind, Style, StyleKind};
 use figcraft_engine::library;
 use figcraft_engine::library_server::{is_server_link, shown_path};
 use serde_json::{Value, json};
@@ -39,9 +39,7 @@ const THUMBS_PER_FRAME: usize = 8;
 const MAX_COMPARED: usize = 20_000;
 /// Look for changed library files this often (seconds) while the panel shows.
 const LIBRARY_REFRESH: f64 = 2.0;
-/// Ask team libraries' servers for newer versions this often (seconds) while the panel shows.
-// shortcut: polled (a few bytes when nothing changed); a server push needs a connection per
-// library, worth it once libraries are used beyond the Assets panel.
+/// Check approved team libraries while their document's File or Assets panel is visible.
 const SERVER_REFRESH: f64 = 30.0;
 const PAD: f32 = 16.0;
 /// The team library commands the panel runs without waiting for the server.
@@ -227,9 +225,9 @@ fn matches(name: &str, q: &str) -> bool {
 }
 
 /// A fingerprint of what the session read for the enabled libraries.
-fn libraries_key(app: &FigApp, doc: &Document) -> u64 {
+fn libraries_key<'a>(app: &FigApp, links: impl Iterator<Item = &'a LibraryLink>) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    for l in &doc.libraries.enabled {
+    for l in links {
         l.id.hash(&mut h);
         match app.session.cached_library(&l.path) {
             Some(Ok(lib)) => (Arc::as_ptr(lib) as usize).hash(&mut h),
@@ -280,10 +278,10 @@ fn build_listing(app: &FigApp, doc: &Document, q: &str, key: (u64, String, u64))
 /// Re-read enabled library files that changed on disk (throttled).
 fn refresh_libraries(app: &mut FigApp, ui: &Ui) {
     let Ok(doc) = app.session.doc() else { return };
-    if doc.libraries.enabled.is_empty() {
+    let paths: Vec<String> = doc.libraries.enabled.iter().filter(|l| !is_server_link(&l.path)).map(|l| l.path.clone()).collect();
+    if paths.is_empty() {
         return;
     }
-    let paths: Vec<String> = doc.libraries.enabled.iter().map(|l| l.path.clone()).collect();
     let id = Id::unique("asset_libraries_checked");
     let now = ui.input(|i| i.time);
     let last: Option<f64> = ui.data(|d| d.get_temp(id));
@@ -292,18 +290,53 @@ fn refresh_libraries(app: &mut FigApp, ui: &Ui) {
             let _ = app.session.libraries.load(p);
         }
         ui.data_mut(|d| d.insert_temp(id, now));
-        // Team libraries: in the background, at once for one not fetched yet.
-        let sid = Id::unique("asset_server_libraries_checked");
-        let fetched: Option<f64> = ui.data(|d| d.get_temp(sid));
-        // Only the ones you added or checked: a file can't make the app contact a server (#1097).
-        let team: Vec<&String> = paths.iter().filter(|p| is_server_link(p) && app.session.library_allowed(p)).collect();
-        let unread = team.iter().any(|p| app.session.cached_library(p).is_none());
-        if !team.is_empty() && (unread || fetched.is_none_or(|l| now - l >= SERVER_REFRESH)) {
-            app.session.refresh_server_libraries();
-            ui.data_mut(|d| d.insert_temp(sid, now));
-        }
     }
     ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(LIBRARY_REFRESH));
+}
+
+/// Keep team assets up to date in the editor and let designers review changes before accepting.
+pub(crate) fn team_updates(app: &mut FigApp, ui: &mut Ui) {
+    let Ok(ds) = app.session.ds() else { return };
+    let (doc, revision, uid) = (ds.doc.clone(), ds.revision, ds.uid);
+    let mut links = doc.libraries.enabled.iter().filter(|l| is_server_link(&l.path) && app.session.library_allowed(&l.path)).peekable();
+    if links.peek().is_none() {
+        return;
+    }
+    let pending = app.ui.left_tab == crate::LeftTab::File && {
+        let notice = Id::unique(("team_library_notice", uid));
+        let key = (revision, libraries_key(app, links.clone()));
+        match ui.data(|d| d.get_temp::<((u64, u64), bool)>(notice)) {
+            Some((cached, pending)) if cached == key => pending,
+            _ => {
+                let pending = links
+                    .filter_map(|l| app.session.cached_library(&l.path)?.ok().filter(|lib| lib.manifest.id == l.id))
+                    .any(|lib| !library::pending(&doc, lib).is_empty());
+                ui.data_mut(|d| d.insert_temp(notice, (key, pending)));
+                pending
+            }
+        }
+    };
+    let now = ui.input(|i| i.time);
+    let check = Id::unique(("team_library_check", uid));
+    let mut deadline = ui.data(|d| d.get_temp::<f64>(check)).unwrap_or(now);
+    if now >= deadline {
+        app.session.refresh_server_libraries();
+        deadline = now + SERVER_REFRESH;
+        ui.data_mut(|d| d.insert_temp(check, deadline));
+    }
+    ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(deadline - now));
+    if pending
+        && ui
+            .horizontal(|ui| {
+                ui.add_space(PAD);
+                crate::widgets::button(ui, tr("Review library updates"), false, true)
+            })
+            .inner
+            .clicked()
+    {
+        app.ui.left_tab = crate::LeftTab::Assets;
+        app.ui.libraries = false;
+    }
 }
 
 /// The search field with the libraries button; returns the lowercase query.
@@ -591,7 +624,7 @@ pub fn show(app: &mut FigApp, ui: &mut Ui) {
     let doc = ds.doc.clone();
     let revision = ds.revision;
     let q = search_row(app, ui, w);
-    let key = (revision, q.clone(), libraries_key(app, &doc));
+    let key = (revision, q.clone(), libraries_key(app, doc.libraries.enabled.iter()));
     let listing_id = Id::unique("asset_listing");
     let listing = match ui.data(|d| d.get_temp::<Arc<Listing>>(listing_id)) {
         Some(l) if l.key == key => l,
@@ -1376,6 +1409,9 @@ fn added(app: &mut FigApp, r: &Value) {
 
 #[cfg(test)]
 mod library_relative_review_tests;
+
+#[cfg(test)]
+mod team_update_tests;
 
 /// Tests: the components whose thumbnails are cached (for this file's assets).
 #[cfg(test)]

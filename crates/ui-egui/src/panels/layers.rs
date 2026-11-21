@@ -224,6 +224,7 @@ pub fn left_panel(app: &mut FigApp, ui: &mut Ui) {
         app.run("view.minimize", json!({}));
     }
     ui.painter().line_segment([head.left_bottom(), head.right_bottom()], Stroke::new(1.0, t.border));
+    crate::assets_panel::team_updates(app, ui);
     match app.ui.left_tab {
         LeftTab::File => {
             pages(app, ui);

@@ -281,7 +281,7 @@ impl Session {
     }
 
     /// Ask the servers of the active document's team libraries for newer versions, in the
-    /// background, reporting how the document uses each (the Assets panel calls it now and then).
+    /// background, reporting how the document uses each while the File or Assets panel is visible.
     /// Only libraries you added or checked here are asked: opening a file that names another
     /// server contacts nothing until you check it (`library.check`, #1097).
     pub fn refresh_server_libraries(&mut self) {

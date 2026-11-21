@@ -243,10 +243,11 @@ which other files use without anyone copying the library file around.
 - **Using a file link.** In another file, paste one of the library file's links (a **view link** is enough)
   into **Assets ▸ Libraries** (`library.add {path: <link>}`). The library is listed in the Assets
   panel like a library file: placing a component or applying a style copies it in as a read-only
-  linked copy, as for library files. While the Assets panel shows, the app asks the server for a
-  newer version at once and then every 30 seconds (a few bytes when nothing changed) and shows
-  **Library updates available**; accepting keeps instance overrides. While the server can't be
-  reached, the last version fetched stays in use. The file keeps the link, token included:
+  linked copy, as for library files. With the File or Assets panel visible, FigCraft checks
+  the server when you open the document and every 30 seconds afterward. When an asset used in
+  the document changes, choose **Review library updates** in File to see **Library updates
+  available** in Assets. Choose **Update** to apply the changes and keep instance overrides.
+  While the server can't be reached, the last version fetched stays in use. The file keeps the link, token included:
   sharing that file shares read access to the library.
 - **Only libraries you chose are checked by themselves.** The app asks only about team libraries
   you added or checked on this computer (kept as hashes of their links in the preferences). A file
