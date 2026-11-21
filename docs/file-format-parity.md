@@ -1,5 +1,19 @@
 # File format parity
 
+## Compare a native round trip in Figma Desktop
+
+Open the original design in Figma Desktop. Import FigCraft's `.fig` export into a private draft and open it. Use **File → Export Frames to PDF** on the same design page in each file with the same color profile and quality. Record any missing-font dialog and the installed fonts. Run the comparison with Python 3, Pillow and Poppler's `pdfinfo`, `pdftotext` and `pdftoppm` on the path.
+
+```sh
+python3 xtask/compare_figma_exports.py original.pdf reopened.pdf > comparison.json
+```
+
+The report pairs pages in PDF order, checks raster dimensions, counts pixels differing in any RGB channel at 72 dpi, and compares extracted text after normalizing whitespace. A page reorder counts as a difference. Exit status 0 means every page has matching dimensions, pixels and extracted text. Exit status 1 means the comparison completed with differences. Exit status 2 means the comparison could not run. Review layer editability and interaction behavior separately in the editor and player.
+
+On 21 November 2026, Figma Desktop opened a private real design exported by FigCraft. Its two sRGB, medium-quality PDFs had 74 pages and matching raster dimensions in all 74 pairs. Across 112,049,280 pixels, 3,586,865 differed (3.20%). All 74 pairs differed. Figma flagged a missing font in the reopened file. The original PDF contained selectable text and the reopened PDF yielded none on text extraction. Inspecting the two native design files found 41,120 cached glyph entries in the original and zero in the export. The effect of restoring those glyphs on the pixel difference still needs measurement.
+
+A separate two-page synthetic prototype opened in Figma Desktop. Playing each named flow and clicking its starting frame reached its intended finish frame. The Welcome starting frame also showed separate conditional, variable assignment and variable mode interactions in Figma's inspector.
+
 Native saves retain imported text line breaks while the box width and text layout inputs still match. The writer records the line ranges in UTF-16 units, including hard line breaks. Changing the width, text or typography lets the receiving editor lay out the text again.
 
 Figma REST JSON and native `.fig` pattern paints keep their tile layer, spacing, scale, alignment and grid or hexagonal layout. The importer resolves layer IDs after reading the document, including tiles that occur later than the painted layer. Native fills and strokes can reference tile sources stored on an internal canvas. FigCraft imports the source, its descendants and any tiles they use within the existing layer and depth limits. An absent tile drops only the affected paint and produces an import warning. REST fills, strokes and styled text use the same lookup. [FigCraft PR #2422](https://github.com/storytold/figcraft/pull/2422) · [Native reader PR #2002](https://github.com/storytold/craft-libs/pull/2002)

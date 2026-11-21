@@ -13,6 +13,8 @@ summarizes it; [`gaps.md`](gaps.md) is the ranked work list; the measured menu c
 
 ## Headline
 
+The estimates below predate the 21 November 2026 Figma Desktop checks. Figma played both flows in a synthetic two-page prototype. On a separate real design, direct comparison of Figma's PDF exports found differences on all 74 pages after a FigCraft round trip. Six loopback server checks passed for concurrent sessions, restart, permission revocation, comments, team discovery and library updates. The full workflow scores still need reassessment. [Native file comparison and procedure](file-format-parity.md#compare-a-native-round-trip-in-figma-desktop)
+
 | Number | Value | Kind |
 |---|---|---|
 | Menu/command breadth | **100%** (212 / 212 catalogued menu items have a live command) | **measured** (`cargo xtask parity`, 2026-10-17) |
