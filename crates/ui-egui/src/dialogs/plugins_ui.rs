@@ -77,8 +77,10 @@ const PANEL_STEP: f32 = 372.0;
 
 /// What the user did to a parameter or panel control.
 enum Used {
-    /// Changed a field to a value, or pressed a button (null).
+    /// Changed a field to a value.
     Set(String, Value),
+    /// Pressed a button.
+    Click(String),
     /// Asked for the colour picker for a colour field.
     Pick(String),
 }
@@ -292,6 +294,9 @@ fn panel_windows(app: &mut FigApp, ctx: &Context) {
         if !keep {
             actions.push((id.to_string(), None));
         } else {
+            // A tap may commit a focused field and click a button in the same input frame.
+            // The plugin must receive that edit before the click, wherever its button is drawn.
+            used.sort_by_key(|action| matches!(action, Used::Click(_)));
             actions.extend(used.into_iter().map(|u| (id.to_string(), Some(u))));
         }
     }
@@ -301,6 +306,7 @@ fn panel_windows(app: &mut FigApp, ctx: &Context) {
                 app.run("plugin.close", json!({"id": id}));
             }
             Some(Used::Set(control, value)) => run(app, "plugin.event", json!({"id": id, "control": control, "value": value})),
+            Some(Used::Click(control)) => run(app, "plugin.event", json!({"id": id, "control": control})),
             Some(Used::Pick(control)) => app.open_picker(PickerTarget::PluginField { plugin: id, control, pending: None }, None),
         }
     }
@@ -1042,6 +1048,9 @@ fn form_window(app: &mut FigApp, ctx: &Context) {
                 Used::Set(name, v) => {
                     form.values.insert(name, v);
                 }
+                Used::Click(name) => {
+                    form.values.insert(name, Value::Null);
+                }
                 Used::Pick(control) => pick = Some(control),
             }
         }
@@ -1151,7 +1160,7 @@ fn fields(
                 ParamKind::Button => {
                     ui.horizontal(|ui| {
                         let pressed = row.iter().filter(|b| widgets::button(ui, b.title(), std::mem::take(first_button), !b.disabled).clicked());
-                        pressed.last().map(|b| Used::Set(b.name.clone(), Value::Null))
+                        pressed.last().map(|b| Used::Click(b.name.clone()))
                     })
                     .inner
                 }

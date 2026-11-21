@@ -16,6 +16,7 @@ use crate::layers_drag_tests::Ui;
 pub(crate) fn panel_module() -> Vec<u8> {
     let spec = json!({"title": "Test panel", "controls": [
         {"type": "note", "label": "Hello from the plugin"},
+        {"type": "button", "name": "apply", "label": "Apply"},
         {"type": "number", "name": "size", "label": "Size", "value": 10},
         {"type": "boolean", "name": "labels", "label": "Labels"},
         {"type": "list", "name": "palette", "label": "Palette", "options": ["Warm", "Cool"]},
@@ -34,12 +35,15 @@ pub(crate) fn panel_module() -> Vec<u8> {
         r#"(module
           (import "figcraft" "call" (func $call (param i32 i32 i32 i32) (result i32)))
           (import "figcraft" "ui_show" (func $ui_show (param i32 i32) (result i32)))
+          (import "figcraft" "reply_read" (func $read (param i32 i32) (result i32)))
+          (import "figcraft" "set_output" (func $output (param i32 i32)))
           (memory (export "memory") 1)
           (data (i32.const 1000) "{}") (data (i32.const 100) "shape.rectangle") (data (i32.const 200) "{}")
           (func (export "figcraft_run") (param $n i32) (result i32)
             (i32.store (i32.const 0) (i32.add (i32.load (i32.const 0)) (i32.const 1)))
             (if (i32.eq (i32.load (i32.const 0)) (i32.const 1))
               (then (return (call $ui_show (i32.const 1000) (i32.const {})))))
+            (call $output (i32.const 32768) (call $read (i32.const 32768) (local.get $n)))
             (call $call (i32.const 100) (i32.const 15) (i32.const 200) (i32.const {}))))"#,
         spec.replace('"', "\\\""),
         rect.replace('"', "\\\""),
@@ -188,6 +192,13 @@ fn a_slider_calls_the_plugin_back_once_when_let_go() {
 /// keyboard from commits in the frame the button is clicked, and the plugin gets both, in order.
 #[test]
 fn a_tap_on_a_button_keeps_what_was_typed_in_a_field() {
+    for (button, control) in [("Apply", "apply"), ("Go", "go")] {
+        assert_button_reads_committed_field(button, control, "Size", "size", "33", json!(33.0));
+        assert_button_reads_committed_field(button, control, "Title", "title", "hello", json!("hello"));
+    }
+}
+
+fn assert_button_reads_committed_field(button: &str, control: &str, label: &str, name: &str, typed: &str, expected: Value) {
     let mut u = Ui::new(session());
     u.ctx.enable_accesskit();
     u.frame(vec![]);
@@ -196,16 +207,22 @@ fn a_tap_on_a_button_keeps_what_was_typed_in_a_field() {
         let b = nodes.into_iter().map(|(_, n)| n).find(|n| n.label() == Some(label)).and_then(|n| n.bounds()).unwrap();
         Pos2::new(((b.x0 + b.x1) / 2.0) as f32, ((b.y0 + b.y1) / 2.0) as f32)
     };
-    let size = at(&mut u, "Size");
-    u.button(size, true);
-    u.button(size, false);
+    let field_pos = at(&mut u, label);
+    u.button(field_pos, true);
+    u.button(field_pos, false);
     u.frame(vec![]);
-    u.frame(vec![egui::Event::Text("33".into())]);
-    let go = at(&mut u, "Go");
+    u.frame(vec![egui::Event::Text(typed.into())]);
+    let go = at(&mut u, button);
     let press = |pressed| egui::Event::PointerButton { pos: go, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
     let before = layers(&u);
     u.frame(vec![egui::Event::PointerMoved(go), press(true), press(false)]);
     u.frame(vec![]);
-    assert_eq!(u.app.session.plugins.panel("org.test.panel").unwrap().values["size"], 33.0, "the field's value arrived");
+    assert_eq!(u.app.session.plugins.panel("org.test.panel").unwrap().values[name], expected, "the field's value arrived");
     assert_eq!(layers(&u), before + 2, "the field's commit and the button each called the plugin");
+    let events = &u.app.session.plugins.history;
+    let field = &events[events.len() - 2].output;
+    let click = &events.last().unwrap().output;
+    assert_eq!(field["event"]["control"], name);
+    assert_eq!(click["event"]["control"], control);
+    assert_eq!(click["values"][name], expected);
 }

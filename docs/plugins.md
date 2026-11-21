@@ -80,6 +80,7 @@ of the colour when a drag in the picker ends); its hex can also be typed. Pressi
 changing a field calls the plugin back with every field's value; what that callback does is one
 undo step (none when it changes nothing), and the plugin can update the panel or close it. The
 module stays loaded while its panel is open, so the plugin keeps its state between callbacks.
+When a tap commits a field and presses a button together, the button callback receives the new field value, including when the button appears above the field.
 Closing the window ends the plugin's session. Each plugin has at most one panel, and the panels of
 different plugins open side by side (leftwards from the first, three to a row);
 running a plugin again replaces its own panel. An open panel costs nothing while nobody uses it (no
