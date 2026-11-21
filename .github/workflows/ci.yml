@@ -1,17 +1,16 @@
 name: CI
 
-# Quality gates for every push to main and every pull request (`cargo xtask ci`), through the
-# suite's shared gate workflow in craft-common-actions.
+# Run the shared quality gate on both maintained branches and on pull requests.
 on:
   push:
-    branches: [main]
+    branches: [main, fix/github-issues]
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# A newer push to a PR branch cancels its older run; every push to main runs to the end.
+# A newer PR update cancels its older run. Each branch push gets its own run.
 concurrency:
   group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
