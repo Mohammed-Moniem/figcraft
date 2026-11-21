@@ -723,7 +723,8 @@ impl<'d> Exporter<'d> {
     fn message(&mut self) -> Kv<'static> {
         let doc = self.doc;
         self.assign();
-        let assets = self.style_ids.len().saturating_add(self.set_ids.len()).saturating_add(self.var_ids.len()).saturating_add(self.slots.frames.len());
+        let assets =
+            self.style_ids.len().saturating_add(self.set_ids.len()).saturating_add(self.var_ids.len()).saturating_add(self.slots.frames.len());
         self.motion = motion::Plan::prepare(doc, &self.ids, assets, &mut self.budget);
         let resources = self.motion.resource_count();
         if !self.budget.nodes(
