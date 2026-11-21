@@ -20,7 +20,8 @@ pub(crate) fn area_averaged(src: &Pixmap, m: Transform, area: IntRect, clip: Rec
     let (sx, sy) = (f64::from(m.sx), f64::from(m.sy));
     let (tx, ty) = (f64::from(m.tx), f64::from(m.ty));
     let straight = m.kx.abs() < 1e-6 && m.ky.abs() < 1e-6;
-    if !straight || !(sx.abs() < 1.0 && sy.abs() < 1.0 && sx.abs() > 1e-6 && sy.abs() > 1e-6) || !tx.is_finite() || !ty.is_finite() {
+    let downscaled = sx.abs() < 1.0 && sy.abs() < 1.0 && sx.abs() > 1e-6 && sy.abs() > 1e-6;
+    if !(straight && downscaled && tx.is_finite() && ty.is_finite()) {
         return None;
     }
     let (sw, sh) = (src.width() as usize, src.height() as usize);
