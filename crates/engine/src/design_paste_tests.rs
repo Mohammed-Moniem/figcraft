@@ -56,6 +56,130 @@ fn oversized_design_data_is_refused_before_decoding() {
     assert!(s.clipboard.nodes.is_empty());
 }
 
+fn bound_clipboard() -> Vec<u8> {
+    let mut s = Session::new();
+    let frame = id(&s.execute("node.create", &json!({"type":"frame","name":"Token frame"})).unwrap());
+    s.execute("variable.createCollection", &json!({"name":"Theme","modes":["Light","Dark"]})).unwrap();
+    s.execute("variable.create", &json!({"name":"Surface","collection":"Theme","type":"color","values":{"Light":"#112233","Dark":"#ABCDEF"}}))
+        .unwrap();
+    s.execute(
+        "variable.create",
+        &json!({"name":"Panel","collection":"Theme","type":"color","values":{"Light":{"alias":"Surface"},"Dark":{"alias":"Surface"}}}),
+    )
+    .unwrap();
+    s.execute("variable.bind", &json!({"ids":[frame],"field":"fill","variable":"Panel"})).unwrap();
+    s.execute("variable.setMode", &json!({"ids":[frame],"collection":"Theme","mode":"Dark"})).unwrap();
+    let r = s.execute("file.export", &json!({"format": "fig"})).unwrap();
+    B64.decode(r["data"].as_str().unwrap()).unwrap()
+}
+
+/// Figma sometimes sends layers with their GUID bindings but without the variable and collection
+/// definitions. Remove those two asset kinds from an otherwise ordinary exported canvas.
+fn clipboard_without_definitions(fig: &[u8]) -> Vec<u8> {
+    use figcraft_format::fig::kiwi::{Kv, Schema, encode};
+    use std::io::{Read as _, Write as _};
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(fig)).unwrap();
+    let mut canvas = Vec::new();
+    zip.by_name("canvas.fig").unwrap().read_to_end(&mut canvas).unwrap();
+    let mut next = &canvas[12..];
+    let mut inflate = || {
+        let len = u32::from_le_bytes(next[..4].try_into().unwrap()) as usize;
+        let mut bytes = Vec::new();
+        flate2::read::DeflateDecoder::new(&next[4..4 + len]).read_to_end(&mut bytes).unwrap();
+        next = &next[4 + len..];
+        bytes
+    };
+    let schema_bytes = inflate();
+    let schema = Schema::decode(&schema_bytes).unwrap();
+    let message = schema.find("Message").unwrap();
+    let Kv::Object(mut fields) = schema.decode_message(message, &inflate()).unwrap() else { panic!("message object") };
+    let Kv::Array(changes) = &mut fields.iter_mut().find(|(key, _)| *key == "nodeChanges").unwrap().1 else { panic!("node changes") };
+    changes.retain(|n| !matches!(n.get("type").and_then(Kv::str), Some("VARIABLE" | "VARIABLE_SET")));
+    let message_bytes = encode::message(&schema, message, &Kv::Object(fields)).unwrap();
+    let mut result = canvas[..12].to_vec();
+    for chunk in [schema_bytes, message_bytes] {
+        let mut z = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        z.write_all(&chunk).unwrap();
+        let packed = z.finish().unwrap();
+        result.extend_from_slice(&(packed.len() as u32).to_le_bytes());
+        result.extend(packed);
+    }
+    result
+}
+
+#[test]
+fn design_paste_keeps_resolved_fills_when_the_clipboard_omits_variables() {
+    let full = bound_clipboard();
+    let partial = clipboard_without_definitions(&full);
+    let (decoded, _) = figcraft_format::fig::try_import(&partial, "Clipboard").unwrap().unwrap();
+    let original = decoded.nodes().find(|n| n.name == "Token frame").unwrap();
+    assert!(decoded.variables.variables.is_empty());
+    assert!(!original.fills.is_empty());
+    let mut s = Session::new();
+    let (complete, _) = figcraft_format::fig::try_import(&full, "Clipboard").unwrap().unwrap();
+    let with_definitions = complete.nodes().find(|n| n.name == "Token frame").unwrap();
+    assert!(!with_definitions.bound.is_empty() && !with_definitions.var_modes.is_empty());
+    s.doc_mut().unwrap().variables = complete.variables.clone();
+    for var in &mut s.doc_mut().unwrap().variables.variables {
+        var.name = format!("Unrelated {}", var.name);
+    }
+    let before = s.doc().unwrap().variables.clone();
+    let result = s.execute("edit.pasteDesignLayers", &json!({"html":clipboard_html(&partial)})).unwrap();
+    let layer = s.doc().unwrap().node(params::id_of(&result["ids"][0]).unwrap()).unwrap();
+    assert!(layer.bound.is_empty() && layer.var_modes.is_empty());
+    assert_eq!(layer.fills, original.fills);
+    assert_eq!(s.doc().unwrap().variables, before);
+    // Some clipboard snapshots have retained GUIDs even after the definitions disappeared.
+    // A repeated Paste must check the copied source, even when the target owns these GUIDs.
+    let copied = s.clipboard.nodes.iter_mut().flat_map(|(_, nodes)| nodes).find(|n| n.name == "Token frame").unwrap();
+    copied.bound.clone_from(&with_definitions.bound);
+    copied.var_modes.clone_from(&with_definitions.var_modes);
+    let again = s.execute("edit.paste", &json!({"parent":s.page().unwrap()})).unwrap();
+    let second = s.doc().unwrap().node(params::id_of(&again["ids"][0]).unwrap()).unwrap();
+    assert!(second.bound.is_empty() && second.var_modes.is_empty());
+    assert_eq!(second.fills, original.fills);
+}
+
+#[test]
+fn design_paste_imports_the_bound_variable_alias_and_mode_without_overwriting_destination_tokens() {
+    let full = bound_clipboard();
+    let (decoded, _) = figcraft_format::fig::try_import(&full, "Clipboard").unwrap().unwrap();
+    let original = decoded.nodes().find(|n| n.name == "Token frame").unwrap();
+    let mut s = Session::new();
+    s.doc_mut().unwrap().variables = decoded.variables.clone();
+    for var in &mut s.doc_mut().unwrap().variables.variables {
+        var.name = format!("Destination {}", var.name);
+    }
+    let before = s.doc().unwrap().variables.clone();
+    let pasted = s.execute("edit.pasteDesignLayers", &json!({"html":clipboard_html(&full)})).unwrap();
+    let doc = s.doc().unwrap();
+    let layer = doc.node(params::id_of(&pasted["ids"][0]).unwrap()).unwrap();
+    let binding = layer.bound.values().next().unwrap();
+    assert_ne!(binding, original.bound.values().next().unwrap());
+    let var = doc.variables.get_by_id(binding).unwrap();
+    assert_eq!(var.name, "Panel");
+    let chosen = &layer.var_modes[&var.collection];
+    let coll = doc.variables.collection_by_id(&var.collection).unwrap();
+    assert_eq!(coll.mode_by_id(chosen).unwrap().name, "Dark");
+    let refs = var.values[chosen].references();
+    assert_eq!(doc.variables.get_by_id(refs[0]).unwrap().name, "Surface");
+    assert_eq!(
+        doc.variables.resolve(binding, &layer.var_modes),
+        decoded.variables.resolve(original.bound.values().next().unwrap(), &original.var_modes)
+    );
+    assert_eq!(layer.fills, original.fills);
+    for old in &before.variables {
+        assert_eq!(doc.variables.get_by_id(&old.id), Some(old));
+    }
+    let imported = doc.variables.clone();
+    let page = s.page().unwrap();
+    s.execute("edit.paste", &json!({"parent":page})).unwrap();
+    assert_eq!(s.doc().unwrap().variables, imported, "repeated paste reuses token definitions");
+    s.undo().unwrap();
+    s.undo().unwrap();
+    assert_eq!(s.doc().unwrap().variables, before);
+}
+
 #[test]
 fn layers_paste_into_the_page_and_undo() {
     let mut s = Session::new();

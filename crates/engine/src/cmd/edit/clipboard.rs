@@ -3,6 +3,8 @@ use super::{
     ok, req_targets, roots, string, targets, vector_clipboard, z_sorted,
 };
 
+mod variables;
+
 /// The copied form of the selection.
 pub fn copy_to_clipboard(s: &mut Session, cmd: &str, ids: &[NodeId]) -> Result<()> {
     let ds = s.ds()?;
@@ -300,6 +302,7 @@ pub fn paste_into(s: &mut Session, parent: NodeId, at: Option<(f64, f64)>) -> Re
     let copy_local = s.ds()?.uid == clip.source_doc;
     let doc = s.doc_mut()?;
     let ImageImport { remap: image_remap, added } = plan_images("edit.paste", doc, &clip.images)?;
+    let design_variables = foreign.filter(|_| clip.source_doc == 0).map(|src| (variables::import(doc, src, &clip.nodes), &src.variables));
     doc.images.extend(added);
     // Sections go on the page (or in sections), never in the frame being pasted into.
     let page = doc.page_of(parent).unwrap_or(parent);
@@ -327,6 +330,9 @@ pub fn paste_into(s: &mut Session, parent: NodeId, at: Option<(f64, f64)>) -> Re
         let mut nodes = nodes.clone();
         for node in &mut nodes {
             remap_node_images(node, &image_remap);
+            if let Some((mapping, source)) = &design_variables {
+                variables::remap(node, source, mapping);
+            }
         }
         let section = nodes.first().is_some_and(|r| matches!(r.kind, NodeKind::Section { .. }));
         let into = if section && !doc.takes_sections(parent) { page } else { parent };
