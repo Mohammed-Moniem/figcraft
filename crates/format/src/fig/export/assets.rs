@@ -252,7 +252,7 @@ impl<'d> Exporter<'d> {
                     let td = TextData { style: style.as_text_style(), ..TextData::new("Ag") };
                     let fills = [Paint::solid(Color::BLACK)];
                     f.push(("fillPaints", self.paints(style.fills.as_deref().unwrap_or(&fills), true, &none)));
-                    self.text(&td, &fills, &mut f);
+                    self.text(&td, &fills, None, &mut f);
                 }
             }
             self.nodes.push(o(f));

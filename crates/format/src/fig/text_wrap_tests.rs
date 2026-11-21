@@ -63,6 +63,28 @@ fn texts<'d>(doc: &'d Document, name: &str) -> Vec<&'d TextData> {
     doc.nodes().filter(|n| n.name == name).filter_map(|n| n.kind.text()).collect()
 }
 
+fn reopen(doc: &Document) -> Document {
+    let (bytes, _) = super::export(doc, None).unwrap();
+    super::import(&bytes, "Synthetic wrap").unwrap().0
+}
+
+#[test]
+fn native_saves_keep_valid_wraps_and_drop_them_after_a_resize() {
+    let mut doc = import(vec![
+        label(10, "Wrapped", 2, "😀 ab cd\nef", "HEIGHT", &[0, 6, 9]),
+        label(11, "Unwrapped", 2, "Followers", "NONE", &[0]),
+        label(12, "Resized", 2, "ab cd", "HEIGHT", &[0, 3]),
+    ]);
+    let id = doc.nodes().find(|n| n.name == "Resized").unwrap().id;
+    doc.node_mut(id).unwrap().width = 180.0;
+    for _ in 0..2 {
+        doc = reopen(&doc);
+        assert_eq!(texts(&doc, "Wrapped")[0].saved_breaks_for(100.0), Some(&[5][..]));
+        assert_eq!(texts(&doc, "Unwrapped")[0].saved_breaks_for(100.0), Some(&[][..]));
+        assert!(texts(&doc, "Resized")[0].saved_breaks.is_none());
+    }
+}
+
 #[test]
 fn saved_line_starts_come_across_as_chars_without_hard_breaks() {
     // UTF-16: the emoji takes two units, so "c" is unit 6 but char 5; "e" follows a hard break.
@@ -99,4 +121,8 @@ fn a_saved_layout_for_other_text_is_left_out() {
     // The instance's text comes from its override, the saved layout only from the main.
     let inst = labels.iter().find(|t| t.characters == "Something much longer").unwrap();
     assert_eq!(inst.saved_breaks, None);
+    let doc = reopen(&doc);
+    let labels = texts(&doc, "Label");
+    assert_eq!(labels.iter().find(|t| t.characters == "Hi there").unwrap().saved_breaks_for(100.0), Some(&[3][..]));
+    assert!(labels.iter().find(|t| t.characters == "Something much longer").unwrap().saved_breaks.is_none());
 }

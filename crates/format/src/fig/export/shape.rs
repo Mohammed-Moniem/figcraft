@@ -8,7 +8,7 @@ use super::{
 impl<'d> Exporter<'d> {
     /// Text: its style, box settings, and characters with their styled runs. `fills`: the layer's
     /// (what runs without fills of their own show when the text's own style sets other fills).
-    pub(super) fn text(&mut self, td: &TextData, fills: &[Paint], f: &mut Fields) {
+    pub(super) fn text(&mut self, td: &TextData, fills: &[Paint], layer: Option<(f64, bool)>, f: &mut Fields) {
         let runs = td.runs.len().saturating_add(1);
         let comparisons = runs.checked_mul(runs);
         if comparisons.is_none_or(|work| !self.budget.reserve(0, work))
@@ -149,6 +149,14 @@ impl<'d> Exporter<'d> {
         };
         data.push(("lines", arr(lists.iter().enumerate().map(line).collect())));
         f.push(("textData", o(data)));
+        if let Some((width, nested)) = layer {
+            if let Some(baselines) = self.saved_baselines(td, width) {
+                f.push(("derivedTextData", o(vec![("baselines", arr(baselines))])));
+            } else if nested {
+                // Override comparison must be able to clear an inherited layout after a resize.
+                f.push(("derivedTextData", o(Vec::new())));
+            }
+        }
         if (0..td.paragraph_count()).any(|p| td.para_list(p).indent > 0) {
             self.warn("nested list levels were written as the first level");
         }
@@ -162,6 +170,37 @@ impl<'d> Exporter<'d> {
         if td.list_spacing != 0.0 || td.hanging_punctuation || td.hanging_list || td.leading_trim != Default::default() || !td.features.is_empty() {
             self.warn("list spacing, hanging punctuation, leading trim and OpenType features were left out");
         }
+    }
+
+    /// The imported layout stores soft breaks as character indices. Native baseline ranges
+    /// include hard breaks and count UTF-16 units. Derived glyph positions are optional.
+    fn saved_baselines(&mut self, td: &TextData, width: f64) -> Option<Vec<Kv<'static>>> {
+        let starts = td.saved_breaks_for(width)?;
+        if td.characters.is_empty() || td.char_count() > MAX_CHARS || td.characters.contains('\0') {
+            return None;
+        }
+        let is_break = |ch| matches!(ch, '\n' | '\u{2028}');
+        let capacity = starts.len().saturating_add(td.characters.chars().filter(|&ch| is_break(ch)).count()).saturating_add(1);
+        if !self.budget.items(capacity, 256, 5) {
+            return None;
+        }
+        let baseline = |first, end| o(vec![("firstCharacter", u(first)), ("endCharacter", u(end))]);
+        let mut baselines = Vec::with_capacity(capacity);
+        let mut soft = starts.iter().copied().peekable();
+        let mut units = 0;
+        let mut first = 0;
+        let mut hard_break = false;
+        for (i, ch) in td.characters.chars().enumerate() {
+            let soft_break = soft.next_if_eq(&i).is_some();
+            if hard_break || soft_break {
+                baselines.push(baseline(first, units));
+                first = units;
+            }
+            units += ch.len_utf16() as u32;
+            hard_break = is_break(ch);
+        }
+        baselines.push(baseline(first, units));
+        Some(baselines)
     }
 
     /// The editable network (with per-point corner radii, handle mirroring and end caps) and,
