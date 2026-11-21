@@ -35,7 +35,7 @@ fn compact_keys(node: &Value, outline: bool) {
 fn tool_schemas_describe_compact_inspection_options() {
     let mut c = Client::new();
     let tools = c.rpc("tools/list", json!({}));
-    for name in ["inspect_document", "get_node"] {
+    for name in ["inspect_document", "get_node", "create_node", "set_properties"] {
         let tool = tools["result"]["tools"].as_array().unwrap().iter().find(|t| t["name"] == name).unwrap();
         let props = &tool["inputSchema"]["properties"];
         assert_eq!(props["fields"]["type"], "array");
@@ -45,6 +45,40 @@ fn tool_schemas_describe_compact_inspection_options() {
         assert!(props["fields"]["description"].as_str().unwrap().contains("case-sensitive"));
         assert!(props["outline"]["description"].as_str().unwrap().contains("120"));
     }
+}
+
+#[test]
+fn mutations_return_the_same_projection_as_get_node() {
+    let mut c = Client::new();
+    let created = c.ok("create_node", json!({"type": "rectangle", "name": "Card", "fields": ["name", "visible"]}));
+    let id = &created["id"];
+    assert_eq!(created["node"], json!({"id": id, "name": "Card", "visible": true}));
+    let text = c.create(json!({"type": "text", "text": "x".repeat(140)}));
+    let edited = c.ok("set_properties", json!({"ids": [id, text], "props": {"visible": false}, "outline": true}));
+    for (i, target) in [id, &text].into_iter().enumerate() {
+        let outline = c.ok("get_node", json!({"id": target, "depth": 0, "outline": true}));
+        assert_eq!(edited["nodes"][i], outline);
+        assert_eq!(outline["visible"], false);
+    }
+    let selected = c.ok("set_properties", json!({"props": {"name": "Changed"}, "fields": []}));
+    assert_eq!(selected["nodes"], json!([{"id": text}]));
+}
+
+#[test]
+fn invalid_projection_fails_before_either_mutation() {
+    let mut c = Client::new();
+    let id = c.create(json!({"type": "rectangle", "name": "Original"}));
+    let before = c.doc();
+    for bad in [json!({"fields": ["missingField"]}), json!({"outline": true, "fields": []}), json!({"fields": "width"}), json!({"outline": 1})] {
+        let mut create = bad.clone();
+        create["type"] = json!("frame");
+        c.err("create_node", create);
+        let mut update = bad;
+        update["ids"] = json!([id]);
+        update["props"] = json!({"name": "Changed"});
+        c.err("set_properties", update);
+    }
+    assert_eq!(c.doc(), before);
 }
 
 #[test]
@@ -130,10 +164,14 @@ fn fields_and_outline_survive_every_depth_retry() {
 #[test]
 fn compact_children_keep_window_markers_and_page_in_order() {
     let mut c = Client::new();
-    let root = tree(|params| c.create(params));
+    let root = c.create(json!({"type": "frame"}));
+    // An ids-only response needs enough siblings to exceed the marker reserve even without indentation.
+    for _ in 0..128 {
+        c.create(json!({"type": "rectangle", "parent": root}));
+    }
     let full = c.ok("get_node", json!({"id": root, "depth": 1, "fields": []}));
     let expected = full["children"].as_array().unwrap();
-    let wire = serde_json::to_string(&serde_json::to_string_pretty(&full).unwrap()).unwrap().len();
+    let wire = serde_json::to_string(&serde_json::to_string(&full).unwrap()).unwrap().len();
     let limit = wire + 1024 - 1;
     assert!(limit > 2048, "room for both the envelope and the marker");
     let mut seen = Vec::new();
@@ -142,7 +180,7 @@ fn compact_children_keep_window_markers_and_page_in_order() {
     while let Some(at) = offset {
         let page = c.ok("get_node", json!({"id": root, "depth": 1, "fields": [], "offset": at, "maxBytes": limit}));
         assert!(page["truncated"]["children"].is_object(), "{page}");
-        let wire = serde_json::to_string(&serde_json::to_string_pretty(&page).unwrap()).unwrap().len();
+        let wire = serde_json::to_string(&serde_json::to_string(&page).unwrap()).unwrap().len();
         assert!(wire + 1024 <= limit, "page at {at} exceeds maxBytes: {wire} + envelope > {limit}");
         assert_eq!(page["truncated"]["children"]["from"], at);
         seen.extend(page["children"].as_array().unwrap().iter().cloned());

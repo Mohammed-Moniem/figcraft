@@ -399,11 +399,11 @@ a later step can use `{"$step": 0, "field": "ids/0"}` to target the first match.
 
 | Tool | What it does |
 |---|---|
-| `list_commands {filter?}` | Every command: id, label, menu, shortcut, undoable, params doc. |
+| `list_commands {filter?, detail?}` | Find commands by id, label or menu (case-insensitive substring). Each line includes the id, label, menu, shortcut and undoability. Set `detail: true` to include parameter docs or read `figcraft://command/{id}` for one command. |
 | `run_command {command, params}` | Run any command (e.g. `align.left`, `layout.add`, `component.create`, `instance.place` (drop an instance at a page point into the frame or auto layout slot under it), `component.exposeInstance` / `instance.exposed` (nested instance properties on instances), `component.makeSlot` / `instance.slotInsert` / `instance.resetSlot` (slots, below), `inspect.code` (CSS, HTML + CSS for a whole frame, React, Leptos, Vue, SwiftUI, Jetpack Compose, ArkUI or Flutter for a layer; components take their properties as parameters and instances are calls, see Dev Mode below), `inspect.properties` (layout, auto layout, typography, fills, strokes and effects with their style and variable names; `colorFormat`: hex, rgb, css, hsl or hsb), `inspect.assets` (layers under the selection with export settings, icons and images, each with its `kind`), `inspect.code` takes `unit: rem` and `rootFontSize` for CSS, HTML, React, Leptos and Vue, `style.create`, `variable.bind`, `variable.update` (rename, describe, scope), `variable.set` with `{alias}` or a colour calculation (`{alpha}`, `{mix}`), `variable.renameMode` / `variable.removeMode`, `variable.deleteCollection`, `proto.interaction.add`, `codeConnect.set` (components linked to real code, see Dev Mode below)). |
 | `batch {commands: [{command, params}], label?}` | Several commands as one undo step (`command.batch`), which keeps one copy of the document however many steps there are (an `edit.undo` step undoes the batch's edits so far together); all-or-nothing for open documents and their document state. Failed inner commands are removed from the journal; preferences, clipboard, tool state and UI requests are not rolled back. A step can use what an earlier step returned: name it with `"as": "card"` and `{"$ref": "card"}` anywhere in a later step's params becomes the `id` in its result (`{"$step": n}` does the same by zero-based position); `"field"` takes another key or a slash path such as `ids/0` (see Step references below). |
-| `create_node {type, x, y, width, height, parent, index, name, text, path, props}` | Create a frame, rectangle, ellipse, polygon, star, line, arrow, text, vector, section, component or slice; returns `{id, node}`. |
-| `set_properties {ids, props}` | `node.set` on layers (geometry, fills, strokes, effects, corner radius, auto layout, sizing, constraints, masks (`isMask`, `maskType: alpha\|vector\|luminance`), handoff status (`devStatus: none\|readyForDev\|completed`; marking again clears "Changed"), a section's `sectionContentsHidden`, text…); returns the updated layers. |
+| `create_node {type, x, y, width, height, parent, index, name, text, path, props, fields?, outline?}` | Create a frame, rectangle, ellipse, polygon, star, line, arrow, text, vector, section, component or slice; returns `{id, node}`. `fields` and `outline` select the returned node properties as for `get_node`. |
+| `set_properties {ids, props, fields?, outline?}` | `node.set` on layers (geometry, fills, strokes, effects, corner radius, auto layout, sizing, constraints, masks (`isMask`, `maskType: alpha\|vector\|luminance`), handoff status (`devStatus: none\|readyForDev\|completed`; marking again clears "Changed"), a section's `sectionContentsHidden`, text…); returns the updated layers with the requested fields or outline. Warnings are retained. |
 | `inspect_document {depth, allPages, fields?, outline?}` | The document as JSON (its `id`, layer tree, styles, selection, history); `fields` selects layer properties, `outline: true` gives a compact tree (below). The tools that act on a document also take `document` (see Naming the document below). |
 | `get_node {id, depth, fields?, outline?}` | One layer as JSON; takes the same `fields` and `outline` options; `pluginData` (`{key: value}`, values as strings) when the layer or page has layer data written with `set_properties {props: {pluginData}}`. |
 | `select {ids}` | Replace the selection (`[]` deselects). |
@@ -971,6 +971,7 @@ name and sets them this way);
 - **Update**: `library.updates` lists the components, styles, variable collections and variables
   with a newer published version; `library.acceptUpdates {ids? (library ids)}` pulls them in,
   keeping instance overrides; bound layers, aliases and explicit modes follow the updated values.
+- `edit.copy`, `edit.cut` and `edit.paste` over MCP use FigCraft's session clipboard in both headless and attached sessions. Use Copy or Paste in the desktop app to exchange content with the operating system. For supplied Figma clipboard HTML or base64 design data, `edit.pasteDesignLayers` accepts `html` or `data`. It retains resolved layer properties when the payload omits their variable definitions.
 - **Paste between files**: instances copied from another open file (`edit.copy` there, `edit.paste`
   here) follow their mains: library components join (or bring along) this file's copies of the
   same library, components the other file publishes as a library are used from it (and that
@@ -2121,7 +2122,7 @@ turned off 0°.
 Tool failures come back as results with `isError: true` and a message; protocol problems (unknown
 tool, malformed JSON, wrong parameter types) are JSON-RPC errors. Nothing crashes the server.
 A name a tool or command doesn't take (`run_command {args}` for `params`, a step key other than
-`command`, `params` and `as`, or a parameter its `list_commands` entry doesn't list, such as
+`command`, `params` and `as`, or a parameter its `list_commands` entry with `detail: true` doesn't list, such as
 `comment.list {filterr}`) is an error that lists the names it does take, never ignored; `ids` and
 `id` are taken by every command.
 

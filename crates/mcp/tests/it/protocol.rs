@@ -265,6 +265,16 @@ fn list_commands_filters() {
     let all = c.ok("list_commands", json!({}));
     let all = all.as_str().unwrap();
     assert!(all.lines().count() > 200);
+    let detailed = c.ok("list_commands", json!({"detail": true}));
+    let detailed = detailed.as_str().unwrap();
+    assert_eq!(all.lines().count(), detailed.lines().count());
+    assert!(all.len() < detailed.len() / 2);
+    let summary = c.ok("list_commands", json!({"filter": "PROTO.INTERACTION.ADD"}));
+    assert!(summary.as_str().unwrap().contains("proto.interaction.add") && !summary.as_str().unwrap().contains("triggerOutside"));
+    let full = c.ok("list_commands", json!({"filter": "proto.interaction.add", "detail": true}));
+    assert!(full.as_str().unwrap().contains("triggerOutside"));
+    assert!(c.ok("list_commands", json!({"filter": "triggerOutside"})).as_str().unwrap().contains("no command"));
+    assert!(c.err("list_commands", json!({"detail": "yes"})).contains("boolean"));
     let some = c.ok("list_commands", json!({"filter": "align"}));
     let some = some.as_str().unwrap();
     assert!(some.contains("align.left") && !some.contains("file.save"));
@@ -352,4 +362,22 @@ fn create_node_x_y_offset_a_vector_path_by_its_own_box_as_documented() {
     let x_doc = tool["inputSchema"]["properties"]["x"]["description"].as_str().unwrap();
     assert!(x_doc.contains("path") && x_doc.contains("x + 30"), "{x_doc}");
     assert!(tool["inputSchema"]["properties"]["path"]["description"].as_str().unwrap().contains("offset by its own box"));
+}
+
+/// Tool results and resources are compact JSON: indentation is whitespace the agent pays for in
+/// every result, more than half of a layer tree's text.
+#[test]
+fn json_results_are_sent_without_indentation() {
+    let mut c = Client::new();
+    let frame = c.create(json!({"type": "frame"}));
+    c.create(json!({"type": "rectangle", "parent": frame}));
+    let compact = |text: &str| serde_json::to_string(&serde_json::from_str::<Value>(text).expect("JSON")).unwrap();
+    for (tool, args) in [("inspect_document", json!({})), ("get_node", json!({"id": frame, "depth": 1}))] {
+        let r = c.call(tool, args);
+        let text = r["content"][0]["text"].as_str().expect("a text block");
+        assert_eq!(text, compact(text), "{tool} sends its JSON without indentation");
+    }
+    let r = c.rpc("resources/read", json!({"uri": "figcraft://document"}));
+    let text = r["result"]["contents"][0]["text"].as_str().expect("a text resource");
+    assert_eq!(text, compact(text), "resources send their JSON without indentation");
 }

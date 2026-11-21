@@ -19,8 +19,10 @@ impl ToolResult {
     pub fn text(t: impl Into<String>) -> Self {
         Self { content: vec![json!({"type": "text", "text": t.into()})], is_error: false }
     }
+    /// Compact JSON: indentation is whitespace the agent pays for in tokens on every result, and
+    /// a layer tree's indentation can be more than half of its text.
     pub fn json(v: &Value) -> Self {
-        Self::text(serde_json::to_string_pretty(v).unwrap_or_default())
+        Self::text(serde_json::to_string(v).unwrap_or_default())
     }
     pub fn error(t: impl Into<String>) -> Self {
         Self { content: vec![json!({"type": "text", "text": t.into()})], is_error: true }
@@ -152,16 +154,19 @@ fn tools() -> Vec<Value> {
         tool(
             "list_commands",
             "List commands",
-            "List FigCraft commands: id, label, menu path, shortcut, whether it is undoable, and a parameter description. Every menu item, panel action and shortcut is a command; run one with run_command (or several as one undo step with batch). Most commands act on `ids` when given, else on the selection. Use `filter` to narrow (e.g. \"align\", \"layout\", \"variable\", \"style\", \"component\", \"proto\").",
-            obj(json!({"filter": string("Case-insensitive substring matched against id, label, menu path and parameter docs")}), &[]),
+            "Find FigCraft commands by id, label or menu path. Each line gives the id, label, menu path, shortcut and undoability. Set detail to true for parameter docs, or read figcraft://command/{id} for a single command. Run a command with run_command or run several as one undo step with batch. Most commands act on `ids` when given, else on the selection.",
+            obj(
+                json!({"filter": string("Case-insensitive substring matched against id, label and menu path"), "detail": boolean("Include the matching commands' parameter docs (default false)")}),
+                &[],
+            ),
             true,
         ),
         tool(
             "run_command",
             "Run command",
-            "Execute one FigCraft command by id with JSON params (ids and params from list_commands). Mutating commands are one undo step each; a failing command leaves the document unchanged. Examples: {\"command\":\"align.left\",\"params\":{\"ids\":[3,4]}}, {\"command\":\"layout.add\",\"params\":{\"ids\":[2],\"direction\":\"vertical\"}}, {\"command\":\"style.create\",\"params\":{\"type\":\"paint\",\"name\":\"Brand/Primary\",\"from\":5}}. Returns the command's result (creation commands return {\"id\"}). Programmatic calls never open dialogs.",
+            "Execute one FigCraft command by id with JSON params (discover ids with list_commands and params with detail: true). Mutating commands are one undo step each; a failing command leaves the document unchanged. Examples: {\"command\":\"align.left\",\"params\":{\"ids\":[3,4]}}, {\"command\":\"layout.add\",\"params\":{\"ids\":[2],\"direction\":\"vertical\"}}, {\"command\":\"style.create\",\"params\":{\"type\":\"paint\",\"name\":\"Brand/Primary\",\"from\":5}}. Returns the command's result (creation commands return {\"id\"}). Programmatic calls never open dialogs.",
             obj(
-                json!({"command": string("Command id, e.g. node.create, align.left, component.create, file.export"), "params": {"type": "object", "description": "Command parameters (see list_commands)"}}),
+                json!({"command": string("Command id, e.g. node.create, align.left, component.create, file.export"), "params": {"type": "object", "description": "Command parameters (see list_commands with detail: true)"}}),
                 &["command"],
             ),
             false,
@@ -199,6 +204,8 @@ fn tools() -> Vec<Value> {
                     "points": {"type": "array", "items": {"type": "array", "items": {"type": "number"}}, "description": "For type vector, instead of path: the points [[x, y], ...]"},
                     "closed": boolean("For type vector: close the path"),
                     "select": boolean("Select the new layer (default true)"),
+                    "fields": fields_schema(),
+                    "outline": outline_schema(),
                     "props": {"type": "object", "description": "Any set_properties keys applied at creation, e.g. {\"fill\":\"#3366FF\",\"cornerRadius\":12,\"fontSize\":24,\"layout\":\"vertical\",\"gap\":8,\"padding\":16}"},
                 }),
                 &["type"],
@@ -208,9 +215,9 @@ fn tools() -> Vec<Value> {
         tool(
             "set_properties",
             "Set properties",
-            "Set properties on one or more layers as one undo step (engine `node.set`). Keys: name, visible, locked, opacity (0-1), blend, x, y (relative to the parent frame; groups don't count), width, height, rotation (degrees), fill (colour) / fills (array of paints: \"#hex\" or {\"type\":\"solid\",\"color\":\"#hex\"} or {\"type\":\"linearGradient\",\"stops\":[\"#hex\",\"#hex\"]} or stops [{\"position\":0..1,\"color\":\"#hex\"}], optional from/to handles in the unit box; radialGradient too), stroke / strokes, strokeWeight, strokeAlign (inside|center|outside), cornerRadius (n or [tl,tr,br,bl]), effects (array, e.g. {\"type\":\"dropShadow\",\"color\":\"#00000040\",\"offset\":[0,4],\"radius\":8}), clip, layout (null|horizontal|vertical|grid), gap, padding (n or [t,r,b,l]), mainAlign (min|center|max|spaceBetween|spaceAround|spaceEvenly), crossAlign, wrap, contentAlign (auto|spaceBetween: wrapped lines), sizingH / sizingV (fixed|hug|fill), constraints {horizontal, vertical}, characters, fontFamily, fontStyle, fontSize, lineHeight, letterSpacing, textAlign, textAutoResize. Auto layout keys (gap, padding, mainAlign, crossAlign, wrap, …) apply to frames, components and instances only: other layers among the ids are skipped and named in `warnings`, and with none that can take them the call is an error. A fontStyle draws in the family's nearest face; `warnings` says when that face has another weight or slant than the name asks for. Run list_commands with filter \"node.set\" for the full list. Unknown keys are an error. Returns the updated layers.",
+            "Set properties on one or more layers as one undo step (engine `node.set`). Keys: name, visible, locked, opacity (0-1), blend, x, y (relative to the parent frame; groups don't count), width, height, rotation (degrees), fill (colour) / fills (array of paints: \"#hex\" or {\"type\":\"solid\",\"color\":\"#hex\"} or {\"type\":\"linearGradient\",\"stops\":[\"#hex\",\"#hex\"]} or stops [{\"position\":0..1,\"color\":\"#hex\"}], optional from/to handles in the unit box; radialGradient too), stroke / strokes, strokeWeight, strokeAlign (inside|center|outside), cornerRadius (n or [tl,tr,br,bl]), effects (array, e.g. {\"type\":\"dropShadow\",\"color\":\"#00000040\",\"offset\":[0,4],\"radius\":8}), clip, layout (null|horizontal|vertical|grid), gap, padding (n or [t,r,b,l]), mainAlign (min|center|max|spaceBetween|spaceAround|spaceEvenly), crossAlign, wrap, contentAlign (auto|spaceBetween: wrapped lines), sizingH / sizingV (fixed|hug|fill), constraints {horizontal, vertical}, characters, fontFamily, fontStyle, fontSize, lineHeight, letterSpacing, textAlign, textAutoResize. Auto layout keys (gap, padding, mainAlign, crossAlign, wrap, …) apply to frames, components and instances only: other layers among the ids are skipped and named in `warnings`, and with none that can take them the call is an error. A fontStyle draws in the family's nearest face; `warnings` says when that face has another weight or slant than the name asks for. Run list_commands with filter \"node.set\" and detail: true for the full list. Unknown keys are an error. Returns the updated layers.",
             obj(
-                json!({"ids": ids_schema("Layer ids (default: the selection)"), "props": {"type": "object", "description": "Property values to set"}}),
+                json!({"ids": ids_schema("Layer ids (default: the selection)"), "props": {"type": "object", "description": "Property values to set"}, "fields": fields_schema(), "outline": outline_schema()}),
                 &["props"],
             ),
             false,
@@ -583,18 +590,22 @@ pub fn call_tool(b: &mut dyn Backend, name: &str, args: &Value) -> ToolResult {
 
 fn list_commands(b: &mut dyn Backend, a: &Map<String, Value>) -> Result<ToolResult, String> {
     let filter = s_arg(a, "filter")?.map(str::to_lowercase).unwrap_or_default();
+    let detail = match a.get("detail") {
+        None => false,
+        Some(Value::Bool(value)) => *value,
+        Some(_) => return Err("`detail` must be a boolean".into()),
+    };
     let all = b.call("engine.commands", json!({}))?;
-    let list: Vec<Value> = all
+    let list: Vec<&Value> = all
         .as_array()
         .map(|v| {
             v.iter()
                 .filter(|c| {
                     filter.is_empty()
-                        || ["id", "label", "menu", "params"]
+                        || ["id", "label", "menu"]
                             .iter()
                             .any(|k| c.get(*k).and_then(Value::as_str).is_some_and(|s| s.to_lowercase().contains(&filter)))
                 })
-                .cloned()
                 .collect()
         })
         .unwrap_or_default();
@@ -602,7 +613,12 @@ fn list_commands(b: &mut dyn Backend, a: &Map<String, Value>) -> Result<ToolResu
         return Ok(ToolResult::text(format!("no command matches `{filter}`")));
     }
     // One compact line per command keeps this readable for agents.
-    let mut out = format!("{} commands (id — label [menu] (shortcut) params; * = undoable):\n", list.len());
+    let legend = if detail {
+        "id — label [menu] (shortcut) params; * = undoable"
+    } else {
+        "id — label [menu] (shortcut); * = undoable; use detail: true for parameters"
+    };
+    let mut out = format!("{} commands ({legend}):\n", list.len());
     for c in &list {
         let g = |k: &str| c.get(k).and_then(Value::as_str).unwrap_or("");
         out.push_str(g("id"));
@@ -617,8 +633,10 @@ fn list_commands(b: &mut dyn Backend, a: &Map<String, Value>) -> Result<ToolResu
         if !g("shortcut").is_empty() {
             out.push_str(&format!(" ({})", g("shortcut")));
         }
-        out.push(' ');
-        out.push_str(g("params"));
+        if detail && !g("params").is_empty() {
+            out.push(' ');
+            out.push_str(g("params"));
+        }
         out.push('\n');
     }
     Ok(ToolResult::text(out))
@@ -685,9 +703,12 @@ fn create_node(b: &mut dyn Backend, a: &Map<String, Value>) -> Result<ToolResult
     if let Some(Value::Object(p)) = params.get_mut("props") {
         normalize_props(p);
     }
+    let mut inspection = inspection_options(a)?;
+    inspection["depth"] = json!(0);
     let r = exec(b, "node.create", Value::Object(params))?;
     let id = r.get("id").cloned().ok_or("node.create returned no id")?;
-    let node = b.call("node.get", json!({"id": id, "depth": 0}))?;
+    inspection["id"] = id.clone();
+    let node = b.call("node.get", inspection)?;
     Ok(ToolResult::json(&json!({"id": id, "node": node})))
 }
 
@@ -706,6 +727,8 @@ fn set_properties(b: &mut dyn Backend, a: &Map<String, Value>) -> Result<ToolRes
         }
         params["ids"] = json!(ids);
     }
+    let mut inspection = inspection_options(a)?;
+    inspection["depth"] = json!(0);
     let warnings = exec(b, "node.set", params)?.get("warnings").cloned();
     let ids = match ids {
         Some(i) => i,
@@ -716,7 +739,14 @@ fn set_properties(b: &mut dyn Backend, a: &Map<String, Value>) -> Result<ToolRes
             .map(|a| a.iter().filter_map(Value::as_u64).collect())
             .unwrap_or_default(),
     };
-    let nodes: Vec<Value> = ids.iter().take(20).filter_map(|i| b.call("node.get", json!({"id": i, "depth": 0})).ok()).collect();
+    let nodes: Vec<Value> = ids
+        .iter()
+        .take(20)
+        .filter_map(|id| {
+            inspection["id"] = json!(id);
+            b.call("node.get", inspection.clone()).ok()
+        })
+        .collect();
     let mut out = json!({"ok": true, "nodes": nodes});
     if let Some(w) = warnings {
         out["warnings"] = w;
@@ -758,14 +788,15 @@ fn budget(a: &Map<String, Value>) -> Result<(usize, usize), String> {
 }
 
 /// What a value's text block would take on the wire. It is sent as a text block, so it is measured
-/// pretty-printed *and* escaped -- escaping adds about a tenth.
+/// as [`ToolResult::json`] writes it *and* escaped -- escaping adds about a tenth.
 fn wire_size(value: &Value) -> usize {
-    let text = serde_json::to_string_pretty(value).unwrap_or_default();
+    let text = serde_json::to_string(value).unwrap_or_default();
     serde_json::to_string(&text).map_or(text.len(), |s| s.len())
 }
 
 /// The document at `depth`, and what its text block would take on the wire. The tree is sent as a
-/// text block, so it is measured pretty-printed *and* escaped -- escaping adds about a tenth.
+/// text block, so it is measured as [`ToolResult::json`] writes it *and* escaped -- escaping adds
+/// about a tenth.
 fn inspect_at(b: &mut dyn Backend, depth: u64, all: bool, options: &Value) -> Result<(Value, usize), String> {
     let mut params = options.clone();
     params["depth"] = json!(depth);

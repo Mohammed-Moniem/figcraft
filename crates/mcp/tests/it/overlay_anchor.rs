@@ -6,7 +6,7 @@ use serde_json::json;
 #[test]
 fn an_agent_anchors_a_dropdown_to_its_button() {
     let mut c = Client::new();
-    let listed = c.ok("list_commands", json!({"filter": "proto.interaction.add"}));
+    let listed = c.ok("list_commands", json!({"filter": "proto.interaction.add", "detail": true}));
     assert!(listed.as_str().unwrap().contains("triggerOutside"), "{listed}");
 
     let screen = c.create(json!({"type": "frame", "name": "Screen", "x": 0, "y": 0, "width": 400, "height": 800}));
