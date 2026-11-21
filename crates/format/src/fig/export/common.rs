@@ -304,7 +304,11 @@ pub(super) fn unsupported_decoration_look(st: &TextStyle) -> bool {
 }
 
 /// The text style fields of a layer or of an override table entry.
-pub(super) fn style_fields(st: &TextStyle, f: &mut Fields) {
+pub(super) fn native_face(face: &figcraft_doc::NativeFontName) -> Kv<'static> {
+    o(vec![("family", s(&face.family)), ("style", s(&face.style)), ("postscript", s(&face.postscript))])
+}
+
+pub(super) fn style_fields(st: &TextStyle, original: Option<&figcraft_doc::NativeFontName>, f: &mut Fields) {
     let line_height = match st.line_height {
         // Percent units count from the font's own line height (100 % is "auto"); a share of the
         // font size is a raw multiplier.
@@ -329,7 +333,12 @@ pub(super) fn style_fields(st: &TextStyle, f: &mut Fields) {
         TextDecoration::Strikethrough => "STRIKETHROUGH",
     };
     f.extend([
-        ("fontName", o(vec![("family", s(&st.font_family)), ("style", s(&face_style(&st.font_family, &st.font_style))), ("postscript", s(""))])),
+        (
+            "fontName",
+            original.map(native_face).unwrap_or_else(|| {
+                o(vec![("family", s(&st.font_family)), ("style", s(&face_style(&st.font_family, &st.font_style))), ("postscript", s(""))])
+            }),
+        ),
         ("fontSize", fl(st.font_size)),
         ("lineHeight", line_height),
         ("letterSpacing", letter_spacing),

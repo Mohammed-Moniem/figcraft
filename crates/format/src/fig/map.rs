@@ -53,7 +53,17 @@ const MAX_ASSET_PART: usize = 256;
 
 /// The REST API file JSON for message `msg`, with the warnings about what was skipped and the
 /// vector networks its layers name by `vectorNetworkRef` (for [`crate::rest::import_with_networks`]).
+#[cfg(test)]
 pub(super) fn to_rest(msg: &Kv, name: &str, max_nodes: usize) -> (Value, Vec<String>, Vec<Option<VectorNetwork>>) {
+    let (json, warnings, networks, _) = to_rest_with_layouts(msg, name, max_nodes);
+    (json, warnings, networks)
+}
+
+pub(super) fn to_rest_with_layouts(
+    msg: &Kv,
+    name: &str,
+    max_nodes: usize,
+) -> (Value, Vec<String>, Vec<Option<VectorNetwork>>, super::native_text::TextResources) {
     let mut m = Mapper::new(msg, max_nodes);
     let doc = m.document();
     // Large values are moved in, never passed through `json!`, which serialises its arguments:
@@ -87,7 +97,7 @@ pub(super) fn to_rest(msg: &Kv, name: &str, max_nodes: usize) -> (Value, Vec<Str
     if !styles.is_empty() {
         out["styleDefinitions"] = Value::Array(styles);
     }
-    (out, m.warnings.finish(), m.networks)
+    (out, m.warnings.finish(), m.networks, super::native_text::TextResources { layouts: m.native_text.layouts, faces: m.native_text.faces })
 }
 
 #[cfg(test)]
@@ -306,6 +316,7 @@ struct Mapper<'a> {
     nodes: BTreeMap<String, &'a Kv<'a>>,
     kids: BTreeMap<String, Vec<(&'a str, String)>>,
     blobs: Vec<&'a [u8]>,
+    native_blob_rows: &'a [Kv<'a>],
     /// Component property definitions: id → (REST name "Name#id", type).
     prop_defs: BTreeMap<String, (String, &'a str)>,
     /// The copies of a set's definitions each variant keeps (no name or type of their own; the
@@ -352,6 +363,7 @@ struct Mapper<'a> {
     region_paint_elements: usize,
     /// Optional descriptive import metadata only; never a scaling authority.
     scale_provenance_bytes: usize,
+    native_text: super::native_text::Reader,
 }
 
 impl<'a> Mapper<'a> {
@@ -412,6 +424,7 @@ impl<'a> Mapper<'a> {
             nodes,
             kids,
             blobs,
+            native_blob_rows: msg.get("blobs").map(Kv::list).unwrap_or_default(),
             prop_defs,
             prop_parents,
             assets,
@@ -433,6 +446,7 @@ impl<'a> Mapper<'a> {
             network_ids: HashMap::new(),
             region_paint_elements: 0,
             scale_provenance_bytes: 0,
+            native_text: Default::default(),
         }
     }
 

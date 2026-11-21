@@ -13,7 +13,7 @@ summarizes it; [`gaps.md`](gaps.md) is the ranked work list; the measured menu c
 
 ## Headline
 
-The estimates below predate the 21 November 2026 Figma Desktop checks. Figma played both flows in a synthetic two-page prototype. On a separate real design, direct comparison of Figma's PDF exports found differences on all 74 pages after a FigCraft round trip. Six loopback server checks passed for concurrent sessions, restart, permission revocation, comments, team discovery and library updates. The full workflow scores still need reassessment. [Native file comparison and procedure](file-format-parity.md#compare-a-native-round-trip-in-figma-desktop)
+The estimates below predate the 21 November 2026 Figma Desktop checks. Figma played both flows in a synthetic two-page prototype. On a real 74-artboard design, the native text fix reduced the difference between Figma's original and reopened PDFs from 3.20% to 0.296% of pixels and restored extractable text on all pages. Two independent macOS clients verified team library discovery, component placement, accepting an update and withdrawal. The full workflow scores still need reassessment. [Native file comparison and procedure](file-format-parity.md#compare-a-native-round-trip-in-figma-desktop)
 
 | Number | Value | Kind |
 |---|---|---|

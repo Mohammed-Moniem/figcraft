@@ -197,8 +197,15 @@ message GridTrackSizingFunction GridTrackSizingType type=1, float value=2
 message GridTrackSize GridTrackSizingFunction minSizing=1, GridTrackSizingFunction maxSizing=2
 message GUIDGridTrackSizeMapEntry GUID id=1, GridTrackSize trackSize=2
 message GUIDGridTrackSizeMap GUIDGridTrackSizeMapEntry[] entries=1
-message Baseline uint firstCharacter=5, uint endCharacter=6
-message DerivedTextData Baseline[] baselines=2
+message Baseline Vector position=1, float width=2, float lineY=3, float lineHeight=4, uint firstCharacter=5, uint endCharacter=6, float lineAscent=7, float ignoreLeadingTrim=8
+message Glyph uint commandsBlob=1, Vector position=2, uint styleID=3, float fontSize=4, uint firstCharacter=5, float advance=6, uint[] emojiCodePoints=7, EmojiImageSet emojiImageSet=8, float rotation=9
+enum FontStyle NORMAL=0 ITALIC=1
+message FontMetaData FontName key=1, float fontLineHeight=2, byte[] fontDigest=3, FontStyle fontStyle=4, int fontWeight=5
+enum Directionality LTR=0 RTL=1
+struct Rect float x, float y, float w, float h
+message Decoration Rect[] rects=1, uint styleID=2
+message DerivedTextLineData Directionality directionality=1
+message DerivedTextData Vector layoutSize=1, Baseline[] baselines=2, Glyph[] glyphs=3, Decoration[] decorations=4, FontMetaData[] fontMetaData=6, int truncationStartIndex=8, float truncatedHeight=9, float[] logicalIndexToCharacterOffsetMap=10, DerivedTextLineData[] derivedLines=12
 message NodeChange GUID guid=1, NodePhase phase=2, ParentIndex parentIndex=3, NodeType type=4, string name=5, bool visible=6, bool locked=7, float opacity=8, BlendMode blendMode=9, Vector size=11, Matrix transform=12, bool mask=16, MaskType maskType=317, float backgroundOpacity=19, bool backgroundEnabled=15, bool internalOnly=142, string description=318, StyleType styleType=163, string sortPosition=320, StyleId styleIdForFill=332, StyleId styleIdForStrokeFill=333, StyleId styleIdForText=334, StyleId styleIdForEffect=335, StyleId styleIdForGrid=336, VariableDataMap variableConsumptionMap=307, VariableModeBySetMap variableModeBySetMap=316, VariableSetMode[] variableSetModes=312, VariableSetID variableSetID=313, VariableResolvedDataType variableResolvedType=314, VariableDataValues variableDataValues=315, VariableScope[] variableScopes=353, DocumentColorProfile documentColorProfile=349, Paint[] fillPaints=38, Paint[] strokePaints=39, float strokeWeight=26, StrokeAlign strokeAlign=29, StrokeJoin strokeJoin=31, StrokeCap strokeCap=30, float[] dashPattern=13, float miterLimit=25, bool borderStrokeWeightsIndependent=299, float borderTopWeight=295, float borderRightWeight=298, float borderBottomWeight=296, float borderLeftWeight=297, Effect[] effects=43, float cornerRadius=20, float cornerSmoothing=160, bool rectangleCornerRadiiIndependent=149, float rectangleTopLeftCornerRadius=145, float rectangleTopRightCornerRadius=146, float rectangleBottomRightCornerRadius=148, float rectangleBottomLeftCornerRadius=147, ConstraintType horizontalConstraint=28, ConstraintType verticalConstraint=37, bool frameMaskDisabled=115, bool resizeToFit=117, bool isStateGroup=225, StateGroupPropertyValueOrder[] stateGroupPropertyValueOrders=238, bool sectionContentsHidden=283, Color backgroundColor=50, StackMode stackMode=105, float stackSpacing=107, float stackCounterSpacing=324, StackWrap stackWrap=323, StackCounterAlignContent stackCounterAlignContent=343, float stackHorizontalPadding=209, float stackVerticalPadding=210, float stackPaddingRight=233, float stackPaddingBottom=234, StackJustify stackPrimaryAlignItems=230, StackAlign stackCounterAlignItems=231, StackSize stackPrimarySizing=229, StackSize stackCounterSizing=221, bool bordersTakeSpace=294, bool stackReverseZIndex=271, float gridColumnGap=438, float gridRowGap=437, GUIDPositionMap gridColumns=436, GUIDPositionMap gridRows=435, GUIDGridTrackSizeMap gridColumnsSizing=474, GUIDGridTrackSizeMap gridRowsSizing=475, float stackChildPrimaryGrow=232, StackCounterAlign stackChildAlignSelf=236, StackPositioning stackPositioning=269, OptionalVector minSize=325, OptionalVector maxSize=326, GUID gridColumnAnchor=440, GUID gridRowAnchor=439, uint gridColumnSpan=442, uint gridRowSpan=441, LayoutGrid[] layoutGrids=47, ExportSettings[] exportSettings=45, TextData textData=42, FontName fontName=41, float fontSize=21, Number lineHeight=40, Number letterSpacing=165, TextCase textCase=34, TextDecoration textDecoration=35, TextAlignHorizontal textAlignHorizontal=32, TextAlignVertical textAlignVertical=33, TextAutoResize textAutoResize=46, TextTruncation textTruncation=280, int maxLines=351, float paragraphSpacing=23, float paragraphIndent=22, Hyperlink hyperlink=223, bool autoRename=14, bool fontVariantCommonLigatures=127, bool fontVariantContextualLigatures=128, string fontVersion=202, uint textUserLayoutVersion=203, uint textExplicitLayoutVersion=396, uint textBidiVersion=279, float textTracking=27, bool textDecorationSkipInk=412, EmojiImageSet emojiImageSet=391, uint styleID=49, Path[] fillGeometry=51, Path[] strokeGeometry=52, VectorData vectorData=48, VectorMirror handleMirroring=44, uint count=10, float starInnerScale=24, ArcData arcData=195, BooleanOperation booleanOperation=36, string symbolDescription=144, VariableWidthPoint[] variableWidthPoints=447, PluginData[] pluginData=204, SymbolData symbolData=113, NodeChange[] derivedSymbolData=125, GUID overriddenSymbolID=143, ComponentPropDef[] componentPropDefs=266, ComponentPropRef[] componentPropRefs=267, ComponentPropAssignment[] componentPropAssignments=268, VariantPropSpec[] variantPropSpecs=483, VariableDataMap parameterConsumptionMap=445, GUIDPath guidPath=111, PrototypeInteraction[] prototypeInteractions=226, PrototypeStartingPoint prototypeStartingPoint=249, ScrollDirection scrollDirection=159, ScrollBehavior scrollBehavior=186, OverlayPositionType overlayPositionType=198, OverlayBackgroundInteraction overlayBackgroundInteraction=200, OverlayBackgroundAppearance overlayBackgroundAppearance=201, int64 timelinePosition=506, KeyframeValueData keyframeValue=507, uint64 timelineDuration=512, EasingData easingData=535, BezierHandles motionPathBezierHandles=598, bool isSlotContent=495, DerivedTextData derivedTextData=359
 enum ExpressionFunction ADDITION=0 SUBTRACTION=1 RESOLVE_VARIANT=2 MULTIPLY=3 DIVIDE=4 EQUALS=5 NOT_EQUAL=6 LESS_THAN=7 LESS_THAN_OR_EQUAL=8 GREATER_THAN=9 GREATER_THAN_OR_EQUAL=10 AND=11 OR=12 NOT=13 VAR_MODE_LOOKUP=16 NEGATE=17 KEYFRAME=19
 message Expression ExpressionFunction expressionFunction=1, VariableData[] expressionArguments=2
@@ -275,7 +282,7 @@ pub(super) fn generation_with_test_budget(doc: &Document, id: NodeId, kind: &str
         match kind {
             "text" => {
                 if let NodeKind::Text(td) = &node.kind {
-                    x.text(td, &node.fills, Some((node.width, false)), &mut fields);
+                    x.text(td, &node.fills, Some((node.width, node.height, false)), &mut fields);
                 }
             }
             "paint" => fields.push(("fillPaints", x.paints(&node.fills, true, &Bound::default()))),
@@ -571,6 +578,9 @@ struct Overlay {
     background: Option<Color>,
 }
 
+/// Addresses and lengths of shared native outlines mapped to their retained bytes and output blob index.
+type GlyphBlobIndices = BTreeMap<(usize, usize), (Arc<[u8]>, u32)>;
+
 struct Exporter<'d> {
     doc: &'d Document,
     budget: budget::Budget,
@@ -582,6 +592,9 @@ struct Exporter<'d> {
     nodes: Vec<Kv<'static>>,
     /// Blob bytes → index (identical blobs are written once).
     blobs: BTreeMap<Vec<u8>, u32>,
+    /// Native text layouts share immutable outlines. Holding the Arc keeps its address stable
+    /// and avoids a full byte comparison each time an instance reuses the same outline.
+    glyph_blobs: GlyphBlobIndices,
     blob_bytes: u64,
     /// Image key → its hash (lowercase hex) once written, `None` when its bytes aren't there.
     images: BTreeMap<String, Option<String>>,
@@ -634,6 +647,7 @@ impl<'d> Exporter<'d> {
             slots: slots::Slots::default(),
             nodes: Vec::new(),
             blobs: BTreeMap::new(),
+            glyph_blobs: BTreeMap::new(),
             blob_bytes: 0,
             images: BTreeMap::new(),
             files: Vec::new(),

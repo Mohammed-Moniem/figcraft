@@ -1903,12 +1903,14 @@ dependencies = [
 name = "figcraft-doc"
 version = "0.16.0"
 dependencies = [
+ "base64 0.22.1",
  "figcraft-automation-json",
  "figcraft-color",
  "figcraft-geom",
  "imbl",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.21",
  "unicode-segmentation",
 ]

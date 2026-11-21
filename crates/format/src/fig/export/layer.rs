@@ -116,7 +116,7 @@ impl<'d> Exporter<'d> {
             NodeKind::Polygon { count } => f.push(("count", u(*count))),
             NodeKind::Star { count, inner_ratio } => f.extend([("count", u(*count)), ("starInnerScale", fl(*inner_ratio))]),
             NodeKind::Vector { network } => self.vector(n, network, f),
-            NodeKind::Text(td) => self.text(td, &n.fills, Some((n.width, nested)), f),
+            NodeKind::Text(td) => self.text(td, &n.fills, Some((n.width, n.height, nested)), f),
             NodeKind::BooleanOp { op } => {
                 let name = match op {
                     BoolOp::Union => "UNION",

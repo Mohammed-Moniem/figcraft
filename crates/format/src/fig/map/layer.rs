@@ -234,6 +234,9 @@ impl<'a> Mapper<'a> {
             self.component(&mut o, &view, &rest_id);
         }
         self.prop_refs(&mut o, &view, inst);
+        if ty == "TEXT" {
+            self.capture_native_text(&rest_id, &o, &view);
+        }
         let slot_content = if own == "FRAME" {
             prop_ref(&view, "SLOT_CONTENT_ID").and_then(|def| inst.and_then(|i| i.slot_contents.get(&self.prop_root(&def)).cloned()))
         } else {

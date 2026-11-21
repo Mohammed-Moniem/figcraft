@@ -199,11 +199,12 @@ pub(crate) fn import_with_native_motion(
     networks: Vec<Option<VectorNetwork>>,
     max_nodes: usize,
     motion: crate::fig::motion::NativeMotion,
+    text: crate::fig::native_text::TextResources,
 ) -> Result<(Document, Vec<String>), FormatError> {
-    if motion.is_empty() {
+    if motion.is_empty() && text.layouts.is_empty() && text.faces.is_empty() {
         return import_with_networks(v, images, networks, max_nodes);
     }
-    import_parts(v, None, images, networks, max_nodes, true, Some(motion))
+    import_parts(v, None, images, networks, max_nodes, true, Some((motion, text)))
 }
 
 /// [`import_with_networks`] for imports other than `.fig` (no `.fig` source identities): the
@@ -224,7 +225,7 @@ fn import_parts(
     networks: Vec<Option<VectorNetwork>>,
     max_nodes: usize,
     fig_sources: bool,
-    motion: Option<crate::fig::motion::NativeMotion>,
+    native: Option<(crate::fig::motion::NativeMotion, crate::fig::native_text::TextResources)>,
 ) -> Result<(Document, Vec<String>), FormatError> {
     let entries: Vec<&Value> = if is_document(v) { vec![v] } else { nodes_entries(v).collect() };
     if entries.is_empty() {
@@ -298,7 +299,21 @@ fn import_parts(
     cx.doc.current_page = cx.doc.first_page();
     cx.styles_take_bindings();
     cx.finish();
-    if let Some(motion) = motion {
+    if let Some((motion, resources)) = native {
+        for (key, face) in resources.faces {
+            if let Some(node) = cx.ids.get(&key).and_then(|&id| cx.doc.node_mut(id))
+                && let NodeKind::Text(text) = &mut node.kind
+            {
+                text.save_native_font_name(face);
+            }
+        }
+        for (key, layout) in resources.layouts {
+            if let Some(node) = cx.ids.get(&key).and_then(|&id| cx.doc.node_mut(id))
+                && let NodeKind::Text(text) = &mut node.kind
+            {
+                text.save_native_layout(layout, node.width, node.height);
+            }
+        }
         for warning in motion.apply(&mut cx.doc, &cx.ids) {
             cx.warn(warning);
         }

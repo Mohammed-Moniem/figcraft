@@ -457,10 +457,22 @@ pub struct StyleRun {
     pub style: TextStyle,
 }
 
+mod native;
+pub use native::{
+    NativeFontMeta, NativeFontName, NativeFontSource, NativeTextBaseline, NativeTextCache, NativeTextDecoration, NativeTextGlyph, NativeTextLayout,
+};
+pub(crate) use native::{read_native_text_nodes, write_native_text_nodes};
+
 /// Text node content.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct TextData {
+    /// Native Figma display geometry associated with the editable text and its exact layout box.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_cache: Option<std::sync::Arc<NativeTextCache>>,
+    /// Original node-level font identity, including the PostScript name known to its author.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_face: Option<std::sync::Arc<NativeFontSource>>,
     /// Portable display geometry. The editable characters/styles remain authoritative; the
     /// fingerprint prevents using outlines after their content or layout inputs changed.
     /// Immutable and shared so ordinary text edits and history do not copy glyph paths.
@@ -661,6 +673,8 @@ impl TextData {
             max_lines: 0,
             saved_breaks: None,
             appearance: None,
+            native_cache: None,
+            native_face: None,
             ..self.clone()
         };
         clear(&mut t.style);

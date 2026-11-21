@@ -37,14 +37,97 @@ fn leading_trim<'a>(v: &View<'a>) -> Option<&'a str> {
     })
 }
 
+// A document may restate a master's text inputs in an instance override. Verify equal
+// content without spending unbounded work comparing optional layout caches.
+fn equal_layout_input(a: &Kv, b: &Kv, work: &mut usize) -> bool {
+    if std::ptr::eq(a, b) {
+        return true;
+    }
+    let bytes = match (a, b) {
+        (Kv::Str(x), Kv::Str(y)) => x.len().max(y.len()),
+        (Kv::Bytes(x), Kv::Bytes(y)) => x.len().max(y.len()),
+        _ => 0,
+    };
+    let Some(left) = work.checked_sub(1 + bytes) else { return false };
+    *work = left;
+    match (a, b) {
+        (Kv::Object(x), Kv::Object(y)) => x.len() == y.len() && x.iter().zip(y).all(|((k, a), (j, b))| k == j && equal_layout_input(a, b, work)),
+        (Kv::Array(x), Kv::Array(y)) => x.len() == y.len() && x.iter().zip(y).all(|(a, b)| equal_layout_input(a, b, work)),
+        (Kv::Object(_) | Kv::Array(_), _) | (_, Kv::Object(_) | Kv::Array(_)) => false,
+        _ => a == b,
+    }
+}
+
+/// Glyphs and wrap positions belong to the text, style and dimensions at their defining row.
+fn saved_layout_matches(v: &View) -> bool {
+    let Some(row) = v.layers.iter().rposition(|r| r.get("derivedTextData").is_some()) else { return false };
+    const INPUTS: &[&str] = &[
+        "textData",
+        "size",
+        "fontSize",
+        "fontName",
+        "fontVariations",
+        "toggledOnOTFeatures",
+        "toggledOffOTFeatures",
+        "styleIdForText",
+        "inheritTextStyleID",
+        "letterSpacing",
+        "lineHeight",
+        "textAlignHorizontal",
+        "textAlignVertical",
+        "textAutoResize",
+        "textTruncation",
+        "maxLines",
+        "paragraphIndent",
+        "paragraphSpacing",
+        "textCase",
+        "textDirectionality",
+        "textDecoration",
+        "textDecorationSkipInk",
+        "hangingPunctuation",
+        "hangingList",
+        "textTracking",
+        "leadingTrim",
+        "listSpacing",
+        "textExplicitLayoutVersion",
+        "textUserLayoutVersion",
+        "textBidiVersion",
+        "textParagraphDirection",
+        "fontVariantCommonLigatures",
+        "fontVariantContextualLigatures",
+        "fontVersion",
+    ];
+    let layers = v.layers.iter().zip(&v.scales);
+    let mut work = 4096;
+    for key in INPUTS {
+        let top = layers.clone().skip(row + 1).rev().find_map(|(layer, k)| Some((layer.get(key)?, *k)));
+        let Some((value, scale)) = top else { continue };
+        let donor = layers.clone().take(row + 1).rev().find_map(|(layer, k)| Some((layer.get(key)?, *k)));
+        let Some((original, original_scale)) = donor else { return false };
+        if *key == "size" {
+            let (Some((w, h)), Some((ow, oh))) = (super::size(value), super::size(original)) else { return false };
+            if w * scale != ow * original_scale || h * scale != oh * original_scale {
+                return false;
+            }
+        } else if scale != original_scale || !equal_layout_input(value, original, &mut work) {
+            return false;
+        }
+    }
+    if let Some((fitted, _)) = v.fitted {
+        let recorded = v.find("size").and_then(|(size, k)| super::size(size).map(|(w, h)| (w * k, h * k)));
+        if recorded.is_none_or(|(w, h)| (w - fitted.0).abs() > 1e-6 || (h - fitted.1).abs() > 1e-6) {
+            return false;
+        }
+    }
+    true
+}
+
 /// The chars that start a wrapped line in the layout the file saved with the text
 /// (`derivedTextData`'s `baselines`, each line's `firstCharacter` in UTF-16 units), when that layout
 /// is for these characters; lines after a hard break are left out (empty: it wraps nowhere). None
 /// when the saved layout is missing, for other text or inconsistent.
 fn saved_line_starts(v: &View, chars: &str) -> Option<Vec<usize>> {
-    // Derived data from below the layer that set the characters was laid out for other text.
-    let top = |k: &str| v.layers.iter().rposition(|l| l.get(k).is_some());
-    if top("derivedTextData")? < top("textData")? {
+    if !saved_layout_matches(v) {
         return None;
     }
     let baselines = v.get("derivedTextData")?.get("baselines")?.list();
@@ -75,6 +158,39 @@ fn saved_line_starts(v: &View, chars: &str) -> Option<Vec<usize>> {
 }
 
 impl<'a> Mapper<'a> {
+    pub(super) fn capture_native_text(&mut self, id: &str, out: &Obj, view: &View<'a>) {
+        // Read the original node-level face separately from glyphs. Text can have an exact
+        // PostScript name even when its layout is not cached, absent, or stale.
+        if let Some(name) = view.get("fontName")
+            && let Err(warning) = self.native_text.capture_face(id, name)
+        {
+            self.warn(warning);
+        }
+        if !saved_layout_matches(view) {
+            return;
+        }
+        let Some(text) = view.get("textData") else { return };
+        let Some(chars) = out.get("characters").and_then(Value::as_str).filter(|&s| Some(s) == text.get("characters").and_then(Kv::str)) else {
+            return;
+        };
+        let Some((data, scale)) = view.find("derivedTextData") else { return };
+        let version_number = |key| match view.get(key) {
+            Some(Kv::Uint(i)) => u32::try_from(*i).ok(),
+            _ => None,
+        };
+        let version = crate::fig::native_text::TextVersion {
+            user: version_number("textUserLayoutVersion"),
+            explicit: version_number("textExplicitLayoutVersion"),
+            tracking_bits: match view.get("textTracking") {
+                Some(Kv::Float(n)) if n.is_finite() => Some(n.to_bits()),
+                _ => None,
+            },
+        };
+        if let Err(message) = self.native_text.capture(id, chars, text, data, scale, self.native_blob_rows, version) {
+            self.warn(message);
+        }
+    }
+
     pub(super) fn text(&mut self, o: &mut Obj, v: &View<'a>) {
         let (key, legacy) = ("styleIdForText", "inheritTextStyleID");
         let style_node = self.style_link(v, key, legacy).and_then(|s| self.nodes.get(&s).copied());

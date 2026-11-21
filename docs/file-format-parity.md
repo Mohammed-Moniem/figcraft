@@ -10,7 +10,17 @@ python3 xtask/compare_figma_exports.py original.pdf reopened.pdf > comparison.js
 
 The report pairs pages in PDF order, checks raster dimensions, counts pixels differing in any RGB channel at 72 dpi, and compares extracted text after normalizing whitespace. A page reorder counts as a difference. Exit status 0 means every page has matching dimensions, pixels and extracted text. Exit status 1 means the comparison completed with differences. Exit status 2 means the comparison could not run. Review layer editability and interaction behavior separately in the editor and player.
 
-On 21 November 2026, Figma Desktop opened a private real design exported by FigCraft. Its two sRGB, medium-quality PDFs had 74 pages and matching raster dimensions in all 74 pairs. Across 112,049,280 pixels, 3,586,865 differed (3.20%). All 74 pairs differed. Figma flagged a missing font in the reopened file. The original PDF contained selectable text and the reopened PDF yielded none on text extraction. Inspecting the two native design files found 41,120 cached glyph entries in the original and zero in the export. The effect of restoring those glyphs on the pixel difference still needs measurement.
+On 21 November 2026, Figma Desktop imported two revisions of a real 74-artboard design exported by FigCraft. Figma exported the original and the reopened designs to PDF at sRGB and Medium quality. Each comparison covered 112,049,280 pixels at 72 dpi.
+
+| Figma PDF comparison | Earlier CLI export | CLI export preserving native glyph layouts |
+|---|---:|---:|
+| Artboards with matching dimensions | 74/74 | 74/74 |
+| Pixels differing from the original | 3,586,865 (3.20%) | 331,415 (0.296%) |
+| Pixel-identical artboards | 0/74 | 16/74 |
+| Artboards with extractable text | 0/74 | 74/74 |
+| Artboards with identical normalized text and reading order | 0/74 | 37/74 |
+
+The original native file stored 41,120 raw glyph placements, including internal style previews. FigCraft preserved all 45,387 placements on the retained page hierarchy after expanding instances. It preserved genuine PostScript names on editable layers. Figma still reported a missing font on this machine. The PDF comparison measures the saved appearance and text extraction on this design. Other fonts, artboards and effects need their own reference comparisons.
 
 A separate two-page synthetic prototype opened in Figma Desktop. Playing each named flow and clicking its starting frame reached its intended finish frame. The Welcome starting frame also showed separate conditional, variable assignment and variable mode interactions in Figma's inspector.
 

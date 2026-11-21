@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use figcraft_doc::{Document, Node, NodeKind};
+use figcraft_doc::{Document, Node, NodeKind, TextData};
 use serde::Serialize;
 use serde::ser::{self, SerializeMap, SerializeSeq, SerializeStruct};
 
@@ -171,14 +171,29 @@ impl Budget {
         }
     }
     pub fn source<T: Serialize + ?Sized>(&mut self, value: &T) -> bool {
-        self.source_copies(value, 8)
+        self.source_copies(value, 8, false)
     }
-    fn source_copies<T: Serialize + ?Sized>(&mut self, value: &T, copies: usize) -> bool {
+    pub fn text_source(&mut self, text: &TextData) -> bool {
+        self.cached_text_source(text, text, 8)
+    }
+    fn cached_text_source<T: Serialize + ?Sized>(&mut self, value: &T, text: &TextData, copies: usize) -> bool {
+        let cache = text.native_cache.as_deref();
+        if cache.is_some_and(|c| !self.items(c.placement_count(), 0, 1)) {
+            return false;
+        }
+        self.source_copies(value, copies, cache.is_some())
+    }
+    fn source_copies<T: Serialize + ?Sized>(&mut self, value: &T, copies: usize, native_layout_counted: bool) -> bool {
         if self.failed() {
             return false;
         }
-        let mut census =
-            Census { bytes: 0, work: 0, byte_limit: self.limits.bytes.saturating_sub(self.bytes) / copies, work_limit: self.remaining_work() };
+        let mut census = Census {
+            bytes: 0,
+            work: 0,
+            byte_limit: self.limits.bytes.saturating_sub(self.bytes) / copies,
+            work_limit: self.remaining_work(),
+            native_layout_counted,
+        };
         if value.serialize(Counter { census: &mut census, depth: 0 }).is_err() {
             self.fail("source value/byte/depth budget exceeded before generation");
             return false;
@@ -191,7 +206,8 @@ impl Budget {
         if self.failed() || times == 0 {
             return !self.failed();
         }
-        let mut census = Census { bytes: 0, work: 0, byte_limit: self.limits.bytes, work_limit: self.remaining_work() / times };
+        let mut census =
+            Census { bytes: 0, work: 0, byte_limit: self.limits.bytes, work_limit: self.remaining_work() / times, native_layout_counted: false };
         if value.serialize(Counter { census: &mut census, depth: 0 }).is_err() {
             self.fail("source comparison work budget exceeded before generation");
             return false;
@@ -416,7 +432,10 @@ impl Budget {
             self.fail("source geometry complexity budget exceeded before construction");
             return false;
         }
-        self.source_copies(node, copies)
+        match node.kind.text() {
+            Some(text) => self.cached_text_source(node, text, copies),
+            None => self.source_copies(node, copies, false),
+        }
     }
     pub fn path_source(&mut self, node: &Node) -> bool {
         // The unsmoothed, square-corner box has exactly five path elements at any size.
@@ -468,6 +487,7 @@ impl ser::Error for CountError {
 }
 
 struct Census {
+    native_layout_counted: bool,
     bytes: usize,
     work: usize,
     byte_limit: usize,
@@ -485,6 +505,7 @@ struct Counter<'a> {
     depth: usize,
 }
 struct Compound<'a> {
+    native_cache: bool,
     census: &'a mut Census,
     depth: usize,
 }
@@ -500,7 +521,7 @@ impl<'a> Counter<'a> {
             return Err(CountError);
         }
         self.census.add(8, 1)?;
-        Ok(Compound { census: self.census, depth: self.depth + 1 })
+        Ok(Compound { census: self.census, depth: self.depth + 1, native_cache: false })
     }
 }
 impl Compound<'_> {
@@ -593,8 +614,10 @@ impl<'a> ser::Serializer for Counter<'a> {
     fn serialize_map(self, len: Option<usize>) -> Result<Self::SerializeMap, CountError> {
         self.compound(len)
     }
-    fn serialize_struct(self, _: &'static str, len: usize) -> Result<Self::SerializeStruct, CountError> {
-        self.compound(Some(len))
+    fn serialize_struct(self, name: &'static str, len: usize) -> Result<Self::SerializeStruct, CountError> {
+        let mut compound = self.compound(Some(len))?;
+        compound.native_cache = compound.census.native_layout_counted && name == "NativeTextCache";
+        Ok(compound)
     }
     fn serialize_struct_variant(self, _: &'static str, _: u32, _: &'static str, len: usize) -> Result<Self::SerializeStructVariant, CountError> {
         self.compound(Some(len))
@@ -658,6 +681,11 @@ impl SerializeStruct for Compound<'_> {
     type Error = CountError;
     fn serialize_field<T: Serialize + ?Sized>(&mut self, key: &'static str, value: &T) -> Result<(), CountError> {
         self.census.add(key.len(), 1)?;
+        // Node copies share this immutable Arc. Native text emission accounts separately for
+        // each placement, its wire fields and the actual globally deduplicated outline bytes.
+        if self.native_cache && key == "layout" {
+            return Ok(());
+        }
         self.value(value)
     }
     fn end(self) -> Result<(), CountError> {

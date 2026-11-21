@@ -40,6 +40,8 @@ fn fingerprint(t: &TextData, w: Option<f64>, h: Option<f64>) -> Option<String> {
     // The immutable appearance is shared: cloning editable inputs never copies glyph paths.
     let mut source = t.clone();
     source.appearance = None;
+    source.native_cache = None;
+    source.native_face = None;
     source.style.style_id = None;
     source.style.link = None;
     for run in &mut source.runs {

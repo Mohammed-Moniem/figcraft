@@ -293,9 +293,11 @@ impl<'d> Exporter<'d> {
         });
         // What follows from the overrides goes with the derived data: a layer's size, place and
         // outline (a vector's network is the main's, drawn at the layer's size), the colours its
-        // variables give here, and what the scale factor makes of the main's values.
+        // variables give here, and what the scale factor makes of the main's values. Glyph
+        // layout belongs with the computed size. Putting it in a lower-ranked property
+        // override makes the higher size record invalidate perfectly current text geometry.
         let follows = |k: &str, v: &Kv<'static>, theirs: &Fields| {
-            ["size", "transform", "fillGeometry", "strokeGeometry", "vectorData"].contains(&k)
+            ["size", "transform", "fillGeometry", "strokeGeometry", "vectorData", "derivedTextData"].contains(&k)
                 || resolved_alike(k, v, theirs)
                 || factor.is_some_and(|x| field(theirs, k).is_some_and(|t| scaled(v, &t, x, 0.0)))
         };

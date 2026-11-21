@@ -5,21 +5,24 @@ use super::{
     join_name, network, o, path_blob, s, u, xy,
 };
 
+mod native_layout;
+
 impl<'d> Exporter<'d> {
     /// Text: its style, box settings, and characters with their styled runs. `fills`: the layer's
     /// (what runs without fills of their own show when the text's own style sets other fills).
-    pub(super) fn text(&mut self, td: &TextData, fills: &[Paint], layer: Option<(f64, bool)>, f: &mut Fields) {
+    pub(super) fn text(&mut self, td: &TextData, fills: &[Paint], layer: Option<(f64, f64, bool)>, f: &mut Fields) {
         let runs = td.runs.len().saturating_add(1);
         let comparisons = runs.checked_mul(runs);
         if comparisons.is_none_or(|work| !self.budget.reserve(0, work))
-            || !self.budget.comparisons(td, runs)
-            || !self.budget.source(td)
+            || !self.budget.comparisons(&(&td.style, &td.runs), runs)
+            || !self.budget.text_source(td)
             || !self.budget.items(td.characters.len().min(MAX_CHARS.saturating_mul(4)), 64, 2)
             || !self.budget.items(td.paragraph_count(), 512, 16)
         {
             return;
         }
-        style_fields(&td.style, f);
+        let original_face = td.native_font_name();
+        style_fields(&td.style, original_face, f);
         let (ha, va) = (
             match td.align_h {
                 TextAlignH::Left => "LEFT",
@@ -93,6 +96,16 @@ impl<'d> Exporter<'d> {
             let id = span_ids.get(span).copied().unwrap_or(0);
             ids.extend((0..ch.len_utf16()).map(|_| u(id)));
         }
+        // Saved glyphs use the original UTF-16 text. Truncation or removing a NUL changes their offsets.
+        let native = layer.filter(|_| chars.len() == td.characters.len()).and_then(|(w, h, _)| td.native_layout(w, h));
+        let cached = native.and_then(|layout| self.native_text_layout(layout, &ids));
+        if let Some(layout) = native.filter(|_| cached.is_some()) {
+            // These versions and tracking belong to the engine which shaped the saved glyphs.
+            f.retain(|(field, _)| !matches!(*field, "textUserLayoutVersion" | "textExplicitLayoutVersion" | "textTracking"));
+            f.extend(layout.user_layout_version.map(|v| ("textUserLayoutVersion", u(v))));
+            f.extend(layout.explicit_layout_version.map(|v| ("textExplicitLayoutVersion", u(v))));
+            f.extend(layout.text_tracking.map(|v| ("textTracking", Kv::Float(v))));
+        }
         let mut data: Fields = vec![("characters", Kv::Str(chars))];
         if !table.is_empty() {
             let entries = table
@@ -100,7 +113,10 @@ impl<'d> Exporter<'d> {
                 .zip(1u32..)
                 .map(|(st, id)| {
                     let mut ef: Fields = vec![("styleID", u(id))];
-                    style_fields(st, &mut ef);
+                    let face = original_face.filter(|_| {
+                        st.font_family == td.style.font_family && st.font_style == td.style.font_style && st.variations == td.style.variations
+                    });
+                    style_fields(st, face, &mut ef);
                     // An empty link clears the text's own (a missing one would inherit it).
                     if st.link.is_none() && td.style.link.is_some() {
                         ef.push(("hyperlink", o(vec![("url", s(""))])));
@@ -149,10 +165,12 @@ impl<'d> Exporter<'d> {
         };
         data.push(("lines", arr(lists.iter().enumerate().map(line).collect())));
         f.push(("textData", o(data)));
-        if let Some((width, nested)) = layer {
-            if let Some(baselines) = self.saved_baselines(td, width) {
+        if let Some((width, _, nested)) = layer {
+            if let Some(layout) = cached {
+                f.push(("derivedTextData", layout));
+            } else if let Some(baselines) = self.saved_baselines(td, width) {
                 f.push(("derivedTextData", o(vec![("baselines", arr(baselines))])));
-            } else if nested {
+            } else if nested && td.saved_breaks.is_some() {
                 // Override comparison must be able to clear an inherited layout after a resize.
                 f.push(("derivedTextData", o(Vec::new())));
             }

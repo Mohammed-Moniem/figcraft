@@ -200,6 +200,7 @@ pub struct Document {
     pub kind: FileKind,
     /// Page ids in order.
     pub pages: Vec<NodeId>,
+    #[serde(serialize_with = "text::write_native_text_nodes", deserialize_with = "text::read_native_text_nodes")]
     nodes: imbl::OrdMap<NodeId, Arc<Node>>,
     /// Nodes touched since the last [`take_dirty`](Self::take_dirty) (edited, added or removed).
     #[serde(skip)]
