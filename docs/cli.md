@@ -114,7 +114,7 @@ page 1 "Screens": 380 nodes, 4 top-level
 
 ### `export <file> -o <out> [--format png|jpg|svg|webp|pdf|xml|fig|penpot] [--scale N] [--page NAME] [--node ID|NAME] [--bleed LENGTH] [--crop-marks] [--bleed-marks] [--cmyk] [--vd-compat bestEffort|exact|ignore] [--quality 1..100] [--color-profile sameAsFile|srgb|displayP3]`
 
-- `<out>` is a directory: one file per top-level frame of the page (default the first page), named
+- A directory export writes one file per top-level frame of the page (default the first non-divider page), named
   after the frame (`Home.png`, `Settings.png`…); with no frames, one file per top-level layer.
   The name is kept as it is, except for the characters file systems refuse (`/ \ : * ? " < > |`
   and control characters), which become `_`, and leading or trailing spaces and dots, which are
@@ -188,7 +188,7 @@ frames, one page each), `.fig` (the whole file, experimental, as `export --forma
 
 ### `render <file> -o <out.png> [--scale N] [--page NAME] [--quality 1..100] [--color-profile sameAsFile|srgb|displayP3]`
 
-The whole page (default the first) with its background, as png, jpg or webp. Large pages are scaled
+The whole page (default the first non-divider page) with its background, as png, jpg or webp. Large pages are scaled
 down to fit 16384 px. JPEG quality and pixel output profiles use the same rules as `export`
 above, including defaults of 90 and `sameAsFile`. For example:
 

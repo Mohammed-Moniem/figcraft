@@ -98,7 +98,7 @@ pub struct ExportArgs {
     pub raster: RasterOptions,
     #[command(flatten)]
     pub scale: ScaleArg,
-    /// The page to export (default the first)
+    /// The page to export (default the first non-divider page)
     #[arg(long, value_name = "NAME")]
     pub page: Option<String>,
     /// The layer to export, by id (12 or 0:12) or name
@@ -186,7 +186,7 @@ pub struct RenderArgs {
     pub out: String,
     #[command(flatten)]
     pub scale: ScaleArg,
-    /// The page to render (default the first)
+    /// The page to render (default the first non-divider page)
     #[arg(long, value_name = "NAME")]
     pub page: Option<String>,
     #[command(flatten)]
@@ -387,7 +387,7 @@ enum ValueError {
 }
 
 fn scale(s: &str) -> Result<f64, ValueError> {
-    s.trim_end_matches('x').parse::<f64>().ok().filter(|v| v.is_finite() && *v > 0.0 && *v <= 64.0).ok_or(ValueError::Scale)
+    s.strip_suffix('x').unwrap_or(s).parse::<f64>().ok().filter(|v| v.is_finite() && *v > 0.0 && *v <= 64.0).ok_or(ValueError::Scale)
 }
 
 fn bleed(s: &str) -> Result<f64, ValueError> {
@@ -615,6 +615,13 @@ mod tests {
     }
 
     #[test]
+    fn scale_accepts_numbers_and_one_optional_suffix() {
+        for (value, want) in [("0.5", 0.5), ("0.5x", 0.5), ("2", 2.0), ("2x", 2.0), ("64", 64.0), ("64x", 64.0)] {
+            assert_eq!(super::scale(value).ok(), Some(want), "{value}");
+        }
+    }
+
+    #[test]
     fn bad_arguments_are_usage_errors() {
         use ErrorKind::{
             ArgumentConflict, DisplayHelpOnMissingArgumentOrSubcommand, InvalidSubcommand, InvalidValue, MissingRequiredArgument, TooManyValues,
@@ -632,6 +639,8 @@ mod tests {
             (&["export", "a", "-o", "b", "--scale", "0"], ValueValidation),
             (&["export", "a", "-o", "b", "--scale", "-3"], ValueValidation),
             (&["export", "a", "-o", "b", "--scale", "65"], ValueValidation),
+            (&["export", "a", "-o", "b", "--scale", "2xx"], ValueValidation),
+            (&["render", "a", "-o", "b", "--scale", "2xxx"], ValueValidation),
             (&["export", "a", "-o", "b", "--bleed", "lots"], ValueValidation),
             (&["export", "a", "-o", "b", "--bleed", "3in"], ValueValidation),
             (&["export", "a", "-o", "b", "--vd-compat", "sloppy"], ValueValidation),
