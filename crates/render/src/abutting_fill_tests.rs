@@ -255,6 +255,7 @@ fn skip_solo_and_outline_keep_their_selection_semantics() {
         magnified_image_pixels: false,
         under: None,
         time: 0.0,
+        casting: false,
         bounds: &bounds,
         page_at: (v.origin.0 * v.scale, v.origin.1 * v.scale),
         cache: None,

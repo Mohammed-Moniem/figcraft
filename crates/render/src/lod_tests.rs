@@ -180,6 +180,7 @@ fn exports_never_use_lod() {
         magnified_image_pixels: false,
         under: None,
         time: 0.0,
+        casting: false,
         bounds: &bounds,
         page_at: (v.origin.0 * scale, v.origin.1 * scale),
         cache: None,

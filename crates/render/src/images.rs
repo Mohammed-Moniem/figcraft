@@ -43,7 +43,7 @@ pub fn cache_key(hash: &str, data: Option<&ImageData>) -> String {
 pub(crate) type Key = (String, [i32; 7], ColorProfile, u32);
 
 /// The largest side of a decoded image: larger images are scaled down to fit.
-const MAX_SIDE: u32 = 16_384;
+pub(crate) const MAX_SIDE: u32 = 16_384;
 /// The most bytes one image's decoding may allocate: the image crate's own default limit (a
 /// larger image is refused from its header).
 const MAX_DECODED_BYTES: u64 = 512 << 20;

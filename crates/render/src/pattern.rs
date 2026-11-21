@@ -59,6 +59,7 @@ pub fn cell_pixmap(doc: &Document, pt: &PatternPaint, w: f64, h: f64, scale: f64
         magnified_image_pixels: false,
         under: None,
         time,
+        casting: false,
         bounds: &bounds,
         page_at: (0.0, 0.0),
         cache: None,
