@@ -176,7 +176,7 @@ impl<'a> Mapper<'a> {
     /// layer limit, not at a count of its own.
     fn variant_siblings(&self, id: &str, done: &mut BTreeSet<String>) -> Vec<String> {
         let Some(parent) = self.nodes.get(id).and_then(|n| n.get("parentIndex")?.get("guid")).and_then(guid) else { return Vec::new() };
-        if !self.nodes.get(&parent).is_some_and(|n| n.get("isStateGroup").and_then(Kv::bool) == Some(true)) || !done.insert(parent.clone()) {
+        if self.nodes.get(&parent).is_none_or(|n| n.get("isStateGroup").and_then(Kv::bool) != Some(true)) || !done.insert(parent.clone()) {
             return Vec::new();
         }
         let symbol = |c: &String| self.nodes.get(c).and_then(|n| n.get("type")).and_then(Kv::str) == Some("SYMBOL");

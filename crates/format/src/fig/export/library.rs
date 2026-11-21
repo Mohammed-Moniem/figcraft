@@ -85,11 +85,10 @@ impl Library {
                     if owner.is_none() {
                         library.mains.insert(id);
                     }
-                    for prop in props.values() {
-                        if let PropDef::InstanceSwap { default, .. } = prop {
-                            targets.push(*default);
-                        }
-                    }
+                    targets.extend(props.values().filter_map(|prop| match prop {
+                        PropDef::InstanceSwap { default, .. } => Some(*default),
+                        _ => None,
+                    }));
                 }
                 _ => {}
             }

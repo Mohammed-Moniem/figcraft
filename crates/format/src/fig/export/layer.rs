@@ -194,6 +194,26 @@ impl<'d> Exporter<'d> {
         main.is_none()
     }
 
+    /// Native export presets and warnings for settings the format cannot represent.
+    fn export_settings(&mut self, n: &Node, f: &mut Fields) {
+        if n.exports.is_empty() {
+            return;
+        }
+        if n.exports.iter().any(|x| x.format == figcraft_doc::ExportFormat::Webp) {
+            self.warn("WebP export settings were written as PNG");
+        }
+        if n.exports.iter().any(|x| x.format == figcraft_doc::ExportFormat::VectorDrawable) {
+            self.warn("Android Vector Drawable (XML) export settings were written as SVG");
+        }
+        if n.exports.iter().any(|x| x.format == figcraft_doc::ExportFormat::Jpg && x.quality != figcraft_doc::ExportSetting::DEFAULT_QUALITY) {
+            self.warn("JPG export settings were written without their quality (Figma has no quality setting)");
+        }
+        if n.exports.iter().any(|x| x.color_profile != figcraft_doc::ExportColorProfile::SameAsFile) {
+            self.warn("export color-profile choices were written without their per-setting profile");
+        }
+        f.push(("exportSettings", arr(n.exports.iter().map(export_setting).collect())));
+    }
+
     /// Fields every layer kind shares.
     fn common(&mut self, n: &Node, parent: Option<&Node>, f: &mut Fields) {
         f.extend([
@@ -257,24 +277,7 @@ impl<'d> Exporter<'d> {
             }
         }
         self.child_layout(n, parent, f);
-        if !n.exports.is_empty() {
-            if n.exports.iter().any(|x| x.format == figcraft_doc::ExportFormat::Webp) {
-                self.warn("WebP export settings were written as PNG");
-            }
-            if n.exports.iter().any(|x| x.format == figcraft_doc::ExportFormat::VectorDrawable) {
-                self.warn("Android Vector Drawable (XML) export settings were written as SVG");
-            }
-            if n.exports
-                .iter()
-                .any(|setting| setting.format == figcraft_doc::ExportFormat::Jpg && setting.quality != figcraft_doc::ExportSetting::DEFAULT_QUALITY)
-            {
-                self.warn("JPG export settings were written without their quality (Figma has no quality setting)");
-            }
-            if n.exports.iter().any(|setting| setting.color_profile != figcraft_doc::ExportColorProfile::SameAsFile) {
-                self.warn("export color-profile choices were written without their per-setting profile");
-            }
-            f.push(("exportSettings", arr(n.exports.iter().map(export_setting).collect())));
-        }
+        self.export_settings(n, f);
         self.prototype(n, f);
         if let Some(duration) = self.motion.duration(n.id) {
             f.push(("timelineDuration", Kv::Uint(duration)));
