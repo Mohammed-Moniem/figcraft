@@ -2,7 +2,7 @@
 //! import: the inverse of its mapping ([`super::map`]).
 //!
 //! The file is the zip the import reads: `canvas.fig` (the fig-kiwi header, then the binary schema
-//! and the message, each a raw-deflate chunk), `meta.json`, an optional `thumbnail.png` and
+//! and the message, each a raw-deflate chunk), `meta.json`, `thumbnail.png` and
 //! `images/<hash>`. The schema travels in the file, so it describes only the fields written here
 //! ([`SCHEMA`]). The message lists one node change per layer (its id, its parent and its position
 //! among the siblings, then its fields), parents first, plus blobs (vector networks and outlines).
@@ -225,8 +225,8 @@ struct Blob byte[] bytes
 message Message MessageType type=1, uint sessionID=2, NodeChange[] nodeChanges=4, Blob[] blobs=6
 ";
 
-/// Write `doc` as a `.fig` file, with `thumbnail` (a PNG) when given. Returns the bytes and the
-/// warnings about what was left out or approximated.
+/// Write `doc` as a `.fig` file. When no rendered PNG is supplied, the preview is a single
+/// pixel in the opening page's background color. Returns the bytes and export warnings.
 pub fn export(doc: &Document, thumbnail: Option<&[u8]>) -> Result<(Vec<u8>, Vec<String>), FormatError> {
     export_with_limits(doc, thumbnail, budget::Limits::default())
 }
@@ -360,14 +360,22 @@ fn archive(
     images: &[(String, Arc<Vec<u8>>)],
     thumbnail: Option<&[u8]>,
 ) -> Result<Vec<u8>, FormatError> {
-    if thumbnail.is_some_and(|bytes| bytes.len() as u64 > MAX_IMAGE) {
+    let mut fallback = Vec::new();
+    let thumbnail = match thumbnail {
+        Some(png) => png,
+        None => {
+            use image::ImageEncoder;
+            image::codecs::png::PngEncoder::new(&mut fallback)
+                .write_image(&background.to_rgba8(), 1, 1, image::ExtendedColorType::Rgba8)
+                .map_err(crate::io_err)?;
+            &fallback
+        }
+    };
+    if thumbnail.len() as u64 > MAX_IMAGE {
         return Err(too_large());
     }
-    let base = canvas
-        .len()
-        .checked_add(thumbnail.map_or(0, <[u8]>::len))
-        .and_then(|n| name.len().checked_mul(12).and_then(|m| n.checked_add(m)))
-        .ok_or_else(too_large)?;
+    let base =
+        canvas.len().checked_add(thumbnail.len()).and_then(|n| name.len().checked_mul(12).and_then(|m| n.checked_add(m))).ok_or_else(too_large)?;
     let total = images
         .iter()
         .try_fold(base, |n, (_, bytes)| n.checked_add(bytes.len()))
@@ -379,12 +387,10 @@ fn archive(
         let mut z = zip::ZipWriter::new(&mut buf);
         let stored = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
         crate::put(&mut z, "canvas.fig", stored, canvas)?;
-        if let Some(t) = thumbnail {
-            crate::put(&mut z, "thumbnail.png", stored, t)?;
-        }
+        crate::put(&mut z, "thumbnail.png", stored, thumbnail)?;
         let mut client = serde_json::json!({"background_color": {"r": background.r, "g": background.g, "b": background.b, "a": background.a}});
         // A PNG says its size right after its signature and header chunk name.
-        let be = |at: usize| thumbnail.and_then(|t| t.get(at..at + 4)).and_then(|b| b.try_into().ok()).map(u32::from_be_bytes);
+        let be = |at: usize| thumbnail.get(at..at + 4).and_then(|b| b.try_into().ok()).map(u32::from_be_bytes);
         if let (Some(w), Some(h)) = (be(16), be(20)) {
             client["thumbnail_size"] = serde_json::json!({"width": w, "height": h});
         }

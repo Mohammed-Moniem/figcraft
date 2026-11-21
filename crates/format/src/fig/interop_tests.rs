@@ -362,21 +362,44 @@ fn mask_types_round_trip() {
 
 #[test]
 fn the_archive_lists_its_members_and_describes_the_file() {
-    let (bytes, _) = export(&sample(), Some(&super::tests::png())).unwrap();
+    let provided = super::tests::png();
+    let (bytes, _) = export(&sample(), Some(&provided)).unwrap();
     let mut z = zip::ZipArchive::new(std::io::Cursor::new(&bytes[..])).unwrap();
     let names: Vec<String> = (0..z.len()).map(|i| z.by_index(i).unwrap().name().unwrap().to_string()).collect();
     assert_eq!(names, ["canvas.fig", "thumbnail.png", "meta.json"]);
     let meta: serde_json::Value = serde_json::from_slice(&crate::read_member(&mut z, "meta.json", 1 << 20).unwrap()).unwrap();
     assert_eq!(meta["file_name"], "Interop");
     assert!(meta["client_meta"]["background_color"]["a"].is_number());
-    assert!(meta["client_meta"]["thumbnail_size"]["width"].as_u64().is_some_and(|w| w > 0));
-    // No thumbnail, or one that isn't a PNG: no size.
-    for thumb in [None, Some(&b"png"[..])] {
-        let (bytes, _) = export(&sample(), thumb).unwrap();
-        let mut z = zip::ZipArchive::new(std::io::Cursor::new(&bytes[..])).unwrap();
-        let meta: serde_json::Value = serde_json::from_slice(&crate::read_member(&mut z, "meta.json", 1 << 20).unwrap()).unwrap();
-        assert!(meta["client_meta"]["thumbnail_size"].is_null());
-    }
+    assert_eq!(meta["client_meta"]["thumbnail_size"], serde_json::json!({"width": 2, "height": 1}));
+    assert_eq!(crate::read_member(&mut z, "thumbnail.png", 1 << 20).unwrap(), provided);
+    let (bytes, _) = export(&sample(), Some(b"png")).unwrap();
+    let mut z = zip::ZipArchive::new(std::io::Cursor::new(&bytes[..])).unwrap();
+    let meta: serde_json::Value = serde_json::from_slice(&crate::read_member(&mut z, "meta.json", 1 << 20).unwrap()).unwrap();
+    assert!(meta["client_meta"]["thumbnail_size"].is_null());
+}
+
+#[test]
+fn an_export_without_a_rendered_preview_includes_a_png_and_matching_metadata() {
+    let mut doc = sample();
+    let color = Color::new(0.25, 0.5, 0.75, 1.0);
+    let page = doc.first_page().unwrap();
+    let background = match &mut doc.node_mut(page).unwrap().kind {
+        NodeKind::Page { background, .. } => Some(background),
+        _ => None,
+    };
+    *background.expect("the preview fixture opens on its design page") = color;
+    let (bytes, _) = export(&doc, None).unwrap();
+    let mut z = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
+    let thumbnail = crate::read_member(&mut z, "thumbnail.png", 1024).unwrap();
+    let decoded = image::load_from_memory_with_format(&thumbnail, image::ImageFormat::Png).unwrap().to_rgba8();
+    assert_eq!(decoded.dimensions(), (1, 1));
+    assert_eq!(decoded.get_pixel(0, 0).0, color.to_rgba8());
+    let meta: serde_json::Value = serde_json::from_slice(&crate::read_member(&mut z, "meta.json", 1 << 20).unwrap()).unwrap();
+    assert_eq!(meta["client_meta"]["thumbnail_size"], serde_json::json!({"width": 1, "height": 1}));
+    let (with_preview, _) = export(&doc, Some(&super::tests::png())).unwrap();
+    assert_eq!(Archive::open(&bytes).unwrap().canvas, Archive::open(&with_preview).unwrap().canvas);
+    let (reopened, _) = import(&bytes, "Fallback preview").unwrap();
+    assert_eq!(reopened.nodes().count(), doc.nodes().count());
 }
 
 #[test]
