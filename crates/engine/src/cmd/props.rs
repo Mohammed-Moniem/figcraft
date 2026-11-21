@@ -1487,6 +1487,27 @@ pub fn resize_node(doc: &mut Document, id: NodeId, w: f64, h: f64) -> Result<()>
     let (ow, oh) = (n.width, n.height);
     let group = n.kind.bounds_follow_children();
     let section = matches!(n.kind, NodeKind::Section { .. });
+    // Older files may store Crop mode with implicit placement. Freeze that placement
+    // at the original box size so a normal resize stretches it just like an explicit crop.
+    let mut crops = Vec::new();
+    for (fill, paints) in [(true, &n.fills), (false, &n.strokes)] {
+        for (index, paint) in paints.iter().enumerate() {
+            if let figcraft_color::PaintKind::Image(img) = &paint.kind
+                && img.scale_mode == figcraft_color::ImageScaleMode::Crop
+                && img.crop.is_none()
+                && let Some(data) = doc.images.get(&img.image)
+            {
+                crops.push((fill, index, img.placement_crop(data.width.into(), data.height.into(), ow, oh)));
+            }
+        }
+    }
+    for (fill, index, crop) in crops {
+        let n = doc.get_mut(id)?;
+        let paints = if fill { &mut n.fills } else { &mut n.strokes };
+        if let figcraft_color::PaintKind::Image(img) = &mut paints[index].kind {
+            img.crop = Some(crop);
+        }
+    }
     figcraft_layout::set_size(doc, id, w, h);
     if section {
         // Sections have no constraints: what's in them stays as it is.

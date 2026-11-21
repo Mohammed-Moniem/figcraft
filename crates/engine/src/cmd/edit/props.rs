@@ -296,6 +296,12 @@ pub(super) fn paint_set(s: &mut Session, p: &Value, fills: bool) -> Result<Value
     };
     let col = color(p, "color");
     let doc = s.doc_mut()?;
+    let crop_image_size = new_paint.as_ref().and_then(|paint| match &paint.kind {
+        figcraft_color::PaintKind::Image(img) if img.scale_mode == figcraft_color::ImageScaleMode::Crop && img.crop.is_none() => {
+            doc.images.get(&img.image).map(|data| (f64::from(data.width), f64::from(data.height)))
+        }
+        _ => None,
+    });
     for i in ids {
         let n = doc.get_mut(i)?;
         let list = if fills { &mut n.fills } else { &mut n.strokes };
@@ -307,6 +313,15 @@ pub(super) fn paint_set(s: &mut Session, p: &Value, fills: bool) -> Result<Value
         let old = slot.clone();
         if let Some(np) = &new_paint {
             *slot = np.clone();
+            if let Some((iw, ih)) = crop_image_size
+                && let figcraft_color::PaintKind::Image(img) = &mut slot.kind
+            {
+                let placement = match &old.kind {
+                    figcraft_color::PaintKind::Image(prev) if prev.image == img.image && prev.rotation == img.rotation => prev,
+                    _ => &*img,
+                };
+                img.crop = Some(placement.placement_crop(iw, ih, n.width, n.height));
+            }
         }
         if let Some(c) = col {
             slot.kind = figcraft_color::PaintKind::Solid { color: c.with_alpha(1.0) };
