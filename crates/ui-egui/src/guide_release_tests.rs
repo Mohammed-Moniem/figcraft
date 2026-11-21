@@ -83,3 +83,38 @@ fn a_ruler_drag_released_on_the_canvas_adds_one_guide() {
     u.app.session.execute("edit.undo", &json!({})).unwrap();
     assert!(offsets(&u).is_empty());
 }
+
+#[test]
+fn dragging_a_guide_back_onto_its_ruler_removes_only_that_guide() {
+    for vertical in [false, true] {
+        for strip_offset in [1.0, 10.0, 20.0] {
+            let mut u = rulers();
+            let r = u.app.canvas.rect;
+            let on_ruler = |offset| if vertical { Pos2::new(r.left() + offset, r.center().y) } else { Pos2::new(r.center().x, r.top() + offset) };
+            drag(&mut u, on_ruler(10.0), r.center());
+            let added = offsets(&u);
+            assert_eq!(added.len(), 1);
+            u.app.run("guide.add", json!({"vertical": !vertical, "offset": added[0] + 42.0}));
+            drag(&mut u, r.center(), on_ruler(strip_offset));
+            assert_eq!(offsets(&u), [added[0] + 42.0], "vertical={vertical}, strip_offset={strip_offset}");
+            u.app.run("edit.undo", json!({}));
+            assert_eq!(offsets(&u), [added[0], added[0] + 42.0]);
+        }
+    }
+}
+
+#[test]
+fn a_ruler_drop_uses_the_release_position_when_the_mouse_keeps_moving() {
+    let mut u = rulers();
+    let r = u.app.canvas.rect;
+    let ruler = Pos2::new(r.left() + 10.0, r.center().y);
+    drag(&mut u, ruler, r.center());
+    assert_eq!(offsets(&u).len(), 1);
+    u.button(r.center(), true);
+    u.frame(vec![Event::PointerMoved(ruler)]);
+    u.frame(vec![
+        Event::PointerButton { pos: ruler, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() },
+        Event::PointerMoved(r.center() + vec2(60.0, 0.0)),
+    ]);
+    assert!(offsets(&u).is_empty());
+}

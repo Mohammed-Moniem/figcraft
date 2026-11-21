@@ -287,7 +287,8 @@ pub(super) fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> boo
     // Touch End also sends PointerGone: hover is already absent while this response still
     // carries its click. egui retains the interaction position for this release frame.
     // A press accepted by the canvas owns its drag until release (#2023), including sidebars.
-    let Some(pos) = interact_pos.filter(|p| p.is_finite() && (app.canvas.dragging || app.canvas.rect.contains(*p))) else {
+    let guide_release = crate::guides::release_position(&ctx);
+    let Some(pos) = guide_release.or(interact_pos).filter(|p| p.is_finite() && (app.canvas.dragging || app.canvas.rect.contains(*p))) else {
         // A drag released off the canvas, or off the window, ends where the pointer was last seen.
         if app.canvas.dragging && !ctx.input(|i| i.pointer.primary_down()) {
             app.canvas.dragging = false;
@@ -341,12 +342,22 @@ pub(super) fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> boo
     if !app.canvas.dragging && (resp.hovered() || app.ui.comments.dragging()) && crate::comments::input(app, &ctx, pos) {
         return false;
     }
-    if !app.canvas.dragging && resp.hovered() && crate::guides::input(app, &ctx, pos) {
+    // The ruler accepts its guide even at a panel's resize margin or when the pointer has since moved.
+    let returned_to_ruler = guide_release.is_some()
+        && (super::rulers::strip(app.canvas.rect, true).contains(pos) || super::rulers::strip(app.canvas.rect, false).contains(pos))
+        && ctx.layer_id_at(pos) == Some(resp.layer_id);
+    if !app.canvas.dragging && (resp.hovered() || returned_to_ruler) && crate::guides::input(app, &ctx, pos) {
         return false;
     }
-    if !app.canvas.dragging && resp.hovered() && crate::handles::input(app, &ctx, pos) {
-        return false;
-    }
+    let handle_cursor = if !app.canvas.dragging && resp.hovered() {
+        match crate::handles::input(app, &ctx, pos) {
+            crate::handles::Input::Captured => return false,
+            crate::handles::Input::Hover(cursor) => Some(cursor),
+            crate::handles::Input::Ignored => None,
+        }
+    } else {
+        None
+    };
     if resp.secondary_clicked() {
         open_context_menu(app, pos, mods.command);
         return true;
@@ -453,7 +464,13 @@ pub(super) fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> boo
             send(app, PointerKind::Up, release_pos.unwrap_or(pos), &mods);
         }
     }
-    true
+    // Padding hover changes the cursor without skipping the normal hover and context-menu paths.
+    if let Some(cursor) = handle_cursor {
+        ctx.set_cursor_icon(cursor);
+        false
+    } else {
+        true
+    }
 }
 
 /// Pointer event `kind` at screen point `pos`, to the tools.

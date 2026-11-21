@@ -14,8 +14,7 @@ use serde_json::json;
 use crate::FigApp;
 use crate::theme::semibold;
 
-/// Ruler thickness (matches the canvas rulers).
-const RULER: f32 = 20.0;
+use super::rulers::{RULER, strip};
 const GUIDE: Color32 = Color32::from_rgb(0xF2, 0x48, 0x22);
 
 #[derive(Clone, Copy, Debug)]
@@ -182,6 +181,17 @@ fn cursor_across(app: &FigApp, g: &Placed, r: Rect) -> egui::CursorIcon {
     }
 }
 
+/// A guide belongs to the button release, even if the pointer moves again in the same frame.
+pub(super) fn release_position(ctx: &egui::Context) -> Option<Pos2> {
+    let release = ctx.input(|i| {
+        i.events.iter().rev().find_map(|event| match event {
+            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, .. } => Some(*pos),
+            _ => None,
+        })
+    })?;
+    ctx.data(|d| d.get_temp::<GuideDrag>(drag_id())).map(|_| release)
+}
+
 /// Pointer handling; returns true when the event belongs to a ruler or guide.
 pub fn input(app: &mut FigApp, ctx: &egui::Context, pos: Pos2) -> bool {
     if !rulers_on(app) {
@@ -235,7 +245,7 @@ pub fn input(app: &mut FigApp, ctx: &egui::Context, pos: Pos2) -> bool {
                 let [a, b] = segment(app, &g, r);
                 (b.y - a.y).abs() >= (b.x - a.x).abs()
             });
-            let on_ruler = if down { pos.x < r.min.x + RULER } else { pos.y < r.min.y + RULER };
+            let on_ruler = strip(r, down).contains(pos);
             let page = app.session.ds().map(|d| d.page).ok();
             let before = app.session.doc().ok().and_then(|d| match drag {
                 GuideDrag::Move { owner, index, .. } => d.node(owner).and_then(|n| n.guides().get(index)).map(|g| g.offset),
@@ -258,9 +268,9 @@ pub fn input(app: &mut FigApp, ctx: &egui::Context, pos: Pos2) -> bool {
         ctx.request_repaint();
         return true;
     }
-    let in_top = pos.y < r.min.y + RULER && pos.x > r.min.x + RULER;
-    let in_left = pos.x < r.min.x + RULER && pos.y > r.min.y + RULER;
-    if in_top || in_left {
+    let in_top = strip(r, false).contains(pos);
+    let in_left = strip(r, true).contains(pos);
+    if in_top != in_left {
         ctx.set_cursor_icon(cursor(in_left));
         if pressed {
             let frame = selected_frame(app);
@@ -268,7 +278,7 @@ pub fn input(app: &mut FigApp, ctx: &egui::Context, pos: Pos2) -> bool {
         }
         return true;
     }
-    if pos.x < r.min.x + RULER || pos.y < r.min.y + RULER {
+    if in_top && in_left {
         return true;
     }
     // Existing guides move with the Move tool (not while editing text or a vector).

@@ -46,11 +46,17 @@ pub(crate) fn status_badge(painter: &egui::Painter, n: &figcraft_doc::Node, at: 
     Some(r)
 }
 
+pub(super) const RULER: f32 = 20.0;
+
+pub(super) fn strip(r: Rect, vertical: bool) -> Rect {
+    Rect::from_min_size(r.min, if vertical { vec2(RULER, r.height()) } else { vec2(r.width(), RULER) })
+}
+
 pub(super) fn rulers(app: &FigApp, painter: &egui::Painter, t: &Tokens, doc: &Document, sel: &[NodeId]) {
     let r = app.canvas.rect;
-    let size = 20.0;
-    painter.rect_filled(Rect::from_min_size(r.min, vec2(r.width(), size)), CornerRadius::ZERO, t.panel);
-    painter.rect_filled(Rect::from_min_size(r.min, vec2(size, r.height())), CornerRadius::ZERO, t.panel);
+    let size = RULER;
+    painter.rect_filled(strip(r, false), CornerRadius::ZERO, t.panel);
+    painter.rect_filled(strip(r, true), CornerRadius::ZERO, t.panel);
     let zoom = app.session.ds().map(|d| d.view.zoom).unwrap_or(1.0);
     let step = figcraft_engine::guides::ruler_step(zoom);
     let p0 = app.to_page(r.min);
