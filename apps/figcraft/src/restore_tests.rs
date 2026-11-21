@@ -88,6 +88,26 @@ fn the_tabs_left_open_come_back_and_a_command_line_file_opens_in_front() {
 }
 
 #[test]
+fn startup_restores_saved_tabs_and_imports_each_fig_argument_once() {
+    let dir = root("startup-fig");
+    let paths = left_open(&dir, &["Saved"]);
+    let extra = dir.join("Extra.fig").to_string_lossy().into_owned();
+    let mut source = Session::empty();
+    source.execute("file.new", &json!({"name": "Extra"})).unwrap();
+    source.execute("file.saveAs", &json!({"path": extra})).unwrap();
+    let mut s = next(&dir);
+    let started = crate::startup::open_session(Some(&dir), &mut s, false, &[dir.join("missing.fig").to_string_lossy().into_owned(), extra.clone()]);
+    assert_eq!(started.restore, Start::Restore);
+    assert!(started.last_error.as_deref().unwrap().starts_with("missing.fig:"));
+    assert_eq!(s.docs.iter().filter_map(|d| d.path.clone()).collect::<Vec<_>>(), paths);
+    assert_eq!(s.docs.iter().filter(|d| d.path.is_none()).count(), 1, "one .fig argument creates one imported tab");
+    assert_eq!(s.ds().unwrap().doc.name, "Extra");
+    assert_eq!(started.opened, [s.ds().unwrap().uid], "only the explicit import needs the font check");
+    assert_eq!(s.prefs.recent_files.first(), Some(&extra));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn a_run_that_never_got_through_restoring_is_not_tried_again() {
     let dir = root("guard");
     left_open(&dir, &["A", "B"]);

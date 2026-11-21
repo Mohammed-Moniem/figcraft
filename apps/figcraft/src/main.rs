@@ -274,16 +274,6 @@ fn main() -> eframe::Result {
     }
     // Live sessions: the network threads wake the window when something arrives.
     session.live.install(Box::new(figcraft_collab_net::NetLink::new(Arc::new(wake(&ctx_slot)))));
-    // A file that won't open is said in the window too: it may have been double-clicked.
-    let mut failed_open = None;
-    for f in &args.files {
-        if let Err(e) = session.execute("file.open", &json!({"path": f})) {
-            log::error!("{f}: {e}");
-            let name = std::path::Path::new(f).file_name().map_or_else(|| f.into(), |n| n.to_string_lossy());
-            failed_open = Some(format!("{name}: {e}"));
-        }
-    }
-    let opened: Vec<u64> = session.docs.iter().map(|d| d.uid).collect();
     // Documents a crashed or killed run left unsaved come back; this run keeps its own copies.
     let recovery_root = data_dir.as_ref().map(|d| d.join("Recovery"));
     // The preferences first: they hold the online files a recovered document may be one of.
@@ -295,13 +285,6 @@ fn main() -> eframe::Result {
     }
     // The project library, or on a first run with it the recent design files to start from.
     session.projects = svc.projects.take().unwrap_or_else(|| projects_store::seeded(&session.prefs.recent_files));
-    // Files named on the command line opened before the library was read.
-    let now = figcraft_engine::cmd::comment::now_secs();
-    for path in session.docs.iter().filter_map(|d| d.path.clone()) {
-        if figcraft_engine::cmd::projects::is_project_file(std::path::Path::new(&path)) {
-            session.projects.touch(&path, None, now);
-        }
-    }
     let projects_notice = svc.projects_notice.take();
     let recovered = recovery_root.as_deref().map(|r| recovery::recover_all(r, &mut session)).unwrap_or_default();
     let mut copies = recovery_root.as_deref().and_then(recovery::Recovery::start);
@@ -310,15 +293,7 @@ fn main() -> eframe::Result {
         r.adopt(recovered.waiting);
     }
     *recovery::lock(&recovery) = copies;
-    // The windows and tabs from last time, then what this run was started with, in front.
-    let config = data_dir.clone();
-
-    let start = services::start_session(config.as_deref(), &mut session, args.fresh || (port.is_some() && !args.persist_session));
-    for f in &args.files {
-        if let Err(e) = session.execute("file.open", &json!({"path": f})) {
-            log::error!("{f}: {e}");
-        }
-    }
+    let started = startup::open_session(data_dir.as_deref(), &mut session, args.fresh || (port.is_some() && !args.persist_session), &args.files);
     // Plugins installed from a server's plugin directory live with the user's settings.
     session.plugins.install_dir = data_dir.clone().map(|d| d.join("Plugins"));
     // Invite links open this app (Windows registers per user at run time; installed builds by
@@ -338,17 +313,16 @@ fn main() -> eframe::Result {
     fig.set_startup_update_check(std::env::var_os("FIGCRAFT_NO_UPDATE_CHECK").is_none());
     let file_watch = file_watch::Watch::start(wake(&ctx_slot), roots.clone());
     fig.automation_roots = roots;
-    fig.ui.home = false;
-    fig.ui.home = start == services::Start::Guarded;
+    fig.ui.home = started.restore == services::Start::Guarded;
     fig.session_persistence = port.is_none() || args.persist_session;
     fig.handle_ui_requests();
     if let Some(notice) = projects_notice.as_ref() {
         fig.note_projects(notice);
     }
     // Files named on the command line are the user's too: their missing fonts are listed.
-    fig.ui.font_checks = opened;
+    fig.ui.font_checks = started.opened;
     fig.note_recovered(recovered.copies);
-    if let Some(message) = failed_open {
+    if let Some(message) = started.last_error {
         fig.show_error(message);
     }
     if let Some(link) = &args.join {
