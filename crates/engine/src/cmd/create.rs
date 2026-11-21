@@ -358,7 +358,12 @@ pub fn create(s: &mut Session, p: &Value) -> Result<Value> {
         && let Some((tw, th)) = figcraft_text::auto_size(&node)
     {
         node.width = tw;
-        node.height = th;
+        // A caller creating a fixed text box supplies its height before the style is applied.
+        // Measure the width as usual and let explicit property sizes take precedence below.
+        let mode = get(p, "props").and_then(|props| props.get("textAutoResize")).and_then(super::props::enum_of);
+        if num(p, "height").is_none() || !matches!(mode, Some(TextAutoResize::None | TextAutoResize::Truncate)) {
+            node.height = th;
+        }
     }
     let index = crate::params::opt_index(cmd, p, "index")?;
     doc.insert(node, parent, index)?;
