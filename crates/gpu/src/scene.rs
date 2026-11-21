@@ -1591,9 +1591,7 @@ impl Builder<'_> {
         if let Some((path, rule)) = &outline
             && !path.is_empty()
         {
-            for p in &n.fills {
-                self.fill(p, path, *rule, (n.width, n.height), xf)?;
-            }
+            self.paint_list(n, &n.fills, |this, p| this.fill(p, path, *rule, (n.width, n.height), xf))?;
         }
         // Inner shadows paint over the fills, under the children and strokes (the CPU's order).
         if n.effects.iter().any(|e| e.visible && matches!(e.kind, figcraft_doc::EffectKind::InnerShadow(_))) {
@@ -1655,9 +1653,7 @@ impl Builder<'_> {
         for style in &styles {
             let fills = layout.styles.get(*style).and_then(|s| s.fills.as_ref()).unwrap_or(&n.fills);
             if let Some(path) = runs.get(style) {
-                for p in fills {
-                    self.fill(p, path, FillRule::Winding, size, gxf)?;
-                }
+                self.paint_list(n, fills, |this, p| this.fill(p, path, FillRule::Winding, size, gxf))?;
             }
             for (_, item) in ink.iter().filter(|(s, _)| s == style) {
                 match item {
@@ -1682,9 +1678,7 @@ impl Builder<'_> {
             let rule = figcraft_render::stroke_rule(n, true);
             for path in runs.values() {
                 let band = figcraft_render::stroke_area(n, path, true);
-                for p in &n.strokes {
-                    self.fill(p, band.as_ref(), rule, size, gxf)?;
-                }
+                self.paint_list(n, &n.strokes, |this, p| this.fill(p, band.as_ref(), rule, size, gxf))?;
             }
         }
         Ok(())
@@ -1717,6 +1711,26 @@ impl Builder<'_> {
         }
     }
 
+    /// On a non-pass-through layer, each paint blends with the paints below it in the same list.
+    /// Composite the completed list onto the backdrop just as the CPU renderer does.
+    fn paint_list(
+        &mut self,
+        node: &Node,
+        paints: &[Paint],
+        mut draw: impl FnMut(&mut Self, &Paint) -> Result<(), Unsupported>,
+    ) -> Result<(), Unsupported> {
+        let isolate = node.blend != BlendMode::PassThrough
+            && paints.iter().any(|p| p.visible && p.opacity > 0.0 && !matches!(p.blend, BlendMode::PassThrough | BlendMode::Normal));
+        if isolate {
+            self.push_blend(BlendMode::Normal);
+        }
+        let result = paints.iter().try_for_each(|p| draw(self, p));
+        if isolate {
+            self.pop_layer();
+        }
+        result
+    }
+
     fn fill(&mut self, paint: &Paint, path: &figcraft_geom::BezPath, rule: FillRule, size: (f64, f64), xf: Affine) -> Result<(), Unsupported> {
         let Some(spec) = self.spec(paint, size, xf.determinant().abs().sqrt())? else { return Ok(()) };
         let isolated = paint_layer(paint.blend)?;
@@ -1746,34 +1760,23 @@ impl Builder<'_> {
         }
         if plain {
             let stroke = Stroke::new(props.weight.max(0.0)).with_join(join(props.join)).with_caps(cap(props.cap_start));
-            for p in &n.strokes {
-                let Some(spec) = self.spec(p, size, scale)? else { continue };
+            return self.paint_list(n, &n.strokes, |this, p| {
+                let Some(spec) = this.spec(p, size, scale)? else { return Ok(()) };
                 let isolated = paint_layer(p.blend)?;
                 if isolated {
-                    self.push_blend(p.blend);
+                    this.push_blend(p.blend);
                 }
-                self.stroke_spec(&spec, &stroke, path, xf);
+                this.stroke_spec(&spec, &stroke, path, xf);
                 if isolated {
-                    self.pop_layer();
+                    this.pop_layer();
                 }
-            }
-            return Ok(());
+                Ok(())
+            });
         }
         // Everything else is the band the CPU paints — inside and outside strokes, per-side widths,
         // dashes, width profiles, brushes — as the renderer works its outline out, filled.
         let Some((band, rule)) = figcraft_render::stroke_fill(self.doc, n) else { return Err(Unsupported::Stroke) };
-        for p in &n.strokes {
-            let Some(spec) = self.spec(p, size, scale)? else { continue };
-            let isolated = paint_layer(p.blend)?;
-            if isolated {
-                self.push_blend(p.blend);
-            }
-            self.fill_spec(&spec, band.as_ref(), rule, xf);
-            if isolated {
-                self.pop_layer();
-            }
-        }
-        Ok(())
+        self.paint_list(n, &n.strokes, |this, p| this.fill(p, band.as_ref(), rule, size, xf))
     }
 
     /// The paint's brush (`None`: it draws nothing), with its own blend mode's layer around it.

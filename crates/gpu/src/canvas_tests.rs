@@ -1196,7 +1196,21 @@ fn paints_doc() -> Document {
     add(&mut d, p, "multiplied", (120.0, 450.0), (260.0, 40.0), vec![over]);
     let mut screen = Paint::solid(hex("2040E0"));
     screen.blend = BlendMode::Screen;
-    add(&mut d, p, "screened", (420.0, 450.0), (200.0, 40.0), vec![screen]);
+    add(&mut d, p, "screened", (420.0, 450.0), (200.0, 40.0), vec![screen.clone()]);
+    add(&mut d, p, "paint backdrop", (640.0, 440.0), (240.0, 56.0), vec![Paint::solid(hex("40A060"))]);
+    let mut base = Paint::solid(hex("D04020"));
+    base.opacity = 0.4;
+    let stack = vec![base, screen.clone()];
+    let normal = add(&mut d, p, "isolated paints", (650.0, 452.0), (56.0, 28.0), stack.clone());
+    d.get_mut(normal).unwrap().blend = BlendMode::Normal;
+    let pass = add(&mut d, p, "pass-through paints", (730.0, 452.0), (56.0, 28.0), stack);
+    d.get_mut(pass).unwrap().blend = BlendMode::PassThrough;
+    let stroke = add(&mut d, p, "isolated stroke", (810.0, 452.0), (56.0, 28.0), Vec::new());
+    let node = d.get_mut(stroke).unwrap();
+    node.blend = BlendMode::Normal;
+    node.strokes = vec![screen];
+    node.stroke.align = StrokeAlign::Center;
+    node.stroke.weight = 8.0;
     d
 }
 
@@ -1231,6 +1245,12 @@ fn the_gpu_draws_the_paint_variations() {
         px(&cpu, at),
         px(&gpu, at)
     );
+    assert_ne!(px(&cpu, (675, 465)), px(&cpu, (755, 465)), "the backdrop must distinguish normal and pass-through paint stacks");
+    for point in [(675, 465), (755, 465), (838, 452)] {
+        let expected = px(&cpu, point).unwrap();
+        let actual = px(&gpu, point).unwrap();
+        assert!(expected.iter().zip(&actual).all(|(a, b)| a.abs_diff(*b) <= 2), "paint stack at {point:?}: CPU {expected:?}, GPU {actual:?}");
+    }
     assert!(worst <= 128, "a channel differs by {worst} (mean {mean:.3})");
     assert!(mean <= 1.5, "the mean difference is {mean:.3}");
 }
