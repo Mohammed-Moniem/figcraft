@@ -220,6 +220,8 @@ impl Session {
             if !craft_docpath::is_local(path) {
                 return Err(EngineError::Other(format!("{path}: a library is opened only from this computer")));
             }
+            let path = crate::library_paths::resolve(path, self.library_origin())?;
+            let path = path.to_str().ok_or_else(|| EngineError::Other("the library path isn't UTF-8".into()))?;
             return self.libraries.load(path);
         }
         let have = match self.libraries.cached(path) {

@@ -170,7 +170,9 @@ pub(crate) fn restore(t: &TextData, w: Option<f64>, h: Option<f64>) -> Option<Te
     let mut mapped = std::collections::BTreeMap::new();
     for glyph in &mut glyphs {
         let index = spans.partition_point(|(_, end, _)| *end <= glyph.char_start).min(spans.len().saturating_sub(1));
-        let Some((_, _, current)) = spans.get(index) else { continue };
+        let Some((_, _, current)) = spans.get(index) else {
+            continue;
+        };
         if current.link.is_none() && current.style_id.is_none() {
             continue;
         }
@@ -190,17 +192,61 @@ pub(crate) fn restore(t: &TextData, w: Option<f64>, h: Option<f64>) -> Option<Te
 /// Add/update appearances on machines with the original fonts. Existing valid geometry is
 /// retained on a guest missing fonts. Returns the number of changed text layers.
 pub fn capture(doc: &mut Document, ids: Option<&[figcraft_doc::NodeId]>) -> usize {
+    capture_impl(doc, ids, false).captured
+}
+
+/// Portable appearances added/replaced or discarded because the current face cannot be captured.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RefreshResult {
+    /// New or replaced portable appearances.
+    pub captured: usize,
+    /// Stale appearances removed after a current available face could not be captured.
+    pub discarded: usize,
+}
+
+/// Refresh portable geometry after a named face changes, even when editable inputs and the
+/// text box stayed the same. Missing named faces keep their existing portable geometry.
+pub fn refresh_fonts(doc: &mut Document, ids: Option<&[figcraft_doc::NodeId]>) -> RefreshResult {
+    // Portable outlines are derived caches. Preserve every preexisting authored dirty id;
+    // cache-only node changes must not become new edits of read-only library definitions.
+    let pending = doc.take_dirty();
+    let result = capture_impl(doc, ids, true);
+    doc.take_dirty();
+    doc.mark_dirty(pending);
+    result
+}
+
+fn discard_stale_on_refresh(doc: &mut Document, id: figcraft_doc::NodeId, refresh: bool) -> usize {
+    if !refresh || !doc.node(id).is_some_and(|n| matches!(&n.kind, NodeKind::Text(t) if t.appearance.is_some())) {
+        return 0;
+    }
+    if let Ok(n) = doc.get_mut(id)
+        && let NodeKind::Text(t) = &mut n.kind
+    {
+        t.appearance = None;
+        return 1;
+    }
+    0
+}
+
+fn capture_impl(doc: &mut Document, ids: Option<&[figcraft_doc::NodeId]>, refresh: bool) -> RefreshResult {
     let ids = ids.map_or_else(|| doc.nodes().map(|n| n.id).collect::<Vec<_>>(), |v| v.to_vec());
-    let mut changed = 0;
+    let mut changed = RefreshResult::default();
     for id in ids {
         let Some(n) = doc.node(id) else { continue };
         let NodeKind::Text(t) = &n.kind else { continue };
-        let Some(key) = fingerprint(t, Some(n.width), Some(n.height)) else { continue };
-        if t.appearance.as_ref().is_some_and(|a| a.fingerprint == key) || !fonts_available(t) {
+        let Some(key) = fingerprint(t, Some(n.width), Some(n.height)) else {
+            continue;
+        };
+        if (!refresh && t.appearance.as_ref().is_some_and(|a| a.fingerprint == key)) || !fonts_available(t) {
             continue;
         }
-        let Some((l, _)) = crate::layout_node(n) else { continue };
+        let Some((l, _)) = crate::layout_node(n) else {
+            changed.discarded += discard_stale_on_refresh(doc, id, refresh);
+            continue;
+        };
         if l.glyphs.len() > MAX_GLYPHS || l.glyphs.iter().any(|g| g.color(1.0).is_some()) {
+            changed.discarded += discard_stale_on_refresh(doc, id, refresh);
             continue;
         }
         let glyphs: Vec<_> = l
@@ -219,6 +265,7 @@ pub fn capture(doc: &mut Document, ids: Option<&[figcraft_doc::NodeId]>) -> usiz
             })
             .collect();
         if glyphs.iter().map(|g| g.d.len()).sum::<usize>() > MAX_PATH_BYTES {
+            changed.discarded += discard_stale_on_refresh(doc, id, refresh);
             continue;
         }
         let a = TextAppearance {
@@ -259,11 +306,14 @@ pub fn capture(doc: &mut Document, ids: Option<&[figcraft_doc::NodeId]>) -> usiz
             styles: l.styles.clone(),
             truncated: l.truncated,
         };
+        if t.appearance.as_ref().is_some_and(|old| **old == a) {
+            continue;
+        }
         if let Ok(n) = doc.get_mut(id)
             && let NodeKind::Text(t) = &mut n.kind
         {
             t.appearance = Some(Arc::new(a));
-            changed += 1;
+            changed.captured += 1;
         }
     }
     changed
@@ -446,5 +496,21 @@ mod tests {
         a.lines[1].glyph_start = 1;
         a.lines[1].glyph_end = 1;
         assert!(restore(&t, Some(80.0), Some(40.0)).is_some(), "empty trailing lines are valid");
+    }
+
+    #[test]
+    fn capturing_an_unavailable_named_font_keeps_existing_portable_guest_geometry() {
+        let mut doc = Document::new("Portable guest");
+        let page = doc.first_page().unwrap();
+        let id = doc.alloc_id();
+        let node = figcraft_doc::Node::new(id, NodeKind::Text(synthetic()), "Saved guest", 80.0, 40.0);
+        doc.insert(node, page, None).unwrap();
+        let before = doc.clone();
+        let NodeKind::Text(t) = &doc.node(id).unwrap().kind else { panic!("text") };
+        let original = t.appearance.clone().unwrap();
+        assert_eq!(capture(&mut doc, None), 0);
+        assert_eq!(doc, before);
+        let NodeKind::Text(t) = &doc.node(id).unwrap().kind else { panic!("text") };
+        assert!(Arc::ptr_eq(&original, t.appearance.as_ref().unwrap()));
     }
 }

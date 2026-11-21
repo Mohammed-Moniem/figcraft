@@ -45,7 +45,7 @@ use open::append_pages;
 pub(crate) use open::open;
 use open::{import, open_recent, revert};
 pub(crate) use save::save_ends_preview;
-pub use save::{FileSnapshot, file_bytes, thumbnail};
+pub use save::{FileSnapshot, file_bytes, file_bytes_for, thumbnail};
 use save::{color_profile, mark_saved, save, save_as};
 pub use version::MAX_AUTOSAVES;
 pub(crate) use version::{add_version, keep_in_history, read_version, unique_id};
@@ -236,10 +236,13 @@ pub fn specs() -> Vec<CommandSpec> {
             color_profile
         ),
         spec!("file.duplicate", "Duplicate file", "{}", false, |s, _| {
+            let library_origin = s.library_origin().map(str::to_string);
             let ds = s.ds()?;
             let mut d = (*ds.doc).clone();
             d.name = format!("{} (Copy)", d.name);
-            s.docs.push(DocState::new(d, None));
+            let mut copy = DocState::new(d, None);
+            copy.library_origin = library_origin;
+            s.docs.push(copy);
             s.active = s.docs.len() - 1;
             Ok(json!({"index": s.active}))
         }),
@@ -331,12 +334,15 @@ pub fn specs() -> Vec<CommandSpec> {
             "{id | index}  open the version as a new document; returns its tab `index`",
             false,
             |s, p| {
+                let library_origin = s.library_origin().map(str::to_string);
                 let ds = s.ds()?;
                 let v = ds.versions.get(version_index("version.duplicate", ds, p)?).ok_or_else(|| bad("version.duplicate", "no such version"))?;
                 let mut doc = (*read_version(v)?).clone();
                 doc.name = format!("{} ({})", ds.doc.name, v.name);
                 doc.take_dirty();
-                s.docs.push(DocState::new(doc, None));
+                let mut copy = DocState::new(doc, None);
+                copy.library_origin = library_origin;
+                s.docs.push(copy);
                 s.active = s.docs.len() - 1;
                 Ok(json!({"index": s.active}))
             }

@@ -208,3 +208,141 @@ fn repeating_an_explicit_opening_choice_preserves_saved_state_and_undo_redo() {
     assert_eq!(s.doc().unwrap().opening_page, Some(cover));
     assert_eq!(s.page().unwrap(), first);
 }
+
+// A history traversal that returns to the saved authored document must not invent an edit.
+#[test]
+fn history_savepoint_public_data_save_redo_returns_to_clean_document() {
+    let mut s = Session::new();
+    let layer = id_of(&ex(&mut s, "shape.rectangle", json!({"width":40,"height":30})));
+    let data = ex(&mut s, "file.saveAs", json!({"data":true}));
+    assert_eq!(ex(&mut s, "file.markSaved", json!({"document":data["document"],"revision":data["revision"]}))["saved"], true);
+    assert!(!s.ds().unwrap().is_dirty());
+    let saved = s.doc().unwrap().clone();
+    let bytes = crate::cmd::file::file_bytes(s.ds().unwrap()).unwrap();
+    assert_eq!(ex(&mut s, "edit.undo", json!({}))["undone"], true);
+    assert!(s.doc().unwrap().node(layer).is_none());
+    assert_eq!(ex(&mut s, "edit.redo", json!({}))["redone"], true);
+    assert_eq!(s.doc().unwrap(), &saved);
+    assert_eq!(crate::cmd::file::file_bytes(s.ds().unwrap()).unwrap(), bytes);
+    assert!(!s.ds().unwrap().is_dirty(), "public Redo returned to the exact delivered savepoint");
+}
+
+#[test]
+fn history_savepoint_public_undo_returns_to_an_unversioned_saved_document() {
+    let mut s = Session::new();
+    let layer = id_of(&ex(&mut s, "shape.rectangle", json!({"width":40,"height":30})));
+    ex(&mut s, "file.markSaved", json!({}));
+    let saved = s.doc().unwrap().clone();
+    ex(&mut s, "node.set", json!({"id":layer,"props":{"width":80}}));
+    assert!(s.ds().unwrap().is_dirty());
+    assert_eq!(ex(&mut s, "edit.undo", json!({}))["undone"], true);
+    assert_eq!(s.doc().unwrap(), &saved);
+    assert!(!s.ds().unwrap().is_dirty(), "Undo returned to the exact saved document");
+}
+
+#[test]
+fn history_savepoint_redo_keeps_a_real_unsaved_change_dirty() {
+    let mut s = Session::new();
+    let layer = id_of(&ex(&mut s, "shape.rectangle", json!({"width":40,"height":30})));
+    ex(&mut s, "file.markSaved", json!({}));
+    ex(&mut s, "node.set", json!({"id":layer,"props":{"width":80}}));
+    ex(&mut s, "edit.undo", json!({}));
+    ex(&mut s, "edit.redo", json!({}));
+    assert_eq!(s.doc().unwrap().node(layer).unwrap().width, 80.0);
+    assert!(s.ds().unwrap().is_dirty(), "restoring an unsaved edit must remain dirty");
+}
+
+#[test]
+fn history_savepoint_versions_metadata_remains_dirty_after_geometry_returns_to_saved_state() {
+    let mut s = Session::new();
+    let layer = id_of(&ex(&mut s, "shape.rectangle", json!({"width":40,"height":30})));
+    ex(&mut s, "file.markSaved", json!({}));
+    let saved = s.doc().unwrap().clone();
+    ex(&mut s, "file.saveVersion", json!({"name":"Unsaved history metadata"}));
+    assert_eq!(s.ds().unwrap().versions.len(), 1);
+    ex(&mut s, "node.set", json!({"id":layer,"props":{"width":80}}));
+    ex(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc().unwrap(), &saved);
+    assert!(s.ds().unwrap().is_dirty(), "geometry equality cannot mark version metadata saved");
+    assert_eq!(s.ds().unwrap().versions.len(), 1);
+}
+
+fn assert_local_history_rollback(before: &crate::doc_state::DocState, after: &crate::doc_state::DocState) {
+    use std::sync::Arc;
+    assert!(Arc::ptr_eq(&before.doc, &after.doc), "the exact current document is restored");
+    assert!(Arc::ptr_eq(&before.saved_doc, &after.saved_doc), "the saved baseline is retained");
+    assert_eq!(before.selection, after.selection);
+    assert_eq!(before.page, after.page);
+    assert_eq!(before.revision, after.revision);
+    assert_eq!(before.is_dirty(), after.is_dirty());
+    assert_eq!(before.versions_changed, after.versions_changed);
+    assert_eq!(before.history.limit, after.history.limit);
+    assert_eq!(before.history.group_step, after.history.group_step);
+    for (left, right) in [(&before.history.undo, &after.history.undo), (&before.history.redo, &after.history.redo)] {
+        assert_eq!(left.len(), right.len(), "neither history stack may advance on failure");
+        for (a, b) in left.iter().zip(right) {
+            assert_eq!(a.label, b.label);
+            assert!(Arc::ptr_eq(&a.doc, &b.doc), "history keeps each exact snapshot");
+            assert_eq!(a.selection, b.selection);
+            assert_eq!(a.page, b.page);
+        }
+    }
+}
+
+fn public_history_failure_keeps_both_stacks(redo: bool, normalization_panic: bool) {
+    use std::sync::Arc;
+    let mut s = Session::new();
+    let layer = id_of(&ex(&mut s, "shape.rectangle", json!({"width":40,"height":30})));
+    ex(&mut s, "node.set", json!({"id":layer,"props":{"width":80}}));
+    if redo {
+        ex(&mut s, "edit.undo", json!({}));
+    }
+    if !normalization_panic {
+        // A corrupt target snapshot is refused by the real finite-geometry guard after
+        // public history has traversed the stacks, before normalizing the candidate.
+        let h = &mut s.ds_mut().unwrap().history;
+        let entry = if redo { h.redo.last_mut().unwrap() } else { h.undo.last_mut().unwrap() };
+        Arc::make_mut(&mut entry.doc).get_mut(layer).unwrap().width = f64::INFINITY;
+    }
+    ex(&mut s, "file.markSaved", json!({}));
+    s.ds_mut().unwrap().selection.clear();
+    let before = s.ds().unwrap().clone();
+    assert!(!before.is_dirty());
+    let command = if redo { "edit.redo" } else { "edit.undo" };
+    let result = if normalization_panic {
+        crate::derived::PANIC.with(|p| {
+            assert!(!p.replace(true));
+        });
+        let attempted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.execute(command, &json!({}))));
+        crate::derived::PANIC.with(|p| p.set(false));
+        let result = attempted.expect("the public command guard must catch a normalization panic");
+        assert!(matches!(&result, Err(crate::EngineError::Internal { .. })));
+        result
+    } else {
+        let result = s.execute(command, &json!({}));
+        assert!(result.as_ref().unwrap_err().to_string().contains("number range"));
+        result
+    };
+    assert!(result.is_err());
+    assert_local_history_rollback(&before, s.ds().unwrap());
+}
+
+#[test]
+fn history_rollback_public_undo_normalization_panic_preserves_both_stacks_and_saved_state() {
+    public_history_failure_keeps_both_stacks(false, true);
+}
+
+#[test]
+fn history_rollback_public_redo_normalization_panic_preserves_both_stacks_and_saved_state() {
+    public_history_failure_keeps_both_stacks(true, true);
+}
+
+#[test]
+fn history_rollback_public_undo_guard_refusal_preserves_both_stacks_and_saved_state() {
+    public_history_failure_keeps_both_stacks(false, false);
+}
+
+#[test]
+fn history_rollback_public_redo_guard_refusal_preserves_both_stacks_and_saved_state() {
+    public_history_failure_keeps_both_stacks(true, false);
+}

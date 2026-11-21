@@ -1,5 +1,8 @@
 //! The file subcommands: info, export, convert, render and run.
 
+#[cfg(test)]
+mod library_relative_review_tests;
+
 use std::ffi::OsStr;
 use std::path::Path;
 use std::process::ExitCode;
@@ -22,7 +25,9 @@ pub fn load(path: &str) -> CliResult<Document> {
 
 /// The document with the loader's notes (repairs of a damaged file, or import warnings).
 fn load_noted(path: &str) -> CliResult<(Document, Vec<String>)> {
-    figcraft_engine::cmd::file::load(path).map_err(|e| CliError::Failed(format!("can't open {path}: {e}")))
+    let (mut doc, notes) = figcraft_engine::cmd::file::load(path).map_err(|e| CliError::Failed(format!("can't open {path}: {e}")))?;
+    figcraft_engine::library_paths::make_absolute(&mut doc, path);
+    Ok((doc, notes))
 }
 
 fn ext(path: &str) -> String {
@@ -111,14 +116,27 @@ fn encode(doc: &Document, pix: figcraft_render::Pixmap, e: &str, quality: u8, co
 
 /// Write `doc` to `out`, choosing the format by extension.
 pub fn write_doc(doc: &Document, page: NodeId, out: &str) -> CliResult<()> {
+    write_doc_from(doc, page, out, None)
+}
+
+fn write_doc_from(doc: &Document, page: NodeId, out: &str, origin: Option<&str>) -> CliResult<()> {
     let e = ext(out);
     let bytes = match e.as_str() {
         "figcraft" => {
             let thumb = figcraft_engine::cmd::file::thumbnail(doc);
-            figcraft_format::save_bytes(doc, thumb.as_deref()).map_err(|e| CliError::Failed(e.to_string()))?
+            figcraft_format::save_bytes_with_history_paths(doc, thumb.as_deref(), &[], &[], &|path| {
+                figcraft_engine::library_paths::for_destination(path, origin, out)
+            })
+            .map_err(|e| CliError::Failed(e.to_string()))?
         }
         "json" => {
-            let v = figcraft_format::to_json(doc).map_err(|e| CliError::Failed(e.to_string()))?;
+            let mut doc = doc.clone();
+            for link in &mut doc.libraries_mut().enabled {
+                if let Some(path) = figcraft_engine::library_paths::for_destination(&link.path, origin, out) {
+                    link.path = path;
+                }
+            }
+            let v = figcraft_format::to_json(&doc).map_err(|e| CliError::Failed(e.to_string()))?;
             serde_json::to_vec_pretty(&v).map_err(|e| CliError::Failed(e.to_string()))?
         }
         "svg" => figcraft_svg::try_export_svg(&doc.in_srgb(), &children(doc, page), &Default::default())
@@ -386,7 +404,7 @@ pub fn convert(input: &str, out: &str) -> CliResult<ExitCode> {
         .filter(|p| doc.pages.contains(p))
         .or_else(|| doc.first_page())
         .ok_or_else(|| CliError::Failed("the document has no pages".into()))?;
-    write_doc(&doc, page, out)?;
+    write_doc_from(&doc, page, out, Some(input))?;
     println!("{out}");
     Ok(ExitCode::SUCCESS)
 }
@@ -486,7 +504,9 @@ pub fn run_script(script: &str, input: Option<&str>, out: Option<&str>) -> CliRe
         refuse_dropping_images_from_script(input.map(|input| (input, input_images_left_out)), ds, out)?;
         if ext(out) == "figcraft" {
             // Through the engine, so the version history is kept.
-            write(out, &figcraft_engine::cmd::file::file_bytes(ds).map_err(|e| CliError::Failed(e.to_string()))?)?;
+            write(out, &figcraft_engine::cmd::file::file_bytes_for(ds, out).map_err(|e| CliError::Failed(e.to_string()))?)?;
+        } else if let Some(origin) = s.library_origin() {
+            write_doc_from(&ds.doc, ds.page, out, Some(origin))?;
         } else {
             write_doc(&ds.doc, ds.page, out)?;
         }

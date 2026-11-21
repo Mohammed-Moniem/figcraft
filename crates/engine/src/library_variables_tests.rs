@@ -149,7 +149,17 @@ fn reopened_without_library(s: &mut Session, d: &std::path::Path, lib_path: &str
     std::fs::remove_file(lib_path).unwrap();
     let mut t = Session::empty();
     ex(&mut t, "file.open", json!({"path": user_path}));
-    assert_eq!(t.doc().unwrap().libraries, s.doc().unwrap().libraries);
+    // Portable-save spelling replaces the old raw absolute-path equality; compare all metadata.
+    let mut expected = (*s.doc().unwrap().libraries).clone();
+    let link = expected.enabled.iter_mut().find(|link| link.id == lid).unwrap();
+    assert_eq!(std::path::Path::new(&link.path), std::path::Path::new(lib_path));
+    link.path = "theme.figcraft".into();
+    let stored = t.doc().unwrap().libraries.link(lid).unwrap();
+    assert_eq!(std::path::Path::new(&stored.path), std::path::Path::new("theme.figcraft"));
+    let resolved = std::path::Path::new(&user_path).parent().unwrap().join(&stored.path);
+    assert_eq!(resolved.as_path(), std::path::Path::new(lib_path));
+    assert!(!resolved.exists(), "the saved copies must work with the library deliberately absent");
+    assert_eq!(t.doc().unwrap().libraries.as_ref(), &expected);
     assert_eq!(fill(&t, outer), "FF0000");
     assert!(t.execute("library.bindVariable", &json!({"library": lid, "variable": "primary", "field": "fill", "ids": [outer]})).is_err());
 }

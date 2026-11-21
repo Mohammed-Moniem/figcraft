@@ -319,7 +319,9 @@ fn a_published_library_selection_remains_read_only() {
     }
     let offered = library::default_selection(&published, None);
     let lib = library::publish(&published, None, &offered, None, 1).unwrap();
-    let path = "synthetic-bulk-library.figcraft";
+    // An unsaved document has no relative-library origin; cached references need explicit local authority.
+    let fixture_path = std::env::temp_dir().join("synthetic-bulk-library.figcraft");
+    let path = fixture_path.to_str().unwrap();
     u.app.session.doc_mut().unwrap().libraries_mut().enabled.push(LibraryLink {
         id: lib.manifest.id.clone(),
         name: lib.manifest.name.clone(),

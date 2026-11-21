@@ -111,7 +111,9 @@ fn string_values(vars: &Variables, id: &str) -> Vec<String> {
         if !seen.insert(id.clone()) {
             continue;
         }
-        let Some(var) = vars.get_by_id(&id) else { continue };
+        let Some(var) = vars.get_by_id(&id) else {
+            continue;
+        };
         for v in var.values.values() {
             match v {
                 VariableValue::String(s) => out.push(s.clone()),
@@ -130,25 +132,36 @@ fn string_values(vars: &Variables, id: &str) -> Vec<String> {
 pub fn refit(doc: &mut Document, under: Option<&[NodeId]>, families: Option<&[String]>) -> Vec<NodeId> {
     let want: Option<BTreeSet<String>> = families.map(|f| f.iter().map(|x| x.trim().to_lowercase()).collect());
     let scope: Option<BTreeSet<NodeId>> = under.map(|ids| ids.iter().flat_map(|i| doc.subtree(*i)).collect());
-    let ids: Vec<NodeId> = doc
+    // A replacement face can change paths and advances without changing a fixed text box.
+    // Keep that whole scope for portable appearance refresh; report only size changes below.
+    let affected: Vec<NodeId> = doc
         .nodes()
         .filter(|n| scope.as_ref().is_none_or(|s| s.contains(&n.id)))
         .filter(|n| {
-            let NodeKind::Text(t) = &n.kind else { return false };
+            let NodeKind::Text(t) = &n.kind else {
+                return false;
+            };
             let uses = |w: &BTreeSet<String>| {
                 w.contains(&t.style.font_family.trim().to_lowercase())
                     || t.spans().iter().any(|(_, _, st)| w.contains(&st.font_family.trim().to_lowercase()))
             };
             want.as_ref().is_none_or(uses)
-                && figcraft_text::auto_size(n).is_some_and(|(w, h)| (w - n.width).abs() > 1e-6 || (h - n.height).abs() > 1e-6)
         })
         .map(|n| n.id)
+        .collect();
+    let ids: Vec<NodeId> = affected
+        .iter()
+        .copied()
+        .filter(|id| {
+            doc.node(*id).is_some_and(|n| figcraft_text::auto_size(n).is_some_and(|(w, h)| (w - n.width).abs() > 1e-6 || (h - n.height).abs() > 1e-6))
+        })
         .collect();
     if !ids.is_empty() {
         let before = doc.clone();
         doc.mark_dirty(ids.iter().copied());
         crate::normalize(doc, &before);
     }
+    figcraft_text::appearance::refresh_fonts(doc, Some(&affected));
     ids
 }
 
@@ -179,11 +192,11 @@ fn missing_fonts(s: &mut Session, _: &Value) -> Result<Value> {
 
 fn preserve_appearance(s: &mut Session, _: &Value) -> Result<Value> {
     let mut doc = s.doc()?.clone();
-    let captured = figcraft_text::appearance::capture(&mut doc, None);
-    if captured > 0 {
+    let refresh = figcraft_text::appearance::refresh_fonts(&mut doc, None);
+    if refresh.captured > 0 || refresh.discarded > 0 {
         *s.doc_mut()? = doc;
     }
-    Ok(json!({"captured": captured}))
+    Ok(json!({"captured": refresh.captured}))
 }
 
 /// The font commands: `text.missingFonts`, `text.refit`, and on the desktop [`download`]'s.

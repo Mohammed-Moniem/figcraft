@@ -42,16 +42,24 @@ pub fn file_bytes(ds: &DocState) -> Result<Vec<u8>> {
     FileSnapshot::of(ds).encode()
 }
 
+/// Native bytes for a chosen output path (including CLI `run --out`).
+pub fn file_bytes_for(ds: &DocState, destination: &str) -> Result<Vec<u8>> {
+    FileSnapshot::of(ds).encode_for(Some(destination))
+}
+
 /// A document's file as it is at one moment, so the slow part of saving it (the thumbnail and the
 /// encoding) can run on another thread while editing goes on: [`encode`](Self::encode) there, then
 /// [`save`](Self::save) the bytes back on the session's thread.
 pub struct FileSnapshot {
     uid: u64,
     path: Option<String>,
+    library_origin: Option<String>,
     revision: u64,
     doc: Arc<Document>,
     /// The document as last saved when the snapshot was taken: another save since makes it stale.
     saved: Arc<Document>,
+    save_identity: Arc<()>,
+    metadata_generation: Option<u64>,
     page: NodeId,
     versions: Vec<Version>,
     branches: Vec<figcraft_format::Branch>,
@@ -62,9 +70,12 @@ impl FileSnapshot {
         Self {
             uid: ds.uid,
             path: ds.path.clone(),
+            library_origin: ds.library_origin.clone(),
             revision: ds.revision,
             doc: ds.doc.clone(),
             saved: ds.saved_doc.clone(),
+            save_identity: ds.save_identity.clone(),
+            metadata_generation: ds.metadata_generation(),
             page: ds.page,
             versions: ds.versions.clone(),
             branches: ds.branches.clone(),
@@ -73,19 +84,38 @@ impl FileSnapshot {
 
     /// The file's bytes: content, thumbnail and version history.
     pub fn encode(&self) -> Result<Vec<u8>> {
+        self.encode_for(self.path.as_deref())
+    }
+
+    /// Encode for a native destination without changing the tab's in-memory reference origin.
+    pub fn encode_for(&self, destination: Option<&str>) -> Result<Vec<u8>> {
         let mut doc = (*self.doc).clone();
-        figcraft_text::appearance::capture(&mut doc, None);
+        figcraft_text::appearance::refresh_fonts(&mut doc, None);
         doc.current_page = doc.opening_page.or(Some(self.page));
         let thumb = thumbnail(&doc);
-        figcraft_format::save_bytes_with_history(&doc, thumb.as_deref(), &self.versions, &self.branches)
-            .map_err(|e| EngineError::Other(e.to_string()))
+        let bytes = match destination {
+            Some(destination) => {
+                let origin = self.library_origin.clone().or_else(|| crate::library_paths::document_origin(Some(destination)));
+                figcraft_format::save_bytes_with_history_paths(&doc, thumb.as_deref(), &self.versions, &self.branches, &|path| {
+                    crate::library_paths::for_destination(path, origin.as_deref(), destination)
+                })
+            }
+            None => figcraft_format::save_bytes_with_history(&doc, thumb.as_deref(), &self.versions, &self.branches),
+        };
+        bytes.map_err(|e| EngineError::Other(e.to_string()))
     }
 
     /// Write `bytes` (this snapshot's [`encode`](Self::encode)) to the document's file: it is saved
     /// as of the snapshot, and edits since stay unsaved. False (nothing written) when the document
     /// was closed, saved, reverted or given another path since: the bytes are out of date.
     pub fn save(self, s: &mut Session, bytes: &[u8]) -> Result<bool> {
-        let Some(ds) = s.docs.iter_mut().find(|d| d.uid == self.uid && d.path == self.path && Arc::ptr_eq(&d.saved_doc, &self.saved)) else {
+        // A stale/closed target is a no-op. For a valid writer, flush branch edits which happened
+        // during encoding before judging metadata: the main tab's revision need not change.
+        if !s.docs.iter().any(|d| self.matches_saved_state(d)) {
+            return Ok(false);
+        }
+        crate::branches::sync(s);
+        let Some(ds) = s.docs.iter_mut().find(|d| self.matches_saved_state(d)) else {
             return Ok(false);
         };
         let path = self.path.as_deref().ok_or(EngineError::NoDocument)?;
@@ -93,14 +123,18 @@ impl FileSnapshot {
         refuse_overwriting_changes(ds, path)?;
         write(path, bytes)?;
         ds.note_on_disk();
-        // The history or branches may have changed since: then they still count as unsaved.
-        if ds.revision == self.revision {
-            ds.versions_changed = false;
-        }
-        ds.saved_doc = self.doc;
+        let exact_metadata = ds.mark_saved_snapshot(self.doc, self.revision, self.metadata_generation);
         ds.revision += 1;
-        branch_tabs_saved(s, self.uid);
+        if exact_metadata {
+            branch_tabs_saved_capture(s, self.uid, &self.branches);
+        }
         Ok(true)
+    }
+
+    /// A newer branch-only or identical save also supersedes this writer; saved_doc alone
+    /// cannot distinguish those saves because the main document may keep exactly the same Arc.
+    fn matches_saved_state(&self, ds: &DocState) -> bool {
+        ds.uid == self.uid && ds.path == self.path && Arc::ptr_eq(&ds.saved_doc, &self.saved) && Arc::ptr_eq(&ds.save_identity, &self.save_identity)
     }
 }
 
@@ -144,6 +178,17 @@ fn refuse_overwriting_changes(ds: &DocState, path: &str) -> Result<()> {
 fn branch_tabs_saved(s: &mut Session, uid: u64) {
     for tab in s.docs.iter_mut().filter(|d| d.branch_of.as_ref().is_some_and(|(m, _)| *m == uid)) {
         tab.mark_saved();
+    }
+}
+
+/// Only branch payloads actually held by the completed capture may become clean, after its
+/// parent metadata generation matched. Synchronous saves acknowledge their current branch set.
+fn branch_tabs_saved_capture(s: &mut Session, uid: u64, captured: &[figcraft_format::Branch]) {
+    for tab in s.docs.iter_mut().filter(|d| d.branch_of.as_ref().is_some_and(|(main, _)| *main == uid)) {
+        let Some((_, id)) = tab.branch_of.as_ref() else { continue };
+        if captured.iter().find(|b| &b.id == id).is_some_and(|b| Arc::ptr_eq(tab.document_itself(), &b.head) && tab.versions == b.versions) {
+            tab.mark_saved();
+        }
     }
 }
 
@@ -201,7 +246,7 @@ fn save_to(s: &mut Session, path: Option<String>, overwrite: bool) -> Result<Val
     {
         Arc::make_mut(&mut snapshot.doc).name = file_stem(path);
     }
-    let bytes = snapshot.encode()?;
+    let bytes = snapshot.encode_for(path.as_deref())?;
     let Some(path) = path else {
         // The download can still be refused: the caller marks the file saved once it was delivered.
         let name = format!("{}.figcraft", ds.doc.name);
@@ -222,6 +267,9 @@ fn save_to(s: &mut Session, path: Option<String>, overwrite: bool) -> Result<Val
     };
     write(&path, &bytes)?;
     ds.doc = snapshot.doc;
+    if ds.library_origin.is_none() {
+        ds.library_origin = crate::library_paths::document_origin(Some(&path));
+    }
     ds.path = Some(path.clone());
     ds.note_on_disk();
     mark_saved(s, &json!({}))?;

@@ -268,6 +268,8 @@ pub struct Clipboard {
     /// The document copied from (pastes into other files follow its mains) and its file path.
     pub source: Option<Arc<Document>>,
     pub source_path: Option<String>,
+    /// Retained origin for existing library links in the copied snapshot, independent of Save As.
+    pub source_library_origin: Option<String>,
 }
 
 /// The existing green interface accent, also used for old or malformed saved settings.

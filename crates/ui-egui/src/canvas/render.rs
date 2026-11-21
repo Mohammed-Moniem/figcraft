@@ -262,34 +262,138 @@ fn render_idle(worker: &mut crate::render_worker::Worker) {
     }
 }
 
+/// Stages of the exact sharp-once contract, for a test-only invalidation hook.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PreviewContractStage {
+    Initial,
+    Holding,
+    Sharpen,
+    Repeated,
+    Final,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct PreviewFontDrift {
+    attempt: usize,
+    stage: PreviewContractStage,
+    fonts_before: u64,
+    fonts_after: u64,
+    submitted_before: u64,
+    submitted_after: u64,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct PreviewContractRun {
+    attempts: usize,
+    counts: [u64; 5],
+    drifts: Vec<PreviewFontDrift>,
+}
+
+/// Re-prime the entire original contract only after an observed global font-epoch change.
+/// Stable epochs must still satisfy every original exact counter; no counter tolerance or wait
+/// extension is allowed. The hook is test-only and runs immediately before a named request.
+#[cfg(test)]
+fn preview_sharp_once_in_stable_epoch(max_attempts: usize, mut before_request: impl FnMut(usize, PreviewContractStage)) -> PreviewContractRun {
+    assert!((1..=32).contains(&max_attempts), "bounded full re-prime attempts");
+    let mut drifts = Vec::new();
+    'attempt: for attempt in 0..max_attempts {
+        let doc = figcraft_doc::Document::new("preview");
+        let mut app = FigApp::new(figcraft_engine::Session::with_document(doc), Box::new(crate::NoServices));
+        app.canvas.rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(96.0, 72.0));
+        let mut worker = crate::render_worker::Worker::new(egui::Context::default());
+        let fonts = figcraft_text::layout_generation();
+        let mut counts = [0; 5];
+        macro_rules! request {
+            ($stage:expr, $holding:expr) => {{
+                before_request(attempt, $stage);
+                let submitted_before = worker.submitted_count();
+                let _ = request_render(&mut app, &mut worker, 1.0, 16_383, None, $holding, None);
+                counts[$stage as usize] = worker.submitted_count();
+                let fonts_after = figcraft_text::layout_generation();
+                if fonts_after != fonts {
+                    drifts.push(PreviewFontDrift {
+                        attempt,
+                        stage: $stage,
+                        fonts_before: fonts,
+                        fonts_after,
+                        submitted_before,
+                        submitted_after: worker.submitted_count(),
+                    });
+                    continue 'attempt;
+                }
+            }};
+        }
+        request!(PreviewContractStage::Initial, false);
+        let first = worker.submitted_count();
+        assert_eq!(first, 1, "the first frame is asked for");
+        render_idle(&mut worker);
+        app.canvas.tex_coarse = true;
+        // A pointer held down is still interacting (a drag): its previews are not sharpened.
+        request!(PreviewContractStage::Holding, true);
+        assert_eq!(worker.submitted_count(), first, "a drag in progress keeps its previews");
+        // Nothing new to draw for a while, and a preview on screen: the sharp frame is asked for.
+        std::thread::sleep(std::time::Duration::from_millis(70));
+        request!(PreviewContractStage::Sharpen, false);
+        assert_eq!(worker.submitted_count(), first + 1, "the preview asks for the sharp frame");
+        request!(PreviewContractStage::Repeated, false);
+        assert_eq!(worker.submitted_count(), first + 1, "and only once");
+        // The sharp frame is on screen: nothing more is asked for.
+        render_idle(&mut worker);
+        app.canvas.tex_coarse = false;
+        request!(PreviewContractStage::Final, false);
+        assert_eq!(worker.submitted_count(), first + 1);
+        return PreviewContractRun { attempts: attempt + 1, counts, drifts };
+    }
+    panic!("no stable font epoch across preview sharp-once contract after {max_attempts} attempts");
+}
+
 /// An interaction on screen (a preview drawn at fewer pixels while the pointer moves) gets one
 /// sharp frame once nothing new is asked for — and only one, until the interaction moves again.
 #[cfg(test)]
 #[test]
 fn a_preview_on_screen_asks_for_the_sharp_frame_once() {
-    let doc = figcraft_doc::Document::new("preview");
-    let mut app = FigApp::new(figcraft_engine::Session::with_document(doc), Box::new(crate::NoServices));
-    app.canvas.rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(96.0, 72.0));
-    let mut worker = crate::render_worker::Worker::new(egui::Context::default());
-    let _ = request_render(&mut app, &mut worker, 1.0, 16_383, None, false, None);
-    let first = worker.submitted_count();
-    assert_eq!(first, 1, "the first frame is asked for");
-    render_idle(&mut worker);
-    app.canvas.tex_coarse = true;
-    // A pointer held down is still interacting (a drag): its previews are not sharpened.
-    let _ = request_render(&mut app, &mut worker, 1.0, 16_383, None, true, None);
-    assert_eq!(worker.submitted_count(), first, "a drag in progress keeps its previews");
-    // Nothing new to draw for a while, and a preview on screen: the sharp frame is asked for.
-    std::thread::sleep(std::time::Duration::from_millis(70));
-    let _ = request_render(&mut app, &mut worker, 1.0, 16_383, None, false, None);
-    assert_eq!(worker.submitted_count(), first + 1, "the preview asks for the sharp frame");
-    let _ = request_render(&mut app, &mut worker, 1.0, 16_383, None, false, None);
-    assert_eq!(worker.submitted_count(), first + 1, "and only once");
-    // The sharp frame is on screen: nothing more is asked for.
-    render_idle(&mut worker);
-    app.canvas.tex_coarse = false;
-    let _ = request_render(&mut app, &mut worker, 1.0, 16_383, None, false, None);
-    assert_eq!(worker.submitted_count(), first + 1);
+    let run = preview_sharp_once_in_stable_epoch(32, |_, _| {});
+    assert_eq!(run.counts, [1, 1, 2, 2, 2]);
+}
+
+#[cfg(test)]
+#[test]
+fn a_font_epoch_change_before_the_final_preview_request_restarts_the_exact_contract() {
+    let mut injected = None;
+    let run = preview_sharp_once_in_stable_epoch(32, |attempt, stage| {
+        if stage == PreviewContractStage::Final && injected.is_none() {
+            injected = Some(attempt);
+            figcraft_text::clear_layout_cache();
+        }
+    });
+    let injected = injected.expect("the final original request was reached");
+    let drift = run.drifts.iter().find(|d| d.attempt == injected).expect("the deliberate font drift was observed");
+    assert_eq!(drift.stage, PreviewContractStage::Final);
+    assert!(drift.fonts_after > drift.fonts_before);
+    assert_eq!((drift.submitted_before, drift.submitted_after), (2, 3), "a new font key legitimately asks for one extra frame");
+    assert!(run.attempts > injected + 1, "the changed epoch cannot pass as the stable contract");
+    assert_eq!(run.counts, [1, 1, 2, 2, 2], "a fully re-primed stable attempt runs the original exact contract");
+}
+
+#[cfg(test)]
+#[test]
+fn the_preview_sharp_contract_fails_after_bounded_font_epoch_drift() {
+    let mut invalidations = 0;
+    let error = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        preview_sharp_once_in_stable_epoch(3, |_, stage| {
+            if stage == PreviewContractStage::Initial {
+                invalidations += 1;
+                figcraft_text::clear_layout_cache();
+            }
+        })
+    }))
+    .expect_err("continuous font drift must exhaust the bound rather than pass");
+    assert_eq!(invalidations, 3);
+    let message = error.downcast_ref::<String>().map(String::as_str).or_else(|| error.downcast_ref::<&str>().copied()).unwrap_or("non-string panic");
+    assert_eq!(message, "no stable font epoch across preview sharp-once contract after 3 attempts");
 }
 
 #[cfg(test)]

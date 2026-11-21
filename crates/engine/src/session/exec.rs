@@ -151,6 +151,11 @@ impl Session {
             ds.end_preview();
         }
         let before = self.ds().ok().map(|d| (d.doc.clone(), d.selection.clone(), d.page, d.uid));
+        // Local history traverses its stacks before post-command guards and normalization.
+        // A failed traversal restores the complete state, including selection/editing modes
+        // and the saved baseline; replaying the opposite command would not be equivalent.
+        let history_before =
+            if matches!(id, "edit.undo" | "edit.redo") { self.ds().ok().filter(|d| !self.live_doc(d.uid)).map(|d| (d.uid, d.clone())) } else { None };
         // Cut and copy write the clipboard before a later check can refuse the command.
         let clipboard_before = self.clipboard.clone();
         // An inner command of a batch can panic while the outer group is still open; remember the
@@ -197,6 +202,11 @@ impl Session {
                     ds.selection = sel;
                     ds.page = page;
                 }
+                if let Some((uid, checkpoint)) = history_before
+                    && let Some(ds) = self.docs.iter_mut().find(|d| d.uid == uid)
+                {
+                    *ds = checkpoint;
+                }
                 self.clipboard = clipboard_before;
             }
         }
@@ -226,8 +236,12 @@ impl Session {
 
     /// A version shown in place of the document is read-only: refuse an edit (it is rolled back).
     fn check_preview(&self, id: &str, before: &Option<(Arc<Document>, Vec<NodeId>, NodeId, u64)>) -> Result<()> {
-        let Some((bdoc, _, _, uid)) = before else { return Ok(()) };
-        let Some(ds) = self.docs.iter().find(|d| d.uid == *uid) else { return Ok(()) };
+        let Some((bdoc, _, _, uid)) = before else {
+            return Ok(());
+        };
+        let Some(ds) = self.docs.iter().find(|d| d.uid == *uid) else {
+            return Ok(());
+        };
         if ds.preview.is_none() || Arc::ptr_eq(&ds.doc, bdoc) || id == "version.preview" {
             return Ok(());
         }
@@ -236,8 +250,12 @@ impl Session {
 
     /// Preserve absent-font text until an explicit, installed font replacement is selected.
     fn check_text_fonts(&self, id: &str, before: &Option<(Arc<Document>, Vec<NodeId>, NodeId, u64)>) -> Result<()> {
-        let Some((old, _, _, uid)) = before else { return Ok(()) };
-        let Some(ds) = self.docs.iter().find(|d| d.uid == *uid) else { return Ok(()) };
+        let Some((old, _, _, uid)) = before else {
+            return Ok(());
+        };
+        let Some(ds) = self.docs.iter().find(|d| d.uid == *uid) else {
+            return Ok(());
+        };
         if Arc::ptr_eq(&ds.doc, old) {
             return Ok(());
         }
@@ -250,7 +268,9 @@ impl Session {
                 continue;
             }
             let Some(b) = old.node(n.id) else { continue };
-            let (figcraft_doc::NodeKind::Text(a), figcraft_doc::NodeKind::Text(t)) = (&b.kind, &n.kind) else { continue };
+            let (figcraft_doc::NodeKind::Text(a), figcraft_doc::NodeKind::Text(t)) = (&b.kind, &n.kind) else {
+                continue;
+            };
             if a == t && b.width == n.width && b.height == n.height {
                 continue;
             }
@@ -281,8 +301,12 @@ impl Session {
     /// A layer's position and size stay finite: infinity and NaN are written as `null`, so a file
     /// holding them saves but can't be reopened. Refuse such an edit (it is rolled back).
     fn check_finite_geometry(&self, id: &str, before: &Option<(Arc<Document>, Vec<NodeId>, NodeId, u64)>) -> Result<()> {
-        let Some((bdoc, _, _, uid)) = before else { return Ok(()) };
-        let Some(ds) = self.docs.iter().find(|d| d.uid == *uid) else { return Ok(()) };
+        let Some((bdoc, _, _, uid)) = before else {
+            return Ok(());
+        };
+        let Some(ds) = self.docs.iter().find(|d| d.uid == *uid) else {
+            return Ok(());
+        };
         if Arc::ptr_eq(&ds.doc, bdoc) {
             return Ok(());
         }
@@ -298,8 +322,12 @@ impl Session {
     /// read-only: refuse an edit (it is rolled back). With a comment link, one that changes only
     /// comment threads goes through.
     fn check_live_access(&self, id: &str, before: &Option<(Arc<Document>, Vec<NodeId>, NodeId, u64)>) -> Result<()> {
-        let Some((bdoc, _, _, uid)) = before else { return Ok(()) };
-        let Some(ds) = self.docs.iter().find(|d| d.uid == *uid) else { return Ok(()) };
+        let Some((bdoc, _, _, uid)) = before else {
+            return Ok(());
+        };
+        let Some(ds) = self.docs.iter().find(|d| d.uid == *uid) else {
+            return Ok(());
+        };
         match self.live_read_only(*uid) {
             Some(why) if !Arc::ptr_eq(&ds.doc, bdoc) && !self.live_comment_edit(*uid, &ds.doc) => {
                 Err(EngineError::Disabled(id.to_string(), why.into()))
@@ -312,8 +340,12 @@ impl Session {
     /// them, library copies are read-only and components can't contain their own instances: refuse
     /// such an edit (it is rolled back).
     pub(crate) fn check_instance_structure(&self, id: &str, before: &Option<(Arc<Document>, Vec<NodeId>, NodeId, u64)>) -> Result<()> {
-        let Some((bdoc, _, _, uid)) = before else { return Ok(()) };
-        let Some(ds) = self.docs.iter().find(|d| d.uid == *uid) else { return Ok(()) };
+        let Some((bdoc, _, _, uid)) = before else {
+            return Ok(());
+        };
+        let Some(ds) = self.docs.iter().find(|d| d.uid == *uid) else {
+            return Ok(());
+        };
         if Arc::ptr_eq(&ds.doc, bdoc) {
             return Ok(());
         }
@@ -332,8 +364,13 @@ impl Session {
     /// Normalise what a command changed in the document it ran on (text boxes, groups, instances,
     /// auto layout…).
     fn normalize_edit(&mut self, spec: &CommandSpec, before: &Option<(Arc<Document>, Vec<NodeId>, NodeId, u64)>) {
-        let Some((bdoc, _, _, uid)) = before else { return };
-        let Some(ds) = self.docs.iter_mut().find(|d| d.uid == *uid) else { return };
+        let Some((bdoc, _, _, uid)) = before else {
+            return;
+        };
+        let local_history = matches!(spec.id, "edit.undo" | "edit.redo") && !self.live_doc(*uid);
+        let Some(ds) = self.docs.iter_mut().find(|d| d.uid == *uid) else {
+            return;
+        };
         // Saving may adopt the chosen filename as the document title. The encoded snapshot is
         // already final; normalising it again would detach it from the saved baseline.
         if !Arc::ptr_eq(&ds.doc, bdoc) && !matches!(spec.id, "file.save" | "file.saveAs" | "collab.host" | "collab.share") {
@@ -346,7 +383,41 @@ impl Session {
             if !matches!(spec.id, "transform.scale" | "command.batch" | "style.update" | "style.bind" | "style.delete" | "edit.undo" | "edit.redo") {
                 crate::variable_scale::retire_changed(ds.doc_mut(), bdoc);
             }
+            // Public history has already selected a captured document. Keep that exact Arc
+            // when settling makes no effective change, so returning to a savepoint is clean.
+            // Document equality deliberately ignores allocation counters; preserve those too.
+            let restored = local_history.then(|| ds.doc.clone());
             normalize(ds.doc_mut(), bdoc);
+            if restored.is_some() {
+                // Font selection is session-wide and is not undone. Settle restored text
+                // against the selected faces before retaining a history or saved snapshot.
+                let text_ids: Vec<NodeId> = ds
+                    .doc
+                    .changed_ids(bdoc, usize::MAX)
+                    .unwrap_or_else(|| ds.doc.ids().collect())
+                    .into_iter()
+                    .filter(|id| ds.doc.node(*id).is_some_and(|n| matches!(n.kind, figcraft_doc::NodeKind::Text(_))))
+                    .collect();
+                if !text_ids.is_empty() {
+                    crate::fonts::refit(ds.doc_mut(), Some(&text_ids), None);
+                }
+            }
+            if let Some(restored) = restored
+                && ds.doc.next_id() == restored.next_id()
+                && ds.doc.client_id() == restored.client_id()
+                && *ds.doc == *restored
+            {
+                ds.doc = restored;
+            }
+            if local_history
+                && ds.doc.next_id() == ds.saved_doc.next_id()
+                && ds.doc.client_id() == ds.saved_doc.client_id()
+                && *ds.doc == *ds.saved_doc
+            {
+                // Derived text can settle back to the saved contents after history restores
+                // an older cache. Keep versions_changed independent of this Arc coalescing.
+                ds.doc = ds.saved_doc.clone();
+            }
         }
     }
 
@@ -358,7 +429,9 @@ impl Session {
             }
             return;
         };
-        let Some(ds) = self.docs.iter_mut().find(|d| d.uid == uid) else { return };
+        let Some(ds) = self.docs.iter_mut().find(|d| d.uid == uid) else {
+            return;
+        };
         let edit = !Arc::ptr_eq(&ds.doc, &bdoc) && ds.interaction.is_none();
         ds.clean_selection();
         ds.revision += 1;

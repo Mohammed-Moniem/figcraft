@@ -116,7 +116,7 @@ pub fn bind(app: &mut FigApp, ids: &[NodeId], field: &str, pick: &Pick) {
 
 /// The enabled libraries this session has read, for pickers and the Variables editor.
 pub fn libraries(app: &FigApp, doc: &Document) -> Vec<Arc<PublishedLibrary>> {
-    library::read_libraries(&app.session.libraries, doc).map(|(_, lib)| lib.clone()).collect()
+    library::read_libraries_from(&app.session.libraries, doc, app.session.library_origin()).map(|(_, lib)| lib.clone()).collect()
 }
 
 /// A variable group a picker lists: its library (None: this file), its collection and the

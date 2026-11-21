@@ -25,8 +25,10 @@ pub(super) fn store_clipboard(
 ) -> Result<()> {
     let ds = s.ds()?;
     let (source, source_path, uid) = (ds.doc.clone(), ds.path.clone(), ds.uid);
+    let source_library_origin = s.library_origin().map(str::to_string);
     s.clipboard.source = Some(source);
     s.clipboard.source_path = source_path;
+    s.clipboard.source_library_origin = source_library_origin;
     s.clipboard.source_doc = uid;
     s.clipboard.copied_components = nodes
         .iter()
@@ -216,6 +218,7 @@ pub(super) fn paste_design_layers(s: &mut Session, p: &Value) -> Result<Value> {
         source_doc: 0,
         source: Some(doc),
         source_path: None,
+        source_library_origin: None,
         copied_components: BTreeSet::new(),
         layers_generation,
     };
@@ -338,7 +341,7 @@ pub fn paste_into(s: &mut Session, parent: NodeId, at: Option<(f64, f64)>) -> Re
         clip.nodes.iter().flat_map(|(_, nodes)| nodes).filter_map(|n| Some((*all.get(&n.id)?, n.board.clone()?))).collect();
     crate::board::rejoin(doc, &originals, &all, !copy_local);
     if let Some(src) = foreign {
-        crate::library::adopt_pasted(doc, src, clip.source_path.as_deref(), &all)?;
+        crate::library::adopt_pasted_from(doc, src, clip.source_path.as_deref(), clip.source_library_origin.as_deref(), &all)?;
     }
     crate::library::count_inserted(doc, &out);
     Ok(out)

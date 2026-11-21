@@ -327,6 +327,34 @@ fn inserting_library_instances_counts_them() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// Saved links use portable filenames. This supersedes raw absolute-path equality against
+/// the live document; every other library metadata field must still match exactly.
+fn assert_reopened_library_metadata_and_reads(s: &Session, t: &mut Session, lib_path: &str, user_path: &str, lid: &str) {
+    let mut expected = (*s.doc().unwrap().libraries).clone();
+    let link = expected.enabled.iter_mut().find(|link| link.id == lid).unwrap();
+    assert_eq!(std::path::Path::new(&link.path), std::path::Path::new(lib_path));
+    link.path = "kit.figcraft".into();
+    let stored = t.doc().unwrap().libraries.link(lid).unwrap();
+    assert_eq!(std::path::Path::new(&stored.path), std::path::Path::new("kit.figcraft"));
+    let resolved = std::path::Path::new(user_path).parent().unwrap().join(&stored.path);
+    assert_eq!(resolved.as_path(), std::path::Path::new(lib_path));
+    assert_eq!(t.doc().unwrap().libraries.as_ref(), &expected);
+
+    // A fresh reopened session reads the surviving library through both public query commands.
+    let list = ex(t, "library.list", json!({"assets": true}));
+    assert_eq!(list["libraries"].as_array().map(Vec::len), Some(1));
+    let listed = &list["libraries"][0];
+    assert_eq!(listed["id"], lid);
+    assert_eq!(listed["path"], "kit.figcraft");
+    assert_eq!(listed["version"], 3);
+    assert_eq!(listed["updates"], 0);
+    assert!(listed.get("error").is_none(), "{list}");
+    assert_eq!(listed["components"].as_array().map(Vec::len), Some(2));
+    let updates = ex(t, "library.updates", json!({}));
+    assert_eq!(updates["count"], 0);
+    assert_eq!(updates["errors"], json!([]), "a read failure also reports zero pending updates");
+}
+
 #[test]
 fn add_place_and_update_keep_overrides() {
     let d = dir("flow");
@@ -385,7 +413,7 @@ fn add_place_and_update_keep_overrides() {
     let mut t = Session::empty();
     ex(&mut t, "file.open", json!({"path": user_path}));
     healthy(&t);
-    assert_eq!(t.doc().unwrap().libraries, s.doc().unwrap().libraries);
+    assert_reopened_library_metadata_and_reads(&s, &mut t, &lib_path, &user_path, &lid);
 
     detaching_a_library_instance_counts_it(&mut s, &d, &lid, card_inst);
 
@@ -573,4 +601,226 @@ fn a_file_stamp_from_the_moment_it_was_read_does_not_prove_it_unchanged() {
     let old = read_at - Duration::from_secs(10);
     assert!(entry(old).still_valid(&Stamp { identity: None, len: 10, modified: Some(old) }));
     assert!(!entry(old).still_valid(&Stamp { identity: None, len: 11, modified: Some(old) }));
+}
+
+const FONT_AP_COMMANDS: [&str; 5] = ["text.loadFont", "text.refit", "text.rescanFonts", "text.preserveAppearance", "font.download"];
+const CACHE_AP_COMMANDS: [&str; 7] =
+    ["text.loadFont", "text.refit", "text.rescanFonts", "text.preserveAppearance", "font.download", "edit.undo", "edit.redo"];
+
+fn library_guard_appearance(label: &str) -> Arc<figcraft_doc::TextAppearance> {
+    Arc::new(figcraft_doc::TextAppearance {
+        fingerprint: label.into(),
+        box_width: 10.0,
+        box_height: 10.0,
+        width: 8.0,
+        height: 10.0,
+        glyphs: Vec::new(),
+        lines: Vec::new(),
+        decorations: Vec::new(),
+        styles: Vec::new(),
+        truncated: false,
+    })
+}
+
+/// Reuse the store/remote fixture, without registering any global font faces.
+fn library_guard_text_document(predirty: bool) -> (Document, NodeId, NodeId) {
+    let (mut doc, remote) = dirty_library_document();
+    doc.get_mut(remote).unwrap().kind = NodeKind::Text(figcraft_doc::TextData {
+        appearance: Some(library_guard_appearance("before")),
+        characters: "Fixed I".into(),
+        auto_resize: figcraft_doc::TextAutoResize::None,
+        ..Default::default()
+    });
+    let witness = doc.alloc_id();
+    let mut other = figcraft_doc::TextData { characters: "Other".into(), auto_resize: figcraft_doc::TextAutoResize::None, ..Default::default() };
+    other.style.font_family = "Unrelated library guard family".into();
+    doc.insert(Node::new(witness, NodeKind::Text(other), "Other family witness", 10.0, 10.0), doc.first_page().unwrap(), None).unwrap();
+    doc.take_dirty();
+    if predirty {
+        doc.mark_dirty([remote]);
+    }
+    assert!(doc.is_remote(remote));
+    assert_eq!(doc.dirty().contains(&remote), predirty);
+    (doc, remote, witness)
+}
+
+fn library_guard_refresh(doc: &mut Document, remote: NodeId, appearance: Option<Arc<figcraft_doc::TextAppearance>>) {
+    doc.get_mut(remote).unwrap().kind.text_mut().unwrap().appearance = appearance;
+    assert!(doc.dirty().contains(&remote), "exercise the remote-node comparison, not a clean-node skip");
+}
+
+#[test]
+fn font_cache_only_remote_refresh_is_allowed_for_clean_and_predirty_text() {
+    for predirty in [false, true] {
+        let (before, remote, witness) = library_guard_text_document(predirty);
+        let witness_before = before.node_arc(witness).unwrap().clone();
+        for cmd in CACHE_AP_COMMANDS {
+            for appearance in [None, Some(library_guard_appearance("after"))] {
+                let mut after = before.clone();
+                library_guard_refresh(&mut after, remote, appearance);
+                assert!(!Arc::ptr_eq(before.node_arc(remote).unwrap(), after.node_arc(remote).unwrap()));
+                let dirty = after.dirty().clone();
+                check_read_only(cmd, &before, &after).unwrap();
+                assert_eq!(after.dirty(), &dirty, "the read-only guard does not consume pending dirty nodes");
+                assert!(Arc::ptr_eq(&witness_before, after.node_arc(witness).unwrap()), "an unrelated text-family witness is untouched");
+            }
+            let mut no_cache = before.clone();
+            no_cache.get_mut(remote).unwrap().kind.text_mut().unwrap().appearance = None;
+            let mut after = no_cache.clone();
+            library_guard_refresh(&mut after, remote, Some(library_guard_appearance("created")));
+            check_read_only(cmd, &no_cache, &after).unwrap();
+            check_read_only(cmd, &before, &before.clone()).unwrap();
+        }
+    }
+}
+
+#[test]
+fn font_cache_exception_does_not_allow_any_other_remote_node_or_text_change() {
+    type Change = (&'static str, fn(&mut Node));
+    let changes: &[Change] = &[
+        ("characters", |n| n.kind.text_mut().unwrap().characters.push('!')),
+        ("font style", |n| n.kind.text_mut().unwrap().style.font_size += 1.0),
+        ("styled ranges", |n| {
+            let t = n.kind.text_mut().unwrap();
+            t.runs.push(figcraft_doc::StyleRun { start: 0, end: 1, style: t.style.clone() });
+        }),
+        ("resize mode", |n| n.kind.text_mut().unwrap().auto_resize = figcraft_doc::TextAutoResize::WidthAndHeight),
+        ("paragraph layout", |n| n.kind.text_mut().unwrap().paragraph_spacing = 1.0),
+        ("width", |n| n.width += 1.0),
+        ("height", |n| n.height += 1.0),
+        ("transform", |n| n.transform = figcraft_geom::Affine::translate((1.0, 0.0))),
+        ("name", |n| n.name.push('!')),
+        ("opacity", |n| n.opacity = 0.5),
+        ("source", |n| n.source = Some(NodeId(1))),
+        ("style link", |n| n.styles.text = Some("changed-style".into())),
+        ("variable binding", |n| {
+            n.bound.insert("fontSize".into(), "changed-variable".into());
+        }),
+        ("variable mode", |n| {
+            n.var_modes.insert("changed-collection".into(), "changed-mode".into());
+        }),
+    ];
+    let (before, remote, _) = library_guard_text_document(true);
+    for cmd in CACHE_AP_COMMANDS {
+        for (label, change) in changes {
+            let mut after = before.clone();
+            library_guard_refresh(&mut after, remote, Some(library_guard_appearance("after")));
+            change(after.get_mut(remote).unwrap());
+            assert_eq!(check_read_only(cmd, &before, &after), Err(READ_ONLY.into()), "{cmd}: {label}");
+        }
+    }
+}
+
+#[test]
+fn generic_and_similarly_named_commands_cannot_write_remote_appearance() {
+    let (before, remote, _) = library_guard_text_document(true);
+    let mut after = before.clone();
+    library_guard_refresh(&mut after, remote, Some(library_guard_appearance("after")));
+    for cmd in [
+        "node.set",
+        "text.set",
+        "text.fonts",
+        "text.missingFonts",
+        "font.downloads",
+        "command.batch",
+        "file.save",
+        "file.saveAs",
+        "text.loadFont.other",
+        "text.refitOther",
+        "text.rescanFonts.other",
+        "text.preserveAppearance.other",
+        "font.download.other",
+    ] {
+        assert_eq!(check_read_only(cmd, &before, &after), Err(READ_ONLY.into()), "{cmd}");
+    }
+}
+
+#[test]
+fn font_cache_exception_keeps_nontext_missing_and_reparented_remote_nodes_read_only() {
+    let (before, remote, _) = library_guard_text_document(true);
+    for cmd in CACHE_AP_COMMANDS {
+        let mut deleted = before.clone();
+        deleted.remove(remote).unwrap();
+        assert_eq!(check_read_only(cmd, &before, &deleted), Err(READ_ONLY.into()), "{cmd}: deleted remote");
+        let mut moved = before.clone();
+        moved.reparent(remote, before.first_page().unwrap(), None).unwrap();
+        assert_eq!(check_read_only(cmd, &before, &moved), Err(READ_ONLY.into()), "{cmd}: reparented remote");
+        let mut inserted = before.clone();
+        let id = inserted.alloc_id();
+        inserted
+            .insert(Node::new(id, NodeKind::Text(figcraft_doc::TextData::default()), "New remote", 10.0, 10.0), before.libraries.store.unwrap(), None)
+            .unwrap();
+        assert_eq!(check_read_only(cmd, &before, &inserted), Err(READ_ONLY.into()), "{cmd}: inserted remote");
+        let (frame_before, frame) = dirty_library_document();
+        let mut frame_after = frame_before.clone();
+        frame_after.get_mut(frame).unwrap().opacity = 0.5;
+        assert_eq!(check_read_only(cmd, &frame_before, &frame_after), Err(READ_ONLY.into()), "{cmd}: non-text change");
+        let mut equal_frame = frame_before.clone();
+        let _ = equal_frame.get_mut(frame).unwrap();
+        assert!(!Arc::ptr_eq(frame_before.node_arc(frame).unwrap(), equal_frame.node_arc(frame).unwrap()));
+        assert_eq!(check_read_only(cmd, &frame_before, &equal_frame), Ok(()), "{cmd}: rebuilding an equal node is not an authored change");
+    }
+}
+
+#[test]
+fn font_cache_refresh_cannot_replace_libraries_variables_collections_or_styles() {
+    let (before, remote, _) = library_guard_text_document(true);
+    type DocumentEdit = fn(&mut Document);
+    let edits: &[(&str, DocumentEdit)] = &[
+        ("variable", |d| {
+            d.variables
+                .variables
+                .push(serde_json::from_value(json!({"id":"v","name":"V","collection":"c","resolvedType":"number","values":{}})).unwrap())
+        }),
+        ("collection", |d| {
+            d.variables.collections.push(figcraft_doc::Collection { id: "c".into(), name: "C".into(), modes: Vec::new(), extends: None })
+        }),
+        ("style", |d| {
+            d.styles.push(Style {
+                id: "s".into(),
+                name: "S".into(),
+                description: String::new(),
+                kind: StyleKind::Paint { paints: Vec::new() },
+                bound: BTreeMap::new(),
+            })
+        }),
+        ("equal library replacement", |d| d.libraries = Arc::new((*d.libraries).clone())),
+        ("library data", |d| {
+            d.libraries_mut().enabled.push(LibraryLink {
+                id: "other".into(),
+                name: "Other".into(),
+                path: "synthetic-library.figcraft".into(),
+                version: 1,
+            })
+        }),
+    ];
+    for cmd in FONT_AP_COMMANDS {
+        for (label, edit) in edits {
+            let mut after = before.clone();
+            library_guard_refresh(&mut after, remote, Some(library_guard_appearance("after")));
+            edit(&mut after);
+            assert_eq!(check_read_only(cmd, &before, &after), Err(READ_ONLY.into()), "{cmd}: {label}");
+        }
+        for (label, edit) in edits {
+            let mut metadata_only = before.clone();
+            edit(&mut metadata_only);
+            assert!(Arc::ptr_eq(before.node_arc(remote).unwrap(), metadata_only.node_arc(remote).unwrap()));
+            assert_eq!(check_read_only(cmd, &before, &metadata_only), Err(READ_ONLY.into()), "{cmd}: metadata only: {label}");
+        }
+    }
+    let mut restored_library = before.clone();
+    restored_library.libraries = Arc::new((*restored_library.libraries).clone());
+    check_read_only("edit.undo", &before, &restored_library).unwrap();
+}
+
+#[test]
+fn unchanged_remote_values_are_allowed_after_arc_rebuilds_without_an_appearance_exception() {
+    let (before, remote, _) = library_guard_text_document(true);
+    let mut after = before.clone();
+    let _ = after.get_mut(remote).unwrap();
+    assert!(!Arc::ptr_eq(before.node_arc(remote).unwrap(), after.node_arc(remote).unwrap()));
+    assert_eq!(before.node(remote), after.node(remote));
+    for cmd in ["node.set", "text.set", "command.batch", "file.save", "file.saveAs", "edit.undo", "edit.redo"] {
+        check_read_only(cmd, &before, &after).unwrap();
+    }
 }

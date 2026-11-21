@@ -609,6 +609,15 @@ impl Cache {
         self.entries.get(path).map(|e| e.result.as_ref().map_err(String::as_str))
     }
 
+    /// Look up a document reference by its origin, without reading or aliasing relative keys.
+    pub fn cached_from(&self, path: &str, origin: Option<&str>) -> Option<std::result::Result<&Arc<PublishedLibrary>, &str>> {
+        if crate::library_server::is_server_link(path) {
+            return self.cached(path);
+        }
+        let resolved = crate::library_paths::resolve(path, origin).ok()?;
+        self.cached(resolved.to_str()?)
+    }
+
     /// Remember `result` for `path` (a library fetched from a server).
     pub fn insert(&mut self, path: &str, result: std::result::Result<Arc<PublishedLibrary>, String>) {
         if self.entries.len() >= MAX_CACHED && !self.entries.contains_key(path) {
@@ -1172,6 +1181,11 @@ fn new_records(mine: &[ImportedRecord], theirs: &[ImportedRecord], exists: impl 
 /// records and library links, and the pasted layers point at them. Styles and variables are
 /// appended by id beforehand: this records the copies among them.
 pub fn merge_store(doc: &mut Document, other: &Document, map: &BTreeMap<NodeId, NodeId>) -> Result<()> {
+    merge_store_from(doc, other, map, None)
+}
+
+/// Merge from a source whose relative links use this explicit retained origin.
+pub(crate) fn merge_store_from(doc: &mut Document, other: &Document, map: &BTreeMap<NodeId, NodeId>, origin: Option<&str>) -> Result<()> {
     if other.libraries.is_empty() {
         return Ok(());
     }
@@ -1187,7 +1201,9 @@ pub fn merge_store(doc: &mut Document, other: &Document, map: &BTreeMap<NodeId, 
     libs.variables.extend(vars);
     for l in &other.libraries.enabled {
         if libs.link(&l.id).is_none() {
-            libs.enabled.push(l.clone());
+            let mut link = l.clone();
+            link.path = crate::library_paths::for_transfer(&l.path, origin)?;
+            libs.enabled.push(link);
         }
     }
     Ok(())
@@ -1256,6 +1272,17 @@ fn merge_components(
 /// stay behind, so those instances show a missing main (restorable). Links into `src` that can't
 /// be followed never point at an unrelated layer of `doc`.
 pub fn adopt_pasted(doc: &mut Document, src: &Document, src_path: Option<&str>, map: &BTreeMap<NodeId, NodeId>) -> Result<()> {
+    adopt_pasted_from(doc, src, src_path, None, map)
+}
+
+/// `src_path` identifies a published source file; `origin` independently owns its existing links.
+pub(crate) fn adopt_pasted_from(
+    doc: &mut Document,
+    src: &Document,
+    src_path: Option<&str>,
+    origin: Option<&str>,
+    map: &BTreeMap<NodeId, NodeId>,
+) -> Result<()> {
     // The mains the pasted instances show and offer as instance swap values (`src`'s ids).
     let mut mains = BTreeSet::new();
     for theirs in map.keys() {
@@ -1281,7 +1308,9 @@ pub fn adopt_pasted(doc: &mut Document, src: &Document, src_path: Option<&str>, 
             if doc.libraries.link(&r.library).is_none()
                 && let Some(l) = src.libraries.link(&r.library)
             {
-                doc.libraries_mut().enabled.push(l.clone());
+                let mut link = l.clone();
+                link.path = crate::library_paths::for_transfer(&l.path, origin)?;
+                doc.libraries_mut().enabled.push(link);
             }
         }
     }
@@ -1340,6 +1369,26 @@ pub fn adopt_pasted(doc: &mut Document, src: &Document, src_path: Option<&str>, 
     Ok(())
 }
 
+/// These commands derive portable glyph data from available faces; none accepts an appearance payload.
+/// A setter or a compound wrapper must not become a way to author read-only library caches.
+fn font_appearance_command(cmd: &str) -> bool {
+    matches!(cmd, "text.loadFont" | "text.refit" | "text.rescanFonts" | "text.preserveAppearance" | "font.download")
+}
+
+/// The portable cache alone may change: preserve every editable text and node field, including
+/// source, geometry, styles and variable bindings. Cloning nodes shares the large appearance data.
+fn only_text_appearance_changed(old: &Node, new: &Node) -> bool {
+    if !matches!((&old.kind, &new.kind), (NodeKind::Text(_), NodeKind::Text(_))) {
+        return false;
+    }
+    let (mut old, mut new) = (old.clone(), new.clone());
+    if let (NodeKind::Text(old_text), NodeKind::Text(new_text)) = (&mut old.kind, &mut new.kind) {
+        old_text.appearance = None;
+        new_text.appearance = None;
+    }
+    old == new
+}
+
 /// Refuse edits of library copies, except by library commands (and imports of other files,
 /// which bring their copies along).
 pub fn check_read_only(cmd: &str, before: &Document, after: &Document) -> std::result::Result<(), String> {
@@ -1347,15 +1396,28 @@ pub fn check_read_only(cmd: &str, before: &Document, after: &Document) -> std::r
     if cmd.starts_with("library.") || cmd == "file.import" || cmd.starts_with("edit.paste") {
         return Ok(());
     }
-    if !variables_unchanged(before, after) {
+    let font_appearance = font_appearance_command(cmd);
+    if !variables_unchanged(before, after)
+        // Undo/restore may replace library data; font-derived cache refreshes never do. Do not
+        // let that existing replacement rule hide authored variables, collections or style edits.
+        || (font_appearance
+            && (!Arc::ptr_eq(&before.libraries, &after.libraries) || before.variables != after.variables || before.styles != after.styles))
+    {
         return Err(READ_ONLY.into());
     }
+    // History accepts no appearance payload: it only restores captured portable caches.
+    let history_appearance = matches!(cmd, "edit.undo" | "edit.redo");
     let changed_remote = |id| {
         if !before.is_remote(id) && !after.is_remote(id) {
             return false;
         }
         match (before.node_arc(id), after.node_arc(id)) {
-            (Some(old), Some(new)) => !Arc::ptr_eq(old, new),
+            (Some(old), Some(new)) => {
+                if Arc::ptr_eq(old, new) || old == new {
+                    return false;
+                }
+                !((font_appearance || history_appearance) && only_text_appearance_changed(old, new))
+            }
             _ => true,
         }
     };
@@ -1406,6 +1468,18 @@ pub fn read_libraries<'a>(cache: &'a Cache, doc: &'a Document) -> impl Iterator<
     })
 }
 
+/// The enabled libraries read relative to their document's retained local origin.
+pub fn read_libraries_from<'a>(
+    cache: &'a Cache,
+    doc: &'a Document,
+    origin: Option<&'a str>,
+) -> impl Iterator<Item = (&'a LibraryLink, &'a Arc<PublishedLibrary>)> {
+    doc.libraries.enabled.iter().filter_map(move |l| match cache.cached_from(&l.path, origin) {
+        Some(Ok(lib)) if lib.manifest.id == l.id => Some((l, lib)),
+        _ => None,
+    })
+}
+
 /// The variable collections library `lib` offers.
 pub fn published_collections(lib: &PublishedLibrary) -> impl Iterator<Item = &Collection> {
     let m = &lib.manifest;
@@ -1420,3 +1494,9 @@ pub fn published_variables(lib: &PublishedLibrary) -> impl Iterator<Item = &Vari
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod relative_path_tests;
+
+#[cfg(test)]
+mod transfer_origin_tests;

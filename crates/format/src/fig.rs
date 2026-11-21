@@ -39,6 +39,8 @@ mod motion_export_loss_tests;
 mod motion_export_tests;
 #[cfg(test)]
 mod motion_import_tests;
+#[cfg(test)]
+mod motion_scale_export_tests;
 mod network;
 #[cfg(test)]
 mod paste_style_tests;

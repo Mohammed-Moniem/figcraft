@@ -197,7 +197,7 @@ pub(super) fn import(s: &mut Session, p: &Value) -> Result<Value> {
             let sibling = if variables.is_none() { path.as_deref().and_then(sibling_variables) } else { None };
             let (other, rest) = load_with(&bytes, &name, variables.as_ref().or(sibling.as_ref()), images)?;
             let summary = import_summary(&other.doc);
-            let pages = append_pages(s.doc_mut()?, &other.doc)?;
+            let pages = append_pages_from(s.doc_mut()?, &other.doc, path.as_deref())?;
             if !other.issues.is_empty() {
                 s.message = Some(match other.issues.as_slice() {
                     [one] => format!("{}: {one}", file_stem(&name)),
@@ -224,7 +224,12 @@ pub(super) fn import(s: &mut Session, p: &Value) -> Result<Value> {
 /// `doc`. Ids are remapped across all pages at once, so instances keep their main, instance layers
 /// their source and interactions and flows their targets wherever those are. Styles, variables and
 /// collections whose id the document already has are kept as they are.
+#[cfg(test)]
 pub(super) fn append_pages(doc: &mut Document, other: &Document) -> Result<Vec<NodeId>> {
+    append_pages_from(doc, other, None)
+}
+
+fn append_pages_from(doc: &mut Document, other: &Document, origin: Option<&str>) -> Result<Vec<NodeId>> {
     for (k, v) in &other.images {
         doc.images.entry(k.clone()).or_insert_with(|| v.clone());
     }
@@ -286,6 +291,6 @@ pub(super) fn append_pages(doc: &mut Document, other: &Document) -> Result<Vec<N
             n.source = Some(src);
         }
     }
-    crate::library::merge_store(doc, other, &map)?;
+    crate::library::merge_store_from(doc, other, &map, origin)?;
     Ok(new_pages)
 }

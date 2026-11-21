@@ -30,6 +30,7 @@ pub use density::{pixel_density, placed_size};
 pub use library::{is_valid_library_id, read_library, read_library_within};
 
 mod density;
+mod library_paths;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Seek, Write};
@@ -592,11 +593,33 @@ pub fn save_bytes_with_history(
     versions: &[Version],
     branches: &[Branch],
 ) -> Result<Vec<u8>, FormatError> {
+    save_history(doc, thumbnail_png, versions, branches, None)
+}
+
+/// Write a native file while mapping only its library reference paths, including lazy history
+/// and branches. The callback is lexical: callers must not perform filesystem or network I/O.
+pub fn save_bytes_with_history_paths(
+    doc: &Document,
+    thumbnail_png: Option<&[u8]>,
+    versions: &[Version],
+    branches: &[Branch],
+    paths: &dyn Fn(&str) -> Option<String>,
+) -> Result<Vec<u8>, FormatError> {
+    save_history(doc, thumbnail_png, versions, branches, Some(paths))
+}
+
+fn save_history(
+    doc: &Document,
+    thumbnail_png: Option<&[u8]>,
+    versions: &[Version],
+    branches: &[Branch],
+    paths: library_paths::PathMap<'_>,
+) -> Result<Vec<u8>, FormatError> {
     let mut buf = std::io::Cursor::new(Vec::new());
     {
         let mut z = zip::ZipWriter::new(&mut buf);
         let stored = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
-        put_json(&mut z, "document.json", doc)?;
+        library_paths::put_document(&mut z, "document.json", doc, paths)?;
         // Every image once, whether the document, a version or a branch uses it.
         let mut written = BTreeSet::new();
         let branch_images = branches.iter().flat_map(|b| [&b.base.images, &b.head.images].into_iter().chain(b.versions.iter().map(Version::images)));
@@ -608,7 +631,7 @@ pub fn save_bytes_with_history(
         if let Some(t) = thumbnail_png {
             put(&mut z, "thumbnail.png", stored, t)?;
         }
-        put_versions(&mut z, "versions", versions)?;
+        put_versions(&mut z, "versions", versions, paths)?;
         if !branches.is_empty() {
             let mut ids = BTreeSet::new();
             let mut index = Vec::with_capacity(branches.len());
@@ -616,9 +639,9 @@ pub fn save_bytes_with_history(
                 if !is_valid_version_id(&b.id) || !ids.insert(b.id.as_str()) {
                     return Err(FormatError::Io(format!("invalid or duplicate branch id `{}`", b.id)));
                 }
-                put_json(&mut z, &format!("branches/{}/base.json", b.id), &b.base)?;
-                put_json(&mut z, &format!("branches/{}/head.json", b.id), &b.head)?;
-                put_versions(&mut z, &format!("branches/{}/versions", b.id), &b.versions)?;
+                library_paths::put_document(&mut z, &format!("branches/{}/base.json", b.id), &b.base, paths)?;
+                library_paths::put_document(&mut z, &format!("branches/{}/head.json", b.id), &b.head, paths)?;
+                put_versions(&mut z, &format!("branches/{}/versions", b.id), &b.versions, paths)?;
                 let images = |d: &Document| d.images.keys().cloned().collect::<Vec<String>>();
                 index.push(json!({"id": b.id, "name": b.name, "time": b.time, "client": b.client, "state": b.state,
                     "baseImages": images(&b.base), "headImages": images(&b.head)}));
@@ -635,7 +658,12 @@ pub fn save_bytes_with_history(
 
 /// Write version history `versions` (oldest first) under `dir`: `<dir>/index.json` and one
 /// `<dir>/<id>.json` snapshot per version. Nothing when there are none.
-fn put_versions<W: Write + Seek>(z: &mut zip::ZipWriter<W>, dir: &str, versions: &[Version]) -> Result<(), FormatError> {
+fn put_versions<W: Write + Seek>(
+    z: &mut zip::ZipWriter<W>,
+    dir: &str,
+    versions: &[Version],
+    paths: library_paths::PathMap<'_>,
+) -> Result<(), FormatError> {
     if versions.is_empty() {
         return Ok(());
     }
@@ -647,8 +675,11 @@ fn put_versions<W: Write + Seek>(z: &mut zip::ZipWriter<W>, dir: &str, versions:
         }
         let name = format!("{dir}/{}.json", v.id);
         match &v.snapshot {
-            Snapshot::Doc(d) => put_json(z, &name, d)?,
-            Snapshot::Stored { json, .. } => put(z, &name, json_options(), json)?,
+            Snapshot::Doc(d) => library_paths::put_document(z, &name, d, paths)?,
+            Snapshot::Stored { json, .. } => {
+                let mapped = paths.and_then(|paths| library_paths::stored(json, paths));
+                put(z, &name, json_options(), mapped.as_deref().unwrap_or(json))?;
+            }
         }
         let images: Vec<&String> = v.images().keys().collect();
         let mut entry = json!({"id": v.id, "name": v.name, "description": v.description, "time": v.time, "images": images});

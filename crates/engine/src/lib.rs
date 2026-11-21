@@ -25,6 +25,7 @@ mod extensions;
 pub mod fonts;
 pub mod guard;
 pub mod keymap;
+pub mod library_paths;
 pub mod measure;
 pub mod pixel_grid;
 pub mod projects;

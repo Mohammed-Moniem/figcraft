@@ -1,10 +1,12 @@
 # FigCraft Roadmap
 
+Next local composition,2026-11-10: [portable local libraries and selected-font history](docs/portable-libraries-and-font-history.md) (#2122 and font/cache/savepoint follow-ups), plus the bounded uniform Scale export recorded in [file-format parity](docs/file-format-parity.md), are entering combined validation. Isolated control and runtime results do not change the readiness estimates or complete the open-issue review.
+
 Local composition, 2026-11-08: reviewed native Motion interchange, inherited-slot text
 properties (#2124), sharp-point export-work accounting (#2114), document-owned drag
 retirement and browser panel-width persistence are locally merged. Their original/repaired
 controls and full combined CI pass on macOS ARM64 (6,977 tests; 27 existing ignored). Matching
-retained builds and launched validation remain pending.
+retained native, CLI, attach and web builds, scoped native point/format checks, and finite browser A04/A09 checks pass for source `26a04f98`. That source is preserved in local commit `54da8fb8`; this does not qualify the next composition or complete the issue review.
 [Scope and remaining checks](docs/native-format-slot-runtime-composition.md). The 18:43 UTC audit
 contains 200 open issues and 201 tracked records; all bugs and feature requests remain in progress.
 

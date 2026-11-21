@@ -72,10 +72,16 @@ pub struct DocState {
     pub page: NodeId,
     pub history: History,
     pub(crate) saved_doc: Arc<Document>,
+    /// A successful save/ACK supersedes older writers even when its document Arc is unchanged
+    /// (for example a branch-only save). Captures retain the old token, preventing identity reuse.
+    pub(crate) save_identity: Arc<()>,
     /// Only an actual new Design made before the interface knows its theme may adopt it once.
     /// Opened, supplied and shared documents keep their authoritative page colors.
     pub(crate) initial_theme_pending: bool,
     pub path: Option<String>,
+    /// The origin of relative library references in this document and its history. Kept across
+    /// Save As: changing the save destination must not redirect old snapshots to another library.
+    pub(crate) library_origin: Option<String>,
     pub revision: u64,
     pub view: ViewState,
     pub interaction: Option<Interaction>,
@@ -181,6 +187,7 @@ impl DocState {
     }
 
     pub fn new(mut doc: Document, path: Option<String>) -> Self {
+        let library_origin = crate::library_paths::document_origin(path.as_deref());
         if doc.pages.is_empty() {
             doc.repair();
         }
@@ -194,12 +201,14 @@ impl DocState {
         let mut st = Self {
             checkpoint: None,
             saved_doc: doc.clone(),
+            save_identity: Arc::new(()),
             initial_theme_pending: false,
             doc,
             selection: Vec::new(),
             page,
             history: History { limit: 1000, ..Default::default() },
             path,
+            library_origin,
             revision: 1,
             view: ViewState::default(),
             interaction: None,
@@ -359,7 +368,25 @@ impl DocState {
 
     pub fn mark_saved(&mut self) {
         self.saved_doc = self.doc.clone();
+        self.save_identity = Arc::new(());
         self.versions_changed = false;
+    }
+
+    /// Opaque metadata generation for a captured writer; `None` stays conservative on exhaustion.
+    pub(crate) fn metadata_generation(&self) -> Option<u64> {
+        self.metadata_generation
+    }
+
+    /// Record bytes written from a capture without clearing metadata added or changed since it.
+    /// Return whether its metadata generation still matches, independently of authored revisions.
+    pub(crate) fn mark_saved_snapshot(&mut self, doc: Arc<Document>, revision: u64, metadata_generation: Option<u64>) -> bool {
+        self.saved_doc = doc;
+        self.save_identity = Arc::new(());
+        let exact_metadata = self.metadata_generation.is_some() && self.metadata_generation == metadata_generation;
+        if self.revision == revision && exact_metadata {
+            self.versions_changed = false;
+        }
+        exact_metadata
     }
 
     /// A durable writer saved this exact capture of the same document.
@@ -370,11 +397,7 @@ impl DocState {
         if self.uid != captured.uid {
             return;
         }
-        self.saved_doc = captured.document_itself().clone();
-        let exact_metadata = self.metadata_generation.is_some() && self.metadata_generation == captured.metadata_generation;
-        if self.revision == captured.revision && exact_metadata {
-            self.versions_changed = false;
-        }
+        self.mark_saved_snapshot(captured.document_itself().clone(), captured.revision, captured.metadata_generation);
     }
 
     pub fn doc_mut(&mut self) -> &mut Document {
@@ -470,5 +493,36 @@ mod provider_capture_tests {
         assert!(doc.metadata_generation.is_none());
         doc.mark_saved_capture(&captured);
         assert!(doc.is_dirty(), "metadata generation exhaustion must remain conservative");
+    }
+}
+
+#[cfg(test)]
+mod native_snapshot_generation_tests {
+    use crate::Session;
+    use serde_json::json;
+
+    #[test]
+    fn native_snapshot_exhausted_metadata_generation_stays_dirty() {
+        let directory = std::env::temp_dir().join(format!("figcraft-native-save-generation-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(directory.clone());
+        let path = directory.join("generation.figcraft").to_string_lossy().into_owned();
+        let mut session = Session::new();
+        session.execute("file.save", &json!({"path":path})).unwrap();
+        let doc = session.ds_mut().unwrap();
+        doc.metadata_generation = Some(u64::MAX);
+        doc.versions_mut().clear();
+        assert!(doc.metadata_generation.is_none());
+        assert!(doc.is_dirty());
+        let snapshot = crate::cmd::file::FileSnapshot::of(doc);
+        let bytes = snapshot.encode().unwrap();
+        assert!(snapshot.save(&mut session, &bytes).unwrap());
+        assert!(session.ds().unwrap().is_dirty(), "unknown metadata generation cannot be acknowledged clean");
     }
 }

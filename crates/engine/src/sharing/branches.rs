@@ -365,9 +365,11 @@ fn open_tab(s: &mut Session, main: u64, id: &str) -> Result<usize> {
         doc.reserve_ids(NodeId(start.0 - 1));
     }
     let m = s.docs.iter_mut().find(|d| d.uid == main).ok_or(EngineError::NoDocument)?;
+    let library_origin = m.library_origin.clone();
     let b = m.branches.iter_mut().find(|b| b.id == id).ok_or_else(|| bad("branch.open", format!("no branch `{id}`")))?;
     // The branch's own version history: the tab's versions while it is open ([`sync`]).
     let mut tab = DocState::new(doc, None).with_versions(b.versions.clone());
+    tab.library_origin = library_origin;
     tab.branch_of = Some((main, id.to_string()));
     // The same content: opening isn't an edit of the main file.
     b.head = tab.doc.clone();

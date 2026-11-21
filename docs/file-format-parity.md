@@ -14,14 +14,26 @@ The frame's duration becomes the owning page timeline. Absent native fps/playbac
 synthetic native Figma control and original native-shaped tests; broader C06 acceptance remains
 open. Unsupported properties, hidden/preset/paint/effect bindings, unrecognized easing, motion paths,
 ambiguous/nested/offset timelines and invalid or over-budget graphs are counted with reasons.
-The outward candidate writes editable Linear XY Position only, for that direct visible rectangle
-subset with exact full-span whole-ms keys and a declared page duration. Track/key resources use a
+The outward candidate writes editable Linear XY Position for that direct visible rectangle
+subset with exact full-span whole-ms keys and a declared page duration. The new uniform Scale
+candidate adds positive ratios `0 < k <= 100` with only the observed cubic `(0.5,0,0.5,1)` on
+every key. Scale requires one track, one visible solid fill, no rounding/stroke/effects/clips,
+identity static linear transforms and an identity page transform. Bound aliases, component
+property references, K context and source-owned target/frame composition remain omitted.
+Scale ratios and dimensions must stay normal and positive on the Float32 wire. Full rectangle
+world corners at every key, the unchanged static rectangle, and frame clip world edges must
+reconstruct within 1/1024px and remain finite within 1e9; independent coordinate casts alone
+are insufficient. Scale export remains an experimental subset: acceptance must bind exact
+source, matching native output and independently checked artifacts. Accepted Position evidence
+does not establish general Scale acceptance. Track/key resources use a
 separate GUID namespace and share the existing hidden asset canvas; component property maps and
 ordinary variable bindings remain separate and retained. Native fps/loop defaults remain
 unverified: the candidate accepts source60fps/once and explicitly warns that these settings are
 not encoded. Omitted keyframes, clips and timeline settings have counted reasons and a `.figcraft`
 save alternative. Independent native-graph/local-runtime checks and actual Figma reimport are
 separate acceptance steps; this candidate alone is not all-property, easing, timeline or export parity.
+Existing Position admission is unchanged. Scale-only composition refusals do not remove static
+K, variable, property-map or prototype export elsewhere in the document.
 
 The candidate also bounds complete source/tree, auxiliary/inline rows, generated values, exact
 uncompressed encoding and compression/archive buffer growth before allocation. The shared work
