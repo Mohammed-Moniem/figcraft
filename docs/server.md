@@ -234,7 +234,13 @@ which other files use without anyone copying the library file around.
   keeps the version it last changed in, so files using the library update only what changed; the
   server's version is the one that counts, so when someone published since, the next publish
   follows it. Publishing needs an edit link: a view link's publish is refused.
-- **Using.** In another file, paste one of the library file's links (a **view link** is enough)
+- **Discovery.** With a private server configured in Preferences and its [team list](#the-team-list)
+  enabled, **Assets ▸ Libraries ▸ Browse team libraries** lists published libraries in files currently
+  shared with the team. Click **Add** beside a library to use it in the active file. Scripts use
+  `library.discover` and pass a returned `link` to `library.add`. These links contain no token.
+  The server checks its current team policy on every request. Stopping sharing removes the listing
+  and prevents further reads through that link. Assets already copied into a consumer file stay usable.
+- **Using a file link.** In another file, paste one of the library file's links (a **view link** is enough)
   into **Assets ▸ Libraries** (`library.add {path: <link>}`). The library is listed in the Assets
   panel like a library file: placing a component or applying a style copies it in as a read-only
   linked copy, as for library files. While the Assets panel shows, the app asks the server for a

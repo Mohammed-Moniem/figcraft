@@ -227,6 +227,14 @@ impl<B: Backend> Hub<B> {
                     ClientMsg::Hello(hello) => self.join(conn, hello, c),
                     ClientMsg::Manage(m) => self.manage(conn, &m, c),
                     ClientMsg::OpenLibrary(o) => self.open_library(conn, o, c),
+                    ClientMsg::OpenTeamLibrary(o) => {
+                        if o.protocol != PROTOCOL {
+                            refuse(&c.out, &unsupported(o.protocol));
+                        } else {
+                            let admission = self.backend.admit_team_library(&o.file);
+                            self.admitted_library(conn, o.file, &o.client_version, c, admission);
+                        }
+                    }
                     ClientMsg::OpenPlugins(o) => self.open_plugins(conn, &o, c),
                     ClientMsg::OpenHosting(o) => self.open_hosting(conn, &o, c),
                     ClientMsg::Resolve(r) => self.resolve(&r, &c),
@@ -489,11 +497,16 @@ impl<B: Backend> Hub<B> {
         if o.protocol != PROTOCOL {
             return refuse(&c.out, &unsupported(o.protocol));
         }
-        let (access, link) = match self.backend.admit(&o.file, &o.token) {
-            Ok(a) => (a.access.for_reader(message::reads_comments(&o.client_version)), a.link),
+        let admission = self.backend.admit(&o.file, &o.token);
+        self.admitted_library(conn, o.file, &o.client_version, c, admission);
+    }
+
+    fn admitted_library(&mut self, conn: u64, file: String, version: &str, c: Pending, admission: Result<Admission, String>) {
+        let (access, link) = match admission {
+            Ok(a) => (a.access.for_reader(message::reads_comments(version)), a.link),
             Err(why) => return refuse(&c.out, &why),
         };
-        self.take_in(conn, c, Kind::Library { file: o.file, access, link }, &ServerMsg::Library(Box::new(LibraryReply::Ready { access })));
+        self.take_in(conn, c, Kind::Library { file, access, link }, &ServerMsg::Library(Box::new(LibraryReply::Ready { access })));
     }
 
     /// A plugin directory connection: anyone may browse; a key, when given, must be the server's.

@@ -1,14 +1,14 @@
 //! Requests to a server outside a live session, each on a connection of its own answered in
 //! order: managing its files with the server's key ([`Manage`], [`request`]; the app publishes
 //! through it, and the server's command line uses it to reach a running server), and using a
-//! file's team library with one of the file's share links ([`OpenLibrary`], [`library`]), and its
+//! file's team library with a file share link or a team link ([`library`]), and its
 //! plugin directory ([`OpenPlugins`], [`plugins`]: anyone browses, the key publishes).
 
 use std::time::Duration;
 
 use figcraft_collab::message::{
-    self, Admin, AdminReply, ClientMsg, HostInfo, LibraryReply, LibraryReq, Manage, OpenHosting, OpenLibrary, OpenPlugins, PROTOCOL, PluginReply,
-    PluginReq, ServerMsg,
+    self, Admin, AdminReply, ClientMsg, HostInfo, LibraryReply, LibraryReq, Manage, OpenHosting, OpenPlugins, PROTOCOL, PluginReply, PluginReq,
+    ServerMsg,
 };
 use figcraft_engine::live::Shared;
 use tungstenite::{Bytes, Message, WebSocket};
@@ -137,10 +137,9 @@ pub fn library(link: &str, req: LibraryReq, limits: &NetLimits, timeout: Duratio
         ServerMsg::Library(r) => Some(*r),
         _ => None,
     };
-    let invite = Invite::parse(link)?;
-    let open = OpenLibrary { protocol: PROTOCOL, file: invite.file, token: invite.token, client_version: message::client_version() };
-    let mut ws = connect(&invite.server, limits, timeout)?;
-    send(&mut ws, &ClientMsg::OpenLibrary(open))?;
+    let (server, opening) = crate::requests::library_open(link)?;
+    let mut ws = connect(&server, limits, timeout)?;
+    send(&mut ws, &opening)?;
     match reply(&mut ws, limits, lib)? {
         LibraryReply::Ready { .. } => {}
         other => return Err(format!("the server answered {other:?} instead of opening the library")),

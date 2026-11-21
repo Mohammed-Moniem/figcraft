@@ -51,6 +51,13 @@ pub fn specs() -> Vec<CommandSpec> {
             publish_to_server
         ),
         spec!(
+            "library.discover",
+            "Browse team libraries",
+            "{}  lists published libraries in files currently shared on the team server in Preferences → {server, access, libraries: [{id, name, file, version, link}]}; pass a listed link to library.add",
+            false,
+            |s, _| s.discover_team_libraries()
+        ),
+        spec!(
             "library.add",
             "Add library",
             "{path (.figcraft file published as a library, or a share link of a file on a server: a view link is enough)}",
@@ -670,7 +677,7 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "library.add";
     let raw = req_string(cmd, p, "path")?;
     let path = if is_server_link(&raw) { raw.trim().to_string() } else { absolute_path(raw.trim()) };
-    let lib = s.load_library(&path)?;
+    let lib = s.library_for_add(&path)?;
     if is_server_link(&path) {
         // Added by you: its server may be checked for updates from now on (#1097).
         s.allow_library(&path);

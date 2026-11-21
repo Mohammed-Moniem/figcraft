@@ -145,6 +145,11 @@ pub trait Backend: Send + 'static {
         Err("this session is hosted by an app: it has no team list".into())
     }
 
+    /// The current team grant for a shared file that has a published library.
+    fn admit_team_library(&mut self, _file: &str) -> Result<Admission, String> {
+        Err("this session is hosted by an app: it has no team library list".into())
+    }
+
     /// What everyone is told when the hub stops.
     fn closing(&self) -> Closing;
 }

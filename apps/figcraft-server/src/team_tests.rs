@@ -260,3 +260,72 @@ fn the_apps_online_files_list_the_team_list_and_open_its_files() {
     ex(&mut b, "pref.publishServer", json!({"url": format!("ws://{}/", off.addr())}));
     assert_eq!(ex(&mut b, "collab.files", json!({"refresh": true}))["team"]["state"], "none");
 }
+
+#[test]
+fn discover_enable_update_and_withdraw_a_team_library() {
+    let dir = TempDir::new("discover-libraries");
+    let mut cfg = config(dir.path());
+    cfg.team_files = "view".into();
+    let mut server = crate::start(&cfg).unwrap();
+    let addr = server.addr();
+    let endpoint = format!("ws://{addr}/");
+    let key = crate::test_util::key(dir.path());
+    let mut consumer = session("Consumer");
+    ex(&mut consumer, "pref.publishServer", json!({"url": endpoint}));
+
+    let mut publisher = session("Publisher");
+    ex(&mut publisher, "file.rename", json!({"name": "Design system"}));
+    let frame = ex(&mut publisher, "frame.create", json!({"name": "Button", "width": 40, "height": 20}))["id"].clone();
+    let main = ex(&mut publisher, "component.create", json!({"ids": [frame]}))["id"].clone();
+    ex(&mut publisher, "collab.share", json!({"server": endpoint, "key": key}));
+    pump(&mut [&mut publisher], "the shared source file", |s| live(s[0]) && s[0].live().share.as_ref().is_some_and(|v| v.links.is_some()));
+    let mut private = session("Private publisher");
+    let node = ex(&mut private, "shape.rectangle", json!({"width": 40, "height": 20}))["id"].clone();
+    ex(&mut private, "style.create", json!({"type": "paint", "name": "Private style", "from": node}));
+    ex(&mut private, "library.publishToServer", json!({"server": endpoint, "key": key}));
+    assert_eq!(ex(&mut consumer, "library.discover", json!({}))["libraries"], json!([]), "ordinary shared files and unshared libraries stay out");
+
+    let publication = ex(&mut publisher, "library.publishToServer", json!({}));
+    let catalog = ex(&mut consumer, "library.discover", json!({}));
+    assert_eq!(catalog["access"], "view");
+    assert_eq!(catalog["libraries"].as_array().unwrap().len(), 1);
+    let row = &catalog["libraries"][0];
+    assert_eq!((&row["name"], &row["version"], &row["id"]), (&json!("Design system"), &json!(1), &publication["id"]));
+    let link = row["link"].as_str().unwrap();
+    assert!(link.ends_with("&team=1") && !link.contains("token=") && !link.contains(&key));
+    assert_eq!(ex(&mut consumer, "library.add", json!({"path": link}))["id"], row["id"]);
+    ex(&mut consumer, "library.place", json!({"library": row["id"], "component": "Button"}));
+    assert!(!consumer.live().syncing(), "adding the library does not join its design file");
+    ex(&mut publisher, "node.set", json!({"id": main, "props": {"fill": "#487ACC"}}));
+    assert!(publisher.execute("library.publishToServer", &json!({"server":link})).unwrap_err().to_string().contains("only view"));
+    assert_eq!(ex(&mut publisher, "library.publishToServer", json!({}))["version"], 2);
+    assert_eq!(ex(&mut consumer, "library.discover", json!({}))["libraries"][0]["version"], 2);
+    ex(&mut consumer, "library.check", json!({}));
+    pump(&mut [&mut consumer], "linked library v2", |s| s[0].cached_library(link).is_some_and(|r| r.is_ok_and(|l| l.manifest.version == 2)));
+    assert_eq!(ex(&mut consumer, "library.acceptUpdates", json!({}))["components"], 1);
+
+    drop(publisher);
+    server.stop();
+    cfg.listen = addr.to_string();
+    cfg.team_files = "comment".into();
+    let mut server = crate::start(&cfg).unwrap();
+    assert_eq!(ex(&mut consumer, "library.discover", json!({}))["access"], "comment");
+    ex(&mut session("Fresh consumer"), "library.add", json!({"path": link}));
+    let endpoint = figcraft_collab_net::Endpoint::plain(addr.to_string());
+    let requests =
+        |req| figcraft_collab_net::manage::request(&endpoint, &key, vec![req], &Default::default(), std::time::Duration::from_secs(5)).unwrap();
+    let file = row["file"].as_str().unwrap();
+    let reply = requests(Admin::Links { file: file.into() });
+    let [AdminReply::Links(links)] = reply.as_slice() else { panic!("expected links") };
+    for entry in links.iter().filter(|l| !l.label.starts_with("Team (")) {
+        requests(Admin::Revoke { file: file.into(), link: entry.id.clone() });
+    }
+    assert_eq!(ex(&mut consumer, "library.discover", json!({}))["libraries"], json!([]));
+    ex(&mut consumer, "library.remove", json!({"id":row["id"]}));
+    assert!(consumer.execute("library.add", &json!({"path":link})).is_err(), "a cached copy cannot re-enable a withdrawn grant");
+    assert!(session("New consumer").execute("library.add", &json!({"path": link})).is_err());
+    server.stop();
+    cfg.team_files.clear();
+    let _off = crate::start(&cfg).unwrap();
+    assert!(consumer.execute("library.discover", &json!({})).unwrap_err().to_string().contains(NO_TEAM));
+}

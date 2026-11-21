@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 
 use crate::live::{DEFAULT_SERVER, NetReply, NetRequest};
 use crate::online::{plain_server, same_server, server_host};
-use crate::{Result, Session};
+use crate::{EngineError, Result, Session};
 
 /// A file of a team list.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -94,15 +94,44 @@ fn listed(web: String, files: Vec<figcraft_collab::message::TeamFile>) -> TeamLi
 }
 
 impl Session {
+    /// The server explicitly configured for team browsing, without a management key.
+    pub fn team_catalog_server(&self) -> Option<String> {
+        let server = plain_server(&self.prefs.publish_server);
+        let public = option_env!("FIGCRAFT_DEFAULT_SERVER").is_none() && same_server(&server, DEFAULT_SERVER);
+        (!server.is_empty() && !public).then_some(server)
+    }
+
+    pub(crate) fn discover_team_libraries(&mut self) -> Result<Value> {
+        let server = self
+            .team_catalog_server()
+            .ok_or_else(|| EngineError::Other("Choose your team's server in Preferences to browse its libraries".into()))?;
+        let req = NetRequest::Hosting { server: server.clone(), file: String::new(), owner: String::new(), req: Some(Admin::TeamLibraries) };
+        match self.net(req)?.0 {
+            NetReply::Hosting(Ok((_, Some(AdminReply::TeamLibraries { access, libraries })))) => {
+                let libraries = libraries
+                    .into_iter()
+                    .filter(|l| valid_id(&l.file))
+                    .take(MAX_TEAM)
+                    .map(|l| {
+                        let name: String = l.name.trim().chars().filter(|c| !c.is_control()).take(256).collect();
+                        json!({"id": l.id, "name": name, "file": l.file, "version": l.version, "link": team_link(&server, &l.file)})
+                    })
+                    .collect::<Vec<_>>();
+                Ok(json!({"server": server, "access": access.id(), "libraries": libraries}))
+            }
+            NetReply::Hosting(Ok((_, Some(AdminReply::Failed { reason })))) | NetReply::Hosting(Err(reason)) => Err(EngineError::Other(reason)),
+            _ => Err(EngineError::Other("The server did not return a team library list".into())),
+        }
+    }
+
     /// Ask the server in Preferences for its team list (none asked when online sharing is off,
     /// without the network, or of the public server FigCraft ships with: it keeps none).
     pub(crate) fn team_refresh(&mut self) -> Result<()> {
-        let server = plain_server(&self.prefs.publish_server);
-        let public = option_env!("FIGCRAFT_DEFAULT_SERVER").is_none() && same_server(&server, DEFAULT_SERVER);
-        if server.is_empty() || public || self.live.link().is_none() || crate::file_access::network_refused().is_some() {
+        let Some(server) = self.team_catalog_server().filter(|_| self.live.link().is_some() && crate::file_access::network_refused().is_none())
+        else {
             self.live.team = None;
             return Ok(());
-        }
+        };
         let req = NetRequest::Hosting { server: server.clone(), file: String::new(), owner: String::new(), req: Some(Admin::Team) };
         let list = match self.net(req)?.0 {
             NetReply::Hosting(Ok((_, Some(AdminReply::Team { web, files })))) => listed(web, files),

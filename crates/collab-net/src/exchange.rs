@@ -15,8 +15,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use figcraft_collab::message::{
-    self, Admin, AdminReply, ClientMsg, HostInfo, LibraryReply, LibraryReq, Manage, OpenHosting, OpenLibrary, OpenPlugins, PROTOCOL, PluginReply,
-    PluginReq, ServerMsg,
+    self, Admin, AdminReply, ClientMsg, HostInfo, LibraryReply, LibraryReq, Manage, OpenHosting, OpenPlugins, PROTOCOL, PluginReply, PluginReq,
+    ServerMsg,
 };
 use figcraft_engine::live::{Event, NetReply, NetRequest, Shared, Status};
 
@@ -75,10 +75,10 @@ impl Exchange {
         Self::opened(server, open, requests.into_iter().map(ClientMsg::Admin).collect())
     }
 
-    /// Ask the library of the file behind `invite` one thing.
-    pub(crate) fn library(invite: Invite, req: LibraryReq) -> Self {
-        let open = OpenLibrary { protocol: PROTOCOL, file: invite.file, token: invite.token, client_version: message::client_version() };
-        Self::opened(invite.server, ClientMsg::OpenLibrary(open), VecDeque::from([ClientMsg::Library(req)]))
+    /// Ask the library of the file behind a share or team link one thing.
+    pub(crate) fn library(link: &str, req: LibraryReq) -> Result<Self, String> {
+        let (server, opening) = requests::library_open(link)?;
+        Ok(Self::opened(server, opening, VecDeque::from([ClientMsg::Library(req)])))
     }
 
     /// Ask the plugin directory of `server` one thing, with its `key` (empty: only browsing).
@@ -258,15 +258,15 @@ pub(crate) fn libraries(mut jobs: VecDeque<(String, LibraryReq)>, mut events: Ve
         return Next::Done(events, None);
     };
     let fetch = matches!(req, LibraryReq::Fetch { .. });
-    match Invite::parse(&link) {
+    match Exchange::library(&link, req) {
         Err(reply) => {
             if fetch {
                 events.push(Event::Library { link, reply: Err(reply) });
             }
             libraries(jobs, events, fetching)
         }
-        Ok(invite) => Next::Ask(
-            Box::new(Exchange::library(invite, req)),
+        Ok(exchange) => Next::Ask(
+            Box::new(exchange),
             Box::new(move |answers| {
                 if fetch {
                     events.push(Event::Library { link, reply: library_reply(answers) });
@@ -308,9 +308,9 @@ pub(crate) fn background(job: u64, req: NetRequest) -> Option<Next> {
                 share_links(Sharing { server, key, file, owner, revoke, create }, Box::new(move |r| answer(NetReply::Share(r))))
             }
         },
-        NetRequest::Library { link, req } => match Invite::parse(&link) {
+        NetRequest::Library { link, req } => match Exchange::library(&link, req) {
             Err(e) => answer(NetReply::Library(Err(e))),
-            Ok(invite) => Next::Ask(Box::new(Exchange::library(invite, req)), Box::new(move |a| answer(NetReply::Library(library_reply(a))))),
+            Ok(exchange) => Next::Ask(Box::new(exchange), Box::new(move |a| answer(NetReply::Library(library_reply(a))))),
         },
         NetRequest::Plugins { server, req } => match Endpoint::parse(&server) {
             Err(e) => answer(NetReply::Plugins(Err(e))),

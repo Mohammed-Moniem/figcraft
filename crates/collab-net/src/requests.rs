@@ -5,11 +5,23 @@
 use std::sync::Arc;
 
 use figcraft_collab::Replica;
-use figcraft_collab::message::{Access, Admin, AdminReply, NewLink};
+use figcraft_collab::message::{self, Access, Admin, AdminReply, ClientMsg, NewLink, OpenLibrary, PROTOCOL, ResolveTeam};
 use figcraft_doc::Document;
 use figcraft_engine::live::{Published, Shared, SharedLink};
 
-use crate::invite::{Endpoint, Invite};
+use crate::invite::{Endpoint, Invite, Lookup};
+
+/// Open a share link, or a tokenless team link under the server's current team-list policy.
+pub(crate) fn library_open(link: &str) -> Result<(Endpoint, ClientMsg), String> {
+    let (invite, lookup) = Invite::parse_join(link)?;
+    let client_version = message::client_version();
+    let opening = match lookup {
+        None => ClientMsg::OpenLibrary(OpenLibrary { protocol: PROTOCOL, client_version, file: invite.file, token: invite.token }),
+        Some(Lookup::Team) => ClientMsg::OpenTeamLibrary(ResolveTeam { protocol: PROTOCOL, client_version, file: invite.file }),
+        Some(Lookup::Code(_)) => return Err("that names a join code, not a library file".into()),
+    };
+    Ok((invite.server, opening))
+}
 
 /// What publishing uploads, and where.
 pub struct Publish {

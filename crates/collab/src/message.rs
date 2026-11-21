@@ -391,6 +391,8 @@ pub enum Admin {
     /// [`AdminReply::Team`]; they are joined with [`ResolveTeam`]. Servers older than this request
     /// can't read it.
     Team,
+    /// The published libraries in currently team-shared files. Uses the same policy as `Team`.
+    TeamLibraries,
 }
 
 /// The most files an [`AdminReply::Team`] lists (the most recently changed ones).
@@ -402,6 +404,15 @@ pub struct TeamFile {
     pub file: FileInfo,
     /// What its team link lets people do.
     pub access: Access,
+}
+
+/// A published library available through its file on the team list.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TeamLibrary {
+    pub file: String,
+    pub id: String,
+    pub name: String,
+    pub version: u64,
 }
 
 /// The most files one [`Admin::Owned`] asks about.
@@ -466,6 +477,7 @@ impl AdminReply {
             AdminReply::Links(links) => links.iter_mut().for_each(|l| l.access = l.access.for_reader(reads_comments)),
             AdminReply::Link(l) => l.link.access = l.link.access.for_reader(reads_comments),
             AdminReply::Team { files, .. } => files.iter_mut().for_each(|f| f.access = f.access.for_reader(reads_comments)),
+            AdminReply::TeamLibraries { access, .. } => *access = access.for_reader(reads_comments),
             _ => {}
         }
         self
@@ -516,6 +528,11 @@ pub enum AdminReply {
     Team {
         web: String,
         files: Vec<TeamFile>,
+    },
+    /// The libraries accessible through the team list, up to [`MAX_TEAM`]. No share tokens.
+    TeamLibraries {
+        access: Access,
+        libraries: Vec<TeamLibrary>,
     },
 }
 
@@ -866,6 +883,8 @@ pub enum ClientMsg {
     /// Ask for the link of a file on the server's team list (the first message on a connection,
     /// instead of `Hello`).
     ResolveTeam(ResolveTeam),
+    /// Read a published library through the team list, with its current access.
+    OpenTeamLibrary(ResolveTeam),
 }
 
 /// Server → client.

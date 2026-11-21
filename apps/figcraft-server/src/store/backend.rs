@@ -18,6 +18,7 @@ fn changes_files(req: &Admin) -> bool {
             | Admin::Owned { .. }
             | Admin::RemovePeer { .. }
             | Admin::Team
+            | Admin::TeamLibraries
     )
 }
 
@@ -196,6 +197,7 @@ impl Backend for Store {
             Admin::Owned { files } => return self.owned(files).into(),
             // Anyone who reaches the server, when its operator turned the team list on.
             Admin::Team => return self.team(open).into(),
+            Admin::TeamLibraries => return self.team_libraries().into(),
             Admin::Links { file }
             | Admin::CreateLink { file, .. }
             | Admin::Revoke { file, .. }
@@ -216,7 +218,9 @@ impl Backend for Store {
 
     fn admin(&mut self, ip: IpAddr, req: Admin, open: &dyn Fn(&str) -> Option<OpenFile>) -> Handled {
         let failed = |reason: String| Handled::from(AdminReply::Failed { reason });
-        if self.cfg.directory_only && matches!(&req, Admin::CreateLink { .. } | Admin::Code { .. } | Admin::Team | Admin::RemovePeer { .. }) {
+        if self.cfg.directory_only
+            && matches!(&req, Admin::CreateLink { .. } | Admin::Code { .. } | Admin::Team | Admin::TeamLibraries | Admin::RemovePeer { .. })
+        {
             return failed("design sharing is disabled in local directory mode".into());
         }
         if changes_files(&req) && !self.abuse.allow(ip, Action::Admin, self.clock()) {
@@ -244,6 +248,7 @@ impl Backend for Store {
             Admin::Code { file, token } => self.set_code(&file, &token).map_or_else(failed, |code| AdminReply::Code { code }.into()),
             Admin::Owned { files } => self.owned(&files).into(),
             Admin::Team => self.team(open).into(),
+            Admin::TeamLibraries => self.team_libraries().into(),
             // The hub removes people itself (it knows who is connected); it never asks the store.
             Admin::RemovePeer { .. } => failed("removing someone from a file is done by the server's hub".into()),
             Admin::Remove { file } => {
@@ -305,6 +310,17 @@ impl Backend for Store {
 
     fn resolve_team(&mut self, _ip: IpAddr, file: &str) -> Result<String, String> {
         self.team_link(file).map(|l| l.token)
+    }
+
+    fn admit_team_library(&mut self, file: &str) -> Result<Admission, String> {
+        if self.cfg.hosting.team.is_none() {
+            return Err(super::team::NO_TEAM.into());
+        }
+        if self.files.get(file).and_then(|entry| entry.meta.library.as_ref()).is_none() {
+            return Err(super::team::NOT_SHARED.into());
+        }
+        let link = self.team_link(file)?;
+        Ok(Admission { access: link.link.access, link: Some(link.link.id) })
     }
 
     fn closing(&self) -> Closing {

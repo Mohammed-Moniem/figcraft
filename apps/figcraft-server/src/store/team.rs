@@ -5,7 +5,7 @@
 //! makes such links, Stop sharing revokes them, and with the last of them the team links go too
 //! (whoever joined with one is disconnected, as with the links themselves).
 
-use figcraft_collab::message::{MAX_TEAM, TeamFile};
+use figcraft_collab::message::{MAX_TEAM, TeamFile, TeamLibrary};
 
 use super::{Access, AdminReply, Entry, LINKS, NewLink, OpenFile, Store, TeamToken, new_link, now, write_json};
 
@@ -34,6 +34,24 @@ impl Store {
         files.sort_by(|a, b| b.file.updated.cmp(&a.file.updated).then_with(|| a.file.name.cmp(&b.file.name)));
         files.truncate(MAX_TEAM);
         AdminReply::Team { web: self.cfg.hosting.web.clone(), files }
+    }
+
+    /// Only shared files with a published library qualify. The bound applies to libraries,
+    /// independently of how many ordinary files the team currently shares.
+    pub(super) fn team_libraries(&self) -> AdminReply {
+        let Some(access) = self.cfg.hosting.team else { return AdminReply::Failed { reason: NO_TEAM.into() } };
+        let mut libraries: Vec<_> = self
+            .files
+            .iter()
+            .filter(|(_, entry)| shared(entry))
+            .filter_map(|(file, entry)| {
+                let lib = entry.meta.library.as_ref()?;
+                Some(TeamLibrary { file: file.clone(), id: lib.id.clone(), name: lib.name.clone(), version: lib.version })
+            })
+            .collect();
+        libraries.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.file.cmp(&b.file)));
+        libraries.truncate(MAX_TEAM);
+        AdminReply::TeamLibraries { access, libraries }
     }
 
     /// The link the team joins `file` with: made now when it has none with the team list's access.

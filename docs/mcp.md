@@ -991,6 +991,9 @@ most when it can't be reached).
   access; with the server's address and key (`ws://host:47900/?key=…`, or `key`) the document is
   kept there as a new file first and the result has its `file`, `edit` and `view` links. A view
   link is refused. The document itself doesn't change (nothing to undo).
+- `library.discover {}` lists published libraries in currently shared files on the team server set
+  in Preferences. Each entry includes the name, version and a tokenless team link. Pass that link
+  to `library.add {path}` to enable the library in the active document without joining its source.
 - `library.add {path: <share link>}` enables it (a view link is enough); then `library.place`,
   `library.applyStyle`, `library.bindVariable`… work as for library files. `library.list` and
   `library.updates` ask the server for a newer version first (`"server": true` in the listing);

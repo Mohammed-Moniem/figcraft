@@ -470,6 +470,7 @@ impl Server {
             ClientMsg::Manage(_)
             | ClientMsg::Admin(_)
             | ClientMsg::OpenLibrary(_)
+            | ClientMsg::OpenTeamLibrary(_)
             | ClientMsg::Library(_)
             | ClientMsg::OpenPlugins(_)
             | ClientMsg::Plugins(_)

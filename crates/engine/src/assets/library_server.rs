@@ -208,10 +208,24 @@ impl Session {
         self.fetch_library(path, false)
     }
 
+    /// Adding a catalog link is an explicit grant to this document. Verify its current team
+    /// access even when another tab has already cached the library. Enabled files retain their
+    /// usual offline copies.
+    pub(crate) fn library_for_add(&mut self, path: &str) -> Result<Arc<PublishedLibrary>> {
+        if is_server_link(path) && matches!(figcraft_collab::invite::Invite::parse_join(path), Ok((_, Some(figcraft_collab::invite::Lookup::Team)))) {
+            return self.fetch_library_with_policy(path, true, false);
+        }
+        self.load_library(path)
+    }
+
     /// [`load_library`](Self::load_library); with `fresh`, a team library's server is asked for a
     /// newer version first (`library.updates`, `library.list`). Fetches report how the active
     /// document uses the library.
     pub fn fetch_library(&mut self, path: &str, fresh: bool) -> Result<Arc<PublishedLibrary>> {
+        self.fetch_library_with_policy(path, fresh, true)
+    }
+
+    fn fetch_library_with_policy(&mut self, path: &str, fresh: bool, allow_offline: bool) -> Result<Arc<PublishedLibrary>> {
         if !is_server_link(path) {
             // A library link is stored in the document, so opening someone else's file would
             // otherwise reach whatever path it names. Only a path on this computer is followed: a
@@ -245,7 +259,7 @@ impl Session {
             Err(EngineError::Waiting) => return Err(EngineError::Waiting),
             Err(e) => Err(e.to_string()),
         };
-        self.take_library(path, reply).map_err(EngineError::Other)
+        self.take_library(path, reply, allow_offline).map_err(EngineError::Other)
     }
 
     /// Whether team library `link` is one you added or checked here ([`Prefs::team_libraries`](crate::Prefs)):
@@ -306,12 +320,17 @@ impl Session {
     /// A background library request was answered: a newer library replaces the one shown ("Library
     /// updates available" follows).
     pub(crate) fn library_answer(&mut self, link: &str, reply: std::result::Result<LibraryReply, String>) {
-        let _ = self.take_library(link, reply);
+        let _ = self.take_library(link, reply, true);
     }
 
     /// Take the answer to a fetch of the team library behind `link` into the cache. While the
     /// server can't be reached (or refuses) the last library fetched stays in use.
-    fn take_library(&mut self, link: &str, reply: std::result::Result<LibraryReply, String>) -> std::result::Result<Arc<PublishedLibrary>, String> {
+    fn take_library(
+        &mut self,
+        link: &str,
+        reply: std::result::Result<LibraryReply, String>,
+        allow_offline: bool,
+    ) -> std::result::Result<Arc<PublishedLibrary>, String> {
         let kept = match self.libraries.cached(link) {
             Some(Ok(lib)) => Some(lib.clone()),
             _ => None,
@@ -324,10 +343,11 @@ impl Session {
             Ok(other) => Err(unexpected(&other).to_string()),
         };
         match (result, kept) {
-            (Err(e), Some(lib)) => {
+            (Err(e), Some(lib)) if allow_offline => {
                 log::info!("team library {}: {e}; the last version fetched stays in use", shown_path(link));
                 Ok(lib)
             }
+            (Err(e), Some(_)) => Err(e),
             (result, _) => {
                 self.libraries.insert(link, result.clone());
                 result

@@ -55,6 +55,7 @@ const USAGE_PERIODS: [(u64, &str, &str); 3] = [
     (365, tr_noop("1 year"), tr_noop("Past year")),
 ];
 const ADD: &str = "library.add";
+const DISCOVER: &str = "library.discover";
 const CHECK: &str = "library.check";
 
 /// Where an asset comes from: this file or an enabled library (its id).
@@ -825,10 +826,62 @@ fn libraries_view(app: &mut FigApp, ui: &mut Ui) {
     crate::widgets::separator(ui);
     let Ok(doc) = app.session.doc().cloned() else { return };
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        team_library_browser(app, ui, &doc);
+        crate::widgets::separator(ui);
         publish_form(app, ui, w, &doc);
         crate::widgets::separator(ui);
         enabled_libraries(app, ui, w, &doc);
     });
+}
+
+/// Browse on demand. A result belongs to the configured server; changing that server hides it.
+fn team_library_browser(app: &mut FigApp, ui: &mut Ui, doc: &Document) {
+    let server = app.session.team_catalog_server();
+    let results_id = Id::unique(("asset_team_library_list", &server));
+    let waiting = app.session.waiting_for(DISCOVER);
+    let response = ui
+        .horizontal(|ui| {
+            ui.add_space(PAD);
+            crate::widgets::button(ui, tr("Browse team libraries"), false, !waiting)
+        })
+        .inner;
+    if response.clicked() {
+        ui.data_mut(|data| data.remove::<Arc<Value>>(results_id));
+        let done: crate::Done = Box::new(move |_, ctx, result| {
+            ctx.data_mut(|data| data.insert_temp(results_id, Arc::new(result)));
+        });
+        app.run_background(ui.ctx(), DISCOVER, json!({}), done);
+    }
+    if waiting {
+        hint(ui, tr("Fetching from the server…"));
+    }
+    let results = ui.data(|data| data.get_temp::<Arc<Value>>(results_id));
+    let Some(rows) = results.as_ref().and_then(|v| v["libraries"].as_array()) else { return };
+    if rows.is_empty() {
+        hint(ui, tr("No team libraries are shared on this server."));
+    }
+    for row in rows {
+        let (Some(id), Some(name), Some(link)) = (row["id"].as_str(), row["name"].as_str(), row["link"].as_str()) else { continue };
+        let enabled = doc.libraries.link(id).is_some();
+        let own = doc.published.as_ref().is_some_and(|p| p.manifest.id == id);
+        let can_add = !enabled && !own && !app.session.waiting_for(ADD);
+        ui.push_id(link, |ui| {
+            ui.horizontal(|ui| {
+                ui.add_space(PAD);
+                let label = if own {
+                    tr("This file")
+                } else if enabled {
+                    tr("Enabled")
+                } else {
+                    tr("Add")
+                };
+                if crate::widgets::button(ui, label, false, can_add).clicked() && !crate::menus::dev_mode_refuses(app, ADD) {
+                    app.run_background(ui.ctx(), ADD, json!({"path": link}), Box::new(|app, _, r| added(app, &r)));
+                }
+                ui.add(egui::Label::new(name).truncate()).on_hover_text(name);
+            })
+        });
+    }
 }
 
 /// Draw the publish form: status, publishable components/styles/collections, description and

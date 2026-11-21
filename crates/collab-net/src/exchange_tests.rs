@@ -370,6 +370,10 @@ fn background_requests_ask_a_team_library() {
     let (reply, sent) = background(req(LibraryReq::Usage), &[ready.clone(), library(LibraryReply::Usage(Vec::new()))]);
     assert!(matches!(reply, NetReply::Library(Ok(LibraryReply::Usage(u))) if u.is_empty()));
     assert!(matches!(sent.as_slice(), [ClientMsg::OpenLibrary(o), ClientMsg::Library(LibraryReq::Usage)] if o.file == FILE && o.token == TOKEN));
+    let team = NetRequest::Library { link: format!("figcraft://join?host=127.0.0.1:47910&file={FILE}&team=1"), req: LibraryReq::Usage };
+    let (reply, sent) = background(team, &[ready.clone(), library(LibraryReply::Usage(Vec::new()))]);
+    assert!(matches!(reply, NetReply::Library(Ok(LibraryReply::Usage(u))) if u.is_empty()));
+    assert!(matches!(sent.as_slice(), [ClientMsg::OpenTeamLibrary(o), ClientMsg::Library(LibraryReq::Usage)] if o.file == FILE));
     // A refusal, and a link that isn't one.
     let (reply, _) = background(req(LibraryReq::Usage), &[ServerMsg::Refused { reason: "that link was revoked".into() }]);
     assert!(matches!(reply, NetReply::Library(Err(e)) if e.contains("revoked")));

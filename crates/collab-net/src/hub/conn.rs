@@ -271,6 +271,7 @@ fn serve(mut stream: TcpStream, conn: u64, hub: &Sender<HubIn>, limits: NetLimit
                 | ClientMsg::OpenPlugins(_)
                 | ClientMsg::OpenHosting(_)
                 | ClientMsg::Resolve(_)
+                | ClientMsg::OpenTeamLibrary(_)
                 | ClientMsg::ResolveTeam(_)),
                 bytes,
             ))) => {
