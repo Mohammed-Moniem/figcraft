@@ -18,8 +18,8 @@ The estimates below predate the 21 November 2026 Figma Desktop checks. Figma pla
 | Number | Value | Kind |
 |---|---|---|
 | Menu/command breadth | **100%** (212 / 212 catalogued menu items have a live command) | **measured** (`cargo xtask parity`, 2026-10-17) |
-| Feature breadth (does each Figma Design feature exist, weighted) | **~85%** (core editor areas 1–16: ~94%) | estimated from the area table below |
-| Ready for real work | **~53%** | estimated (dimension table below: written weights × written per-dimension scores) |
+| Feature breadth (does each Figma Design feature exist, weighted) | **85.27%** (core editor areas 1–16: ~94%) | weighted estimate from the feature-area table |
+| Ready for real work | **53.79%** | weighted estimate from the readiness dimensions |
 | Essentials user | **~59%** | estimated ([below](#essentials-user): core features 77.8% × discounts 0.92 × 0.94 × 0.88) |
 | Mainstream practitioner | **~50%** | estimated ([below](#mainstream-practitioner): weekly areas 72.7% × discounts 0.9 × 0.9 × 0.85) |
 | Remaining to beta | **~155–280 h** one Opus 5.5 agent (~32–64 h wall-clock with 5 parallel agents) | estimated |
@@ -50,6 +50,9 @@ native-speaker review, real-file licensing and screen-reader QA need people.
 
 The full number is an additive weighted sum over the dimension table; mainstream and essentials use
 multiplicative discounts.
+
+Run `python3 xtask/parity_scores.py` from the repository root to reproduce the two headline
+estimates. Updating a feature or dimension score requires evidence for that rubric row.
 
 ## What was measured, and how
 
@@ -120,7 +123,7 @@ Breadth: does it exist. Ready: depth, correctness and fidelity for real projects
 | 20 | Figma Draw extras | 2 | 88% | 60% | Have: variable width, lasso, shape builder, noise/texture, text on a path, pattern fills, stretch and scatter brushes, pen pressure (Windows pens, browser styluses), multi-edit (several vector layers in edit mode at once). Missing: pressure from macOS/Linux tablets | 1–3 |
 | 21 | AI features | 3 | 0% | 0% | First draft, rename layers, image edit/remove background, visual search, Make: needs local models (owner decision) | 30–60 |
 | 22 | Boards (whiteboarding) | 0 | ~47% | ~29% | Board files with a dot grid, sticky notes, shapes with text, connectors that follow what they join (straight, elbow around the objects, or curved; ends dragged to re-attach), marker, highlighter and eraser, stamps, text and sections, five built-in templates and tables, a shared timer and voting sessions, in live sessions (M12); missing: timer music, board widgets, mind maps, washi tape, audio, quick-create handles, connector waypoints, stamps sticking to objects, `.jam` files ([boards-parity](boards-parity.md)). Not in the weighted sum | 20–44 |
-| | **Weighted (÷113)** | 113 | **~85%** | **~63%** | | **117–255** |
+| | **Weighted (÷113)** | 113 | **85.27%** | **~63%** | | **117–255** |
 | | Core editor only (1–16, ÷94) | 94 | ~94% | ~72% | | 32–74 |
 
 ## By dimension (ready for real work)
@@ -138,7 +141,7 @@ Breadth: does it exist. Ready: depth, correctness and fidelity for real projects
 | Platforms | 3 | 75% | 10–20 | macOS, Windows (x64/x86/arm64), Linux, FreeBSD, web all packaged (v0.2.0); Figma also has iOS/Android apps; non-macOS QA thin | [hardware-parity](hardware-parity.md) |
 | Ecosystem/plugins | 3 | 40% | 6–22 | Own WASM plugins with a Rust SDK and three examples (#101), plugin panels and settings (ABI v2), widgets that take clicks (API 3), text input and a property menu (API 4), a self-hosted plugin directory on `figcraft-server`; no Figma plugin compatibility, no public catalogue or community files; the CLI, control channel and MCP server are ahead of Figma for agents | [gaps](gaps.md) |
 | AI features | 2 | 0% | 30–60 | None | [gaps](gaps.md) |
-| **Ready for real work** | 100 | **~53%** | **~260–515** | | |
+| **Ready for real work** | 100 | **53.79%** | **~260–515** | | |
 
 Dimension hours add up to the full-parity total without double counting: the feature-area rows
 for import/export (14), multiplayer and team libraries (17, 19), plugins (18) and AI (21) are
